@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
@@ -123,7 +124,7 @@ test("a clean branch lands: rebased onto the latest base, gated in full, pushed,
   assert.deepEqual(lines.slice(0, 2), ["ok  build", "ok  test"]);
   assert.match(lines[2], /^Gate passed\. Log: .*\/project\/\.claude\/verkstad\/gate-wt-7-\d{8}-\d{6}\.log$/);
   assert.equal(lines.slice(3).join("\n"), `Landed #7 on main in ${sha} and closed it.\n`);
-  const body = `Landed on main in ${sha}.\n\n${REPORT}`;
+  const body = `Landed on main in ${sha}.\n\n${REPORT}\nVerification state: test-verified. Surfaces: none.\n`;
   assert.deepEqual(p.calls(), [["issue", "close", "7", "--comment", body]]);
   const issue = issueOf(p, 7);
   assert.equal(issue.state, "closed");
@@ -469,6 +470,170 @@ test("--park refuses a worktree with uncommitted changes, which removing it woul
   assert.equal(r.stderr, `verkstad land: refused: ${wt} has uncommitted changes\nreason: refused\n`);
   assert.equal(existsSync(wt), true);
   assert.equal(originHas(p, "issue-7"), false);
+  assert.deepEqual(p.calls(), []);
+});
+
+const UI = [{ name: "ui", globs: ["src/ui/**"] }];
+const CRITERIA = [
+  { criterion: "The panel shows the job's time", seen: "Opened the panel: it read 3 min 12 s." },
+  { criterion: "Export saves an SVG", seen: "Clicked Export; out.svg opened with both layers." },
+];
+
+/** Records the Verifier's Verdict for the Ticket in `wt`, as the Verifier does. */
+function recordVerdict(p: Project, n: number, wt: string, state: string): void {
+  const criteria = tmpFile(p, `criteria-${n}.json`, JSON.stringify(CRITERIA));
+  const r = p.run("verdict", "record", String(n), wt, "--state", state, "--criteria", criteria);
+  assert.equal(r.code, 0, r.stderr);
+}
+
+/** The patch-id of the branch checked out in `cwd`, computed the way docs/verdict.md spells it out. */
+function branchPatchId(p: Project, cwd: string): string {
+  const r = spawnSync("bash", ["-c", "git diff $(git merge-base origin/main HEAD) HEAD | git patch-id --stable"], {
+    cwd,
+    env: p.env,
+    encoding: "utf8",
+  });
+  assert.equal(r.status, 0, r.stderr);
+  return r.stdout.split(" ")[0];
+}
+
+/** Asserts a Landing stopped by its Verdict check left everything but the rebase as it was. */
+function assertStoppedByVerdict(p: Project, wt: string, base: string): void {
+  assert.equal(originHead(p), base, "origin's main is unchanged");
+  assert.equal(existsSync(wt), true, "the worktree is kept for the Verifier");
+  assert.equal(p.git("-C", wt, "branch", "--show-current"), "issue-7");
+  assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
+  assert.deepEqual(localBranches(p), ["issue-7"], "the branch is kept");
+  assert.deepEqual(p.calls(), [], "no issue was touched");
+  assert.equal(issueOf(p, 7).state, "open");
+}
+
+test("a Ticket touching a Surface with no Verdict exits with verdict-missing after the Gate; base unchanged, branch kept, no issue closed", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+  });
+  const wt = ticket(p, 7, { "src/ui/panel.ts": "panel\n" });
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.match(r.stdout, /^ok {2}build\nGate passed\. Log: /);
+  assert.equal(
+    r.stderr,
+    `verkstad land: #7 did not land: #7 touches the Surface ui, and has no Verdict: there is no ${join(p.dir, ".claude", "verkstad", "verdict-7.json")}.\n` +
+      "Branch issue-7 is kept, rebased, in its worktree.\n" +
+      "reason: verdict-missing\n",
+  );
+  assertStoppedByVerdict(p, wt, base);
+});
+
+test("a test-verified, blocked or failed Verdict does not land a Ticket touching a Surface: verdict-not-live", (t) => {
+  for (const state of ["test-verified", "blocked", "failed"]) {
+    const p = project(t, {
+      issues: [claimed(7)],
+      contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+    });
+    const wt = ticket(p, 7, { "src/ui/panel.ts": "panel\n" });
+    recordVerdict(p, 7, wt, state);
+    const base = originHead(p);
+
+    const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+    assert.equal(r.code, 1, state);
+    assert.equal(
+      r.stderr,
+      `verkstad land: #7 did not land: #7 touches the Surface ui, and its Verdict is ${state}, not live-verified.\n` +
+        "Branch issue-7 is kept, rebased, in its worktree.\n" +
+        "reason: verdict-not-live\n",
+    );
+    assertStoppedByVerdict(p, wt, base);
+  }
+});
+
+test("a clean rebase keeps a live-verified Verdict valid, and the Ticket closes with the Verdict after the report", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+    files: { "src/ui/panel.ts": "panel\n" },
+  });
+  const wt = ticket(p, 7, { "src/ui/panel.ts": "panel, with the job's time\n" }, { "src/ui/export.ts": "export\n" });
+  recordVerdict(p, 7, wt, "live-verified");
+  const given = branchPatchId(p, wt);
+  const before = p.git("rev-parse", "issue-7");
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(originLog(p), ["Adds src/ui/export.ts. Refs #7", "Adds src/ui/panel.ts. Refs #7", "Landed meanwhile", "A throwaway Project"]);
+  assert.notEqual(p.git("--git-dir", p.origin, "rev-parse", "main"), before, "the branch was rebased");
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  const evidence = join(p.dir, ".claude", "verkstad", "evidence-7");
+  const body =
+    `Landed on main in ${sha}.\n\n${REPORT}\n` +
+    `Verification state: live-verified. Surfaces: ui. Evidence: \`${evidence}\`.\n\n` +
+    "- The panel shows the job's time: Opened the panel: it read 3 min 12 s.\n" +
+    "- Export saves an SVG: Clicked Export; out.svg opened with both layers.\n";
+  assert.deepEqual(p.calls(), [["issue", "close", "7", "--comment", body]]);
+  assert.equal(issueOf(p, 7).state, "closed");
+  const landed = spawnSync("bash", ["-c", `git --git-dir '${p.origin}' diff main~2 main | git patch-id --stable`], {
+    env: p.env,
+    encoding: "utf8",
+  });
+  assert.equal(landed.stdout.split(" ")[0], given, "the landed, rebased patch has the Verdict's patch-id");
+});
+
+test("a conflict resolution that changes the patch voids the Verdict: land exits with verdict-void; base unchanged, branch kept, no issue closed", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+    files: { "src/ui/panel.ts": "panel\n" },
+  });
+  const wt = ticket(p, 7, { "src/ui/panel.ts": "panel, with the job's time\n" });
+  recordVerdict(p, 7, wt, "live-verified");
+  const given = branchPatchId(p, wt);
+  landElsewhere(p, "src/ui/panel.ts", "panel, with a title\n", "Titles the panel");
+  const first = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+  assert.equal(reason(first.stderr), "reason: conflict");
+  // The conflict is resolved, as the conflict agent would, by keeping both changes.
+  p.git("worktree", "add", "--quiet", wt, "issue-7");
+  p.git("-C", wt, "fetch", "--quiet", "origin");
+  assert.throws(() => p.git("-C", wt, "rebase", "--quiet", "origin/main"));
+  writeFileSync(join(wt, "src", "ui", "panel.ts"), "panel, with a title and the job's time\n");
+  p.git("-C", wt, "add", "src/ui/panel.ts");
+  p.git("-C", wt, "-c", "core.editor=true", "rebase", "--continue");
+  const resolved = branchPatchId(p, wt);
+  assert.notEqual(resolved, given);
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.equal(
+    r.stderr,
+    `verkstad land: #7 did not land: #7 touches the Surface ui, and its Verdict is void: it was given for patch ${given.slice(0, 12)}, ` +
+      `but the branch is now patch ${resolved.slice(0, 12)}. The changed patch needs a new Verdict.\n` +
+      "Branch issue-7 is kept, rebased, in its worktree.\n" +
+      "reason: verdict-void\n",
+  );
+  assertStoppedByVerdict(p, wt, base);
+});
+
+test("Landing refuses a Contract whose surfaces are malformed, touching nothing", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "touch ../gate-ran" }], { surfaces: "src/ui" }) });
+  const wt = ticket(p, 7, { "src/ui/panel.ts": "panel\n" });
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 2);
+  assert.equal(
+    r.stderr,
+    "verkstad land: refused: .claude/harness.json: surfaces must be an array of Surfaces ([] for a Project with none)\nreason: refused\n",
+  );
+  assert.equal(existsSync(join(p.dir, "..", "gate-ran")), false);
+  assert.equal(existsSync(wt), true);
   assert.deepEqual(p.calls(), []);
 });
 

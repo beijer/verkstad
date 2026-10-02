@@ -1,7 +1,7 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
 // checked here. Only the fields the CLI reads so far are checked (baseBranch,
-// gate and landing), each by its reader; a malformed one fails naming the field
-// (docs/contract.md describes them all).
+// gate, landing and surfaces), each by its reader; a malformed one fails naming
+// the field (docs/contract.md describes them all).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -130,6 +130,38 @@ export function readLandingMode(root: string): LandingMode {
   if (landing === undefined) return "push";
   if (landing !== "push" && landing !== "pull-request") throw malformed(`landing must be "push" or "pull-request"`);
   return landing;
+}
+
+/** A Surface: a name, and the globs (git `:(glob)` pathspecs) of the paths whose changes can alter it. */
+export interface Surface {
+  name: string;
+  globs: string[];
+}
+
+/** The Contract's `surfaces`, required (`[]` for a Project with none) so that no Project lacks them by accident. */
+export function readSurfaces(root: string): Surface[] {
+  const { surfaces } = readJson(root);
+  if (!Array.isArray(surfaces)) throw malformed("surfaces must be an array of Surfaces ([] for a Project with none)");
+  const result = surfaces.map((value, i): Surface => {
+    const where = `surfaces[${i}]`;
+    if (!isObject(value)) throw malformed(`${where} must be an object`);
+    onlyKnownFields(value, where, ["name", "globs"]);
+    const name = nonEmptyString(value.name, `${where}.name`);
+    if (!Array.isArray(value.globs) || value.globs.length === 0) throw malformed(`${where}.globs must be a non-empty array of globs`);
+    const globs = value.globs.map((glob, j) => {
+      const g = nonEmptyString(glob, `${where}.globs[${j}]`);
+      if (g.startsWith(":") || g.startsWith("/")) {
+        throw malformed(`${where}.globs[${j}] '${g}' must be a glob relative to the Project's root, without pathspec magic`);
+      }
+      return g;
+    });
+    return { name, globs };
+  });
+  result.forEach((s, i) => {
+    const first = result.findIndex((other) => other.name === s.name);
+    if (first !== i) throw malformed(`surfaces[${i}].name '${s.name}' is already the name of surfaces[${first}]`);
+  });
+  return result;
 }
 
 function readJson(root: string): JsonObject {

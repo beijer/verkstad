@@ -4,11 +4,11 @@
 // log directory in the main checkout.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type Contract, type GateStep, readContract, VARIABLE } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { logDirectory, mainCheckout, tryGit, worktreeRoot } from "./git.ts";
+import { ensureLogDirectory, tryGit, worktreeRoot } from "./git.ts";
 
 const USAGE = "usage: verkstad gate [--quick]";
 /** How many of a failing step's last lines the Gate prints. */
@@ -94,18 +94,6 @@ function plan(root: string, contract: Contract, quick: boolean): PlannedStep[] {
   });
 }
 
-/**
- * Fails unless git ignores the log directory, so that no log is ever committed: in the main checkout, or
- * in the worktree whose branch adds it to .gitignore and has not landed yet.
- */
-function checkIgnored(root: string, dir: string): void {
-  const ignored = (cwd: string) => tryGit(cwd, ["check-ignore", "-q", ".claude/verkstad/"]).status === 0;
-  if (!ignored(root) && !ignored(mainCheckout(root))) {
-    throw new Failure(`the log directory ${dir}/ is not gitignored; add .claude/verkstad/ to the Project's .gitignore`);
-  }
-  mkdirSync(dir, { recursive: true });
-}
-
 function timestamp(now: Date): string {
   const two = (n: number) => String(n).padStart(2, "0");
   const date = `${now.getFullYear()}${two(now.getMonth() + 1)}${two(now.getDate())}`;
@@ -143,8 +131,7 @@ export function gate(args: string[]): void {
 export function runGate(root: string, quick: boolean): string {
   const contract = readContract(root);
   const planned = plan(root, contract, quick);
-  const dir = logDirectory(root);
-  checkIgnored(root, dir);
+  const dir = ensureLogDirectory(root);
   const env = stepEnvironment(contract);
   const log = createLog(dir, root);
 

@@ -1,10 +1,10 @@
 // `verkstad land <n> <worktree> <report-file>`: lands a finished Ticket's
 // branch, issue-<n>, on the base branch. Under a lock, so that one Landing runs
 // at a time per main checkout, it rebases the branch onto origin's base branch,
-// runs the full Gate in the worktree and pushes, rebasing again when the base
-// moved meanwhile. Then it closes the Ticket with the report, removes the
-// worktree and the branch, fast-forwards the main checkout and prunes the log
-// directory.
+// runs the full Gate in the worktree, checks the Ticket's Verdict and pushes,
+// rebasing again when the base moved meanwhile. Then it closes the Ticket with
+// the report and the Verdict, removes the worktree and the branch,
+// fast-forwards the main checkout and prunes the log directory.
 //
 // `verkstad land --park <n> <worktree> <reason-file>`: Parks the Ticket. Its
 // branch goes to origin, its worktree (if a failed Landing left one) is
@@ -12,26 +12,36 @@
 //
 // Every failure ends in a line `reason: <code>` the orchestrator routes on
 // (docs/contract.md says what each leaves behind). A Landing that failed before
-// its push touches no issue and keeps the branch; after a refusal or an error
-// the worktree stays, after any other failure it is removed, so that a Resume
-// can switch to the branch.
+// its push touches no issue and keeps the branch. After a refusal or an error
+// the worktree stays, and after a Verdict check fails too, since the Verifier
+// Walks it next; after any other failure it is removed, so that a Resume can
+// switch to the branch.
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readContract, readLandingMode } from "./contract.ts";
+import { readContract, readLandingMode, readSurfaces } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { runGate } from "./gate.ts";
 import { gh } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
+import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
 
 const USAGE = "usage: verkstad land <n> <worktree> <report-file> | verkstad land --park <n> <worktree> <reason-file>";
 /** How many times a Landing rebases, gates and pushes before giving up on a base that keeps moving. */
 const ATTEMPTS = 3;
 
 /** Why a Landing failed, as its last line says; docs/contract.md describes each. */
-type Reason = "refused" | "no-commits" | "conflict" | "gate-failed" | "push-failed" | "github-failed" | "error";
+type Reason =
+  | "refused"
+  | "no-commits"
+  | "conflict"
+  | "gate-failed"
+  | VerdictReason
+  | "push-failed"
+  | "github-failed"
+  | "error";
 
 /** A failure the orchestrator routes on: the message, then `reason: <code>`. Refusals exit 2. */
 class LandingFailure extends Failure {
@@ -147,8 +157,14 @@ function fetch(ticket: Ticket, base: string): void {
   if (r.status !== 0) throw new Failure(`could not fetch origin/${base}: ${r.stderr.trim()}`);
 }
 
-/** Rebases, gates and pushes until the push lands or fails; returns the landed commit, abbreviated. */
-function rebaseGatePush(ticket: Ticket, base: string): string {
+/** What a Landing pushed: the landed commit, abbreviated, and the Verdict check it passed. */
+interface Landed {
+  sha: string;
+  check: VerdictCheck;
+}
+
+/** Rebases, gates, checks the Verdict and pushes until the push lands or fails. */
+function rebaseGatePush(ticket: Ticket, base: string): Landed {
   const upstream = `origin/${base}`;
   for (let attempt = 1; ; attempt++) {
     fetch(ticket, base);
@@ -168,8 +184,14 @@ function rebaseGatePush(ticket: Ticket, base: string): string {
       if (!(error instanceof Failure)) throw error;
       throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
     }
+    const check = checkVerdict(ticket.root, ticket.n, upstream);
+    if (check.failure) {
+      // The worktree stays: it is clean and rebased, and the Verifier Walks it next.
+      const { reason, message } = check.failure;
+      throw new LandingFailure(reason, `#${ticket.n} did not land: ${message}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
+    }
     const push = tryGit(ticket.root, ["push", "--quiet", "origin", `HEAD:refs/heads/${base}`]);
-    if (push.status === 0) return git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim();
+    if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), check };
     fetch(ticket, base);
     const moved = tryGit(ticket.root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).status !== 0;
     if (!moved) throw didNotLand(ticket, "push-failed", `pushing to ${upstream} failed: ${push.stderr.trim()}`);
@@ -204,6 +226,7 @@ function landTicket(args: Args): void {
   let base: string;
   try {
     base = readContract(ticket.root).baseBranch;
+    readSurfaces(ticket.root);
     const mode = readLandingMode(ticket.root);
     if (mode !== "push") throw new Failure(`the Landing mode ${mode} is not supported yet; set landing to "push"`);
   } catch (error) {
@@ -215,10 +238,11 @@ function landTicket(args: Args): void {
 
   const lock = takeLock(ticket);
   try {
-    const sha = rebaseGatePush(ticket, base);
+    const { sha, check } = rebaseGatePush(ticket, base);
     let closing: Failure | null = null;
     try {
-      gh(["issue", "close", String(ticket.n), "--comment", `Landed on ${base} in ${sha}.\n\n${report}\n`]);
+      const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeVerification(check)}`;
+      gh(["issue", "close", String(ticket.n), "--comment", comment]);
     } catch (error) {
       if (!(error instanceof Failure)) throw error;
       closing = error;
@@ -237,7 +261,7 @@ function landTicket(args: Args): void {
       throw new LandingFailure(
         "github-failed",
         `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\n` +
-          "Close it by hand, with the report as the comment.",
+          "Close it by hand, with the report and the Verdict as the comment.",
       );
     }
     process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);

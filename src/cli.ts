@@ -6,6 +6,8 @@ import { frontier } from "./frontier.ts";
 import { gate } from "./gate.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
+import { surfaces } from "./surfaces.ts";
+import { verdict } from "./verdict.ts";
 
 interface Subcommand {
   usage: string;
@@ -38,6 +40,16 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad prune",
     summary: "Deletes what the log directory holds once it is older than 30 days",
     run: prune,
+  },
+  surfaces: {
+    usage: "verkstad surfaces <base> [--json]",
+    summary: "Lists the Surfaces whose globs match what the branch changed since it left <base>",
+    run: surfaces,
+  },
+  verdict: {
+    usage: "verkstad verdict record|check|evidence <n> …",
+    summary: "Records Ticket #n's Verdict, checks it lets the Ticket land, or prints its Evidence directory",
+    run: verdict,
   },
 };
 
