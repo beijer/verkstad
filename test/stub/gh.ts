@@ -42,32 +42,31 @@ const commands: Record<string, Command> = {
   api: (args, state) => api(args, state),
   // Closes an open issue, commenting first when given --comment.
   "issue close": (args, state) => {
-    const { positionals, flags } = parse(args, { value: ["--comment", "-c"] });
+    const { positionals, flags } = parse(args, { value: ["--comment"] });
     const issue = issueArg(state, positionals);
     if (issue.state === "closed") return { stderr: `! Issue ${state.repo}#${issue.number} is already closed\n` };
-    const comment = flags.get("--comment") ?? flags.get("-c");
+    const comment = flags.get("--comment");
     if (comment) issue.comments.push({ author: state.viewer, body: comment[0] });
     issue.state = "closed";
     return { stderr: `✓ Closed issue ${state.repo}#${issue.number}\n` };
   },
-  // Adds and removes labels and assignees; `@me` is the viewer.
+  // Adds and removes labels and removes assignees; `@me` is the viewer.
   "issue edit": (args, state) => {
     const { positionals, flags } = parse(args, {
-      value: ["--add-label", "--remove-label", "--add-assignee", "--remove-assignee"],
+      value: ["--add-label", "--remove-label", "--remove-assignee"],
     });
     const issue = issueArg(state, positionals);
     const values = (flag: string) =>
       (flags.get(flag) ?? []).flatMap((v) => v.split(",")).map((v) => (v === "@me" ? state.viewer : v));
     const labels = issue.labels.filter((l) => !values("--remove-label").includes(l));
     issue.labels = [...new Set([...labels, ...values("--add-label")])];
-    const assignees = issue.assignees.filter((a) => !values("--remove-assignee").includes(a));
-    issue.assignees = [...new Set([...assignees, ...values("--add-assignee")])];
+    issue.assignees = issue.assignees.filter((a) => !values("--remove-assignee").includes(a));
     return { stdout: `https://github.com/${state.repo}/issues/${issue.number}\n` };
   },
   "issue comment": (args, state) => {
-    const { positionals, flags } = parse(args, { value: ["--body", "-b"] });
+    const { positionals, flags } = parse(args, { value: ["--body"] });
     const issue = issueArg(state, positionals);
-    const body = flags.get("--body") ?? flags.get("-b");
+    const body = flags.get("--body");
     if (!body) throw new Error("only --body is supported");
     issue.comments.push({ author: state.viewer, body: body[0] });
     return { stdout: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-1\n` };

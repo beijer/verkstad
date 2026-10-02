@@ -333,6 +333,7 @@ test("Landing refuses the main checkout, a worktree on another branch and one wi
     [["7", p.dir, report], `${p.dir} is the main checkout, not a worktree`],
     [["7", other, report], `${other} is on branch issue-8, not issue-7`],
     [["7", wt, join(p.dir, "..", "no-report.md")], `no report at ${join(p.dir, "..", "no-report.md")}`],
+    [["7", wt, tmpFile(p, "empty.md", "\n")], `the report ${join(p.dir, "..", "empty.md")} is empty`],
     [["7", join(p.dir, "..", "gone"), report], `no worktree at ${join(p.dir, "..", "gone")}`],
     [["7", wt], "usage: verkstad land <n> <worktree> <report-file>"],
     [["seven", wt, report], "usage: verkstad land <n> <worktree> <report-file>"],
@@ -423,6 +424,38 @@ test("--park pushes the branch over what origin had, removes the worktree, sets 
   assert.deepEqual(issue.assignees, []);
   assert.deepEqual(issue.comments, [{ author: "owner", body }]);
   assert.deepEqual(issueOf(p, 8).labels, ["ready-for-agent"]);
+});
+
+test("--park after a failed Landing removed the worktree pushes the kept branch and updates the Ticket", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "unit tests", command: "exit 1" }]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const failed = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+  assert.equal(reason(failed.stderr), "reason: gate-failed");
+  assert.equal(existsSync(wt), false);
+  const head = p.git("rev-parse", "issue-7");
+
+  const r = p.run("land", "--park", "7", wt, tmpFile(p, "park-7.md", "The Gate failed twice.\n"));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, "Parked #7: branch issue-7 pushed to origin, labelled needs-info.\n");
+  assert.equal(originHead(p, "issue-7"), head);
+  assert.deepEqual(localBranches(p), ["issue-7"]);
+  const issue = issueOf(p, 7);
+  assert.deepEqual(issue.labels, ["needs-info"]);
+  assert.deepEqual(issue.assignees, []);
+  assert.match(issue.comments[0].body, /^The Gate failed twice\.\n\nParked: branch `issue-7` is on origin at [0-9a-f]{7,}; a Resume continues from it\.$/);
+});
+
+test("--park with neither the worktree nor the branch refuses", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
+  const gone = join(p.dir, "..", "wt-7");
+
+  const r = p.run("land", "--park", "7", gone, tmpFile(p, "park-7.md", "Stuck.\n"));
+
+  assert.equal(r.code, 2);
+  assert.equal(r.stderr, `verkstad land: refused: no worktree at ${gone}, and no branch issue-7 in the Project here\nreason: refused\n`);
+  assert.deepEqual(p.calls(), []);
 });
 
 test("--park refuses a worktree with uncommitted changes, which removing it would lose", (t) => {

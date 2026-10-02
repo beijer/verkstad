@@ -7,12 +7,14 @@
 // directory.
 //
 // `verkstad land --park <n> <worktree> <reason-file>`: Parks the Ticket. Its
-// branch goes to origin, its worktree is removed, it is labelled needs-info,
-// unassigned and told why.
+// branch goes to origin, its worktree (if a failed Landing left one) is
+// removed, it is labelled needs-info, unassigned and told why.
 //
 // Every failure ends in a line `reason: <code>` the orchestrator routes on
-// (REASONS below). A failed Landing keeps the branch, removes the worktree so a
-// Resume can switch to the branch, and touches no issue.
+// (docs/contract.md says what each leaves behind). A Landing that failed before
+// its push touches no issue and keeps the branch; after a refusal or an error
+// the worktree stays, after any other failure it is removed, so that a Resume
+// can switch to the branch.
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -28,18 +30,8 @@ const USAGE = "usage: verkstad land <n> <worktree> <report-file> | verkstad land
 /** How many times a Landing rebases, gates and pushes before giving up on a base that keeps moving. */
 const ATTEMPTS = 3;
 
-/** Why a Landing failed, as its last line says, and what that leaves behind. */
-export const REASONS = {
-  refused: "the call was wrong (not a worktree, wrong branch, uncommitted changes, bad Contract); nothing was touched",
-  "no-commits": "the branch has nothing that is not on the base branch; branch kept, worktree removed",
-  conflict: "the rebase conflicted in the files named; branch kept as it was, worktree removed",
-  "gate-failed": "the full Gate failed, its log is named; branch kept, worktree removed",
-  "push-failed": "origin refused the push, or the base moved on every attempt; branch kept, worktree removed",
-  "github-failed": "the branch is where it belongs, but updating the Ticket on GitHub failed; finish that by hand",
-  error: "something else failed (git, gh or flock could not run, the fetch failed); the worktree is not removed",
-} as const;
-
-export type Reason = keyof typeof REASONS;
+/** Why a Landing failed, as its last line says; docs/contract.md describes each. */
+type Reason = "refused" | "no-commits" | "conflict" | "gate-failed" | "push-failed" | "github-failed" | "error";
 
 /** A failure the orchestrator routes on: the message, then `reason: <code>`. Refusals exit 2. */
 class LandingFailure extends Failure {
@@ -77,6 +69,14 @@ interface Ticket {
   main: string;
 }
 
+/** A Ticket's branch, and its worktree unless a failed Landing already removed it. */
+interface TicketBranch {
+  n: number;
+  branch: string;
+  root: string | null;
+  main: string;
+}
+
 function checkTicket({ n, worktree }: Args): Ticket {
   if (!existsSync(worktree) || !statSync(worktree).isDirectory()) throw refused(`no worktree at ${worktree}`);
   const top = tryGit(worktree, ["rev-parse", "--show-toplevel"]);
@@ -98,16 +98,25 @@ function readFile(path: string, what: string): string {
   return text;
 }
 
-/** Removes the worktree, even one Claude Code locked, keeping its branch. */
-function removeWorktree(ticket: Ticket): void {
-  git(ticket.main, ["worktree", "remove", "--force", "--force", ticket.root]);
+/** Removes the worktree, even one Claude Code locked, keeping its branch; says so when it cannot. */
+function removeWorktree(main: string, root: string): string {
+  const r = tryGit(main, ["worktree", "remove", "--force", "--force", root]);
+  return r.status === 0 ? "" : `Could not remove the worktree ${root}: ${r.stderr.trim()}\n`;
 }
 
-/** Fails the Landing after removing the worktree; the branch stays for a Resume. */
+/**
+ * Fails after removing the worktree, keeping the branch for a Resume. `what` says what failed, e.g.
+ * `#7 did not land: …`; a worktree that cannot be removed is mentioned, never hides the reason.
+ */
+function keepBranch(ticket: TicketBranch, reason: Reason, what: string, asItWas = false): LandingFailure {
+  const kept = `Branch ${ticket.branch} is kept${asItWas ? " as it was" : ""}`;
+  if (ticket.root === null) return new LandingFailure(reason, `${what}\n${kept}.`);
+  const problem = removeWorktree(ticket.main, ticket.root);
+  return new LandingFailure(reason, `${what}\n${problem || `${kept}; its worktree is removed.`}`);
+}
+
 function didNotLand(ticket: Ticket, reason: Reason, detail: string, asItWas = false): LandingFailure {
-  removeWorktree(ticket);
-  const kept = `Branch ${ticket.branch} is kept${asItWas ? " as it was" : ""}; its worktree is removed.`;
-  return new LandingFailure(reason, `#${ticket.n} did not land: ${detail}\n${kept}`);
+  return keepBranch(ticket, reason, `#${ticket.n} did not land: ${detail}`, asItWas);
 }
 
 /**
@@ -214,53 +223,76 @@ function landTicket(args: Args): void {
       if (!(error instanceof Failure)) throw error;
       closing = error;
     }
-    removeWorktree(ticket);
-    git(ticket.main, ["branch", "--delete", "--force", ticket.branch]);
-    const notes = deleteParkedBranch(ticket) + fastForwardMain(ticket.main, base);
+    const notes =
+      removeWorktree(ticket.main, ticket.root) +
+      (tryGit(ticket.main, ["branch", "--delete", "--force", ticket.branch]).status === 0
+        ? ""
+        : `Could not delete the branch ${ticket.branch}.\n`) +
+      deleteParkedBranch(ticket) +
+      fastForwardMain(ticket.main, base);
+    const dir = logDirectory(ticket.main);
+    const pruned = describePruned(dir, pruneLogDirectory(dir));
     if (closing) {
-      process.stdout.write(notes);
+      process.stdout.write(notes + pruned);
       throw new LandingFailure(
         "github-failed",
         `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\n` +
           "Close it by hand, with the report as the comment.",
       );
     }
-    process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}`);
+    process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);
   } finally {
     closeSync(lock);
   }
-  const dir = logDirectory(ticket.main);
-  process.stdout.write(describePruned(dir, pruneLogDirectory(dir)));
+}
+
+/**
+ * The Ticket to Park: its clean worktree, as for a Landing; or, when a failed Landing already removed the
+ * worktree, its kept branch in the Project the command runs in.
+ */
+function checkTicketBranch(args: Args): TicketBranch {
+  if (existsSync(args.worktree)) return checkTicket(args);
+  const branch = `issue-${args.n}`;
+  const top = tryGit(process.cwd(), ["rev-parse", "--show-toplevel"]);
+  const main = top.status === 0 ? mainCheckout(top.stdout.trim()) : null;
+  if (main === null || tryGit(main, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status !== 0) {
+    throw refused(`no worktree at ${args.worktree}, and no branch ${branch} in the Project here`);
+  }
+  return { n: args.n, branch, root: null, main };
 }
 
 function parkTicket(args: Args): void {
-  const ticket = checkTicket(args);
+  const ticket = checkTicketBranch(args);
   const why = readFile(args.file, "reason");
   process.chdir(ticket.main);
-  const sha = git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim();
-  const push = tryGit(ticket.root, ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${ticket.branch}`]);
+  const ref = `refs/heads/${ticket.branch}`;
+  const sha = git(ticket.main, ["rev-parse", "--short", ref]).trim();
+  const push = tryGit(ticket.main, ["push", "--quiet", "--force", "origin", `${ref}:${ref}`]);
   if (push.status !== 0) {
-    removeWorktree(ticket);
-    throw new LandingFailure(
-      "push-failed",
-      `#${ticket.n} was not parked: pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}\n` +
-        `Branch ${ticket.branch} is kept; its worktree is removed.`,
-    );
+    const what = `#${ticket.n} was not parked: pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}`;
+    throw keepBranch(ticket, "push-failed", what);
   }
-  removeWorktree(ticket);
+  const notes = ticket.root === null ? "" : removeWorktree(ticket.main, ticket.root);
   const n = String(ticket.n);
-  try {
-    gh(["issue", "edit", n, "--remove-label", "ready-for-agent", "--add-label", "needs-info", "--remove-assignee", "@me"]);
-    gh(["issue", "comment", n, "--body", `${why}\n\nParked: branch \`${ticket.branch}\` is on origin at ${sha}; a Resume continues from it.`]);
-  } catch (error) {
-    if (!(error instanceof Failure)) throw error;
-    throw new LandingFailure(
-      "github-failed",
-      `${ticket.branch} is on origin and its worktree removed, but updating #${ticket.n} failed: ${error.message}\n` +
-        "Label it needs-info, unassign it and comment why by hand.",
-    );
+  const comment = `${why}\n\nParked: branch \`${ticket.branch}\` is on origin at ${sha}; a Resume continues from it.`;
+  for (const call of [
+    ["issue", "edit", n, "--remove-label", "ready-for-agent", "--add-label", "needs-info", "--remove-assignee", "@me"],
+    ["issue", "comment", n, "--body", comment],
+  ]) {
+    try {
+      gh(call);
+    } catch (error) {
+      if (!(error instanceof Failure)) throw error;
+      const todo = call[1] === "edit" ? "label it needs-info, unassign it and comment why" : "comment why";
+      throw new LandingFailure(
+        "github-failed",
+        `${notes}${ticket.branch} is on origin at ${sha}, but updating #${ticket.n} failed: ${error.message}\n` +
+          `Finish by hand: ${todo}.`,
+      );
+    }
   }
-  process.stdout.write(`Parked #${ticket.n}: branch ${ticket.branch} pushed to origin, worktree removed, labelled needs-info.\n`);
+  const worktree = ticket.root === null ? "" : ", worktree removed";
+  process.stdout.write(`${notes}Parked #${ticket.n}: branch ${ticket.branch} pushed to origin${worktree}, labelled needs-info.\n`);
 }
 
 export function land(args: string[]): void {

@@ -95,7 +95,7 @@ verkstad's own `.claude/harness.json` is an example Contract for a Project with 
 3. It pushes `HEAD` to `<baseBranch>` on `origin`. When the push is rejected because the base moved meanwhile, it says so and goes back to 2; after 3 attempts it gives up.
 4. It closes the Ticket with the comment `Landed on <baseBranch> in <sha>.`, a blank line and the report; removes the worktree, the branch, and the branch on `origin` if an earlier Park pushed it; fast-forwards the main checkout when it is on a clean `<baseBranch>` (and says so when it is not); and prunes the log directory.
 
-It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Every failure prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A failed Landing touches no issue, and, but for `refused` and `error`, it removes the worktree and keeps the branch, so that a Resume can switch to it.
+It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Every failure prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and keeps the branch; but for `refused` and `error` it removes the worktree, so that a Resume can switch to the branch.
 
 | Reason | What failed | The branch |
 | --- | --- | --- |
@@ -109,6 +109,6 @@ It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Eve
 
 A later check adds its own reason (a missing or void Verdict) to this list; the orchestrator routes an unknown reason to the owner.
 
-`verkstad land --park <n> <worktree> <reason-file>` Parks Ticket `#<n>`, with the same refusals. It force-pushes `issue-<n>` to `origin`, removes the worktree and keeps the branch, then labels the Ticket `needs-info` instead of `ready-for-agent`, unassigns `@me`, and comments with the reason file's text and where the branch is. It takes no lock and runs no Gate.
+`verkstad land --park <n> <worktree> <reason-file>` Parks Ticket `#<n>`, with the same refusals, except that a worktree a failed Landing already removed is fine as long as the branch `issue-<n>` is in the Project `land` runs in. It force-pushes `issue-<n>` to `origin`, removes the worktree if there is one and keeps the branch, then labels the Ticket `needs-info` instead of `ready-for-agent`, unassigns `@me`, and comments with the reason file's text and where the branch is. It takes no lock and runs no Gate.
 
 `verkstad prune` deletes each entry of the log directory older than 30 days, a directory being as old as the newest file in it, and lists what it deleted. Landing runs it after each Landing.
