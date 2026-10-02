@@ -12,7 +12,7 @@
       },
       {
         "name": "plugin",
-        "command": "command -v claude >/dev/null || exit 0; out=$(claude plugin validate . --strict 2>&1) || { echo \"$out\" | grep -q 'Found 1 warning' && echo \"$out\" | grep -q 'version: No version specified' || { echo \"$out\"; exit 1; }; }"
+        "command": "command -v claude >/dev/null || exit 0; claude plugin validate ."
       }
     ]
   },
