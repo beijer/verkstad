@@ -1,6 +1,6 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
-// checked here. Each field is checked by the first reader that needs it, and a
-// malformed one fails naming the field (docs/contract.md describes them all).
+// checked here. Only the fields the CLI reads so far are checked (baseBranch and
+// gate); a malformed one fails naming the field (docs/contract.md describes them all).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -37,13 +37,13 @@ export interface Contract {
   gate: Gate;
 }
 
-type Json = Record<string, unknown>;
+type JsonObject = Record<string, unknown>;
 
 function malformed(problem: string): Failure {
   return new Failure(`${CONTRACT_PATH}: ${problem}`);
 }
 
-function isObject(value: unknown): value is Json {
+function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -52,16 +52,18 @@ function nonEmptyString(value: unknown, where: string): string {
   return value;
 }
 
-function onlyKnownFields(value: Json, where: string, known: string[]): void {
+function onlyKnownFields(value: JsonObject, where: string, known: string[]): void {
   const unknown = Object.keys(value).find((key) => !known.includes(key));
   if (unknown !== undefined) {
     throw malformed(`${where} has an unknown field '${unknown}' (known: ${known.join(", ")})`);
   }
 }
 
-const VARIABLE_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
+/** An environment variable's name, as a regex source. */
+export const VARIABLE = "[A-Za-z_][A-Za-z0-9_]*";
+const VARIABLE_NAME = new RegExp(`^${VARIABLE}$`);
 
-function quick(value: unknown, where: string): Quick {
+function parseQuick(value: unknown, where: string): Quick {
   if (!isObject(value)) throw malformed(`${where} must be an object`);
   onlyKnownFields(value, where, ["files", "env", "fullWhen"]);
   const files = nonEmptyString(value.files, `${where}.files`);
@@ -69,12 +71,12 @@ function quick(value: unknown, where: string): Quick {
     throw malformed(`${where}.env must be an environment variable name`);
   }
   const fullWhen = value.fullWhen ?? [];
-  if (!Array.isArray(fullWhen)) throw malformed(`${where}.fullWhen must be an array of path globs`);
+  if (!Array.isArray(fullWhen)) throw malformed(`${where}.fullWhen must be an array of pathspecs`);
   fullWhen.forEach((glob, i) => nonEmptyString(glob, `${where}.fullWhen[${i}]`));
   return { files, env: value.env, fullWhen: fullWhen as string[] };
 }
 
-function step(value: unknown, where: string): GateStep {
+function parseStep(value: unknown, where: string): GateStep {
   if (!isObject(value)) throw malformed(`${where} must be an object`);
   onlyKnownFields(value, where, ["name", "command", "unlessExists", "quick"]);
   const result: GateStep = {
@@ -84,11 +86,11 @@ function step(value: unknown, where: string): GateStep {
   if (value.unlessExists !== undefined) {
     result.unlessExists = nonEmptyString(value.unlessExists, `${where}.unlessExists`);
   }
-  if (value.quick !== undefined) result.quick = quick(value.quick, `${where}.quick`);
+  if (value.quick !== undefined) result.quick = parseQuick(value.quick, `${where}.quick`);
   return result;
 }
 
-function gate(value: unknown): Gate {
+function parseGate(value: unknown): Gate {
   if (!isObject(value)) throw malformed("gate must be an object");
   onlyKnownFields(value, "gate", ["env", "steps"]);
   const env: Record<string, string | null> = {};
@@ -101,7 +103,7 @@ function gate(value: unknown): Gate {
     }
   }
   if (!Array.isArray(value.steps) || value.steps.length === 0) throw malformed("gate.steps must be a non-empty array");
-  const steps = value.steps.map((s, i) => step(s, `gate.steps[${i}]`));
+  const steps = value.steps.map((s, i) => parseStep(s, `gate.steps[${i}]`));
   steps.forEach((s, i) => {
     const first = steps.findIndex((other) => other.name === s.name);
     if (first !== i) throw malformed(`gate.steps[${i}].name '${s.name}' is already the name of gate.steps[${first}]`);
@@ -122,6 +124,6 @@ export function readContract(root: string): Contract {
   if (!isObject(value)) throw malformed("the Contract must be a JSON object");
   return {
     baseBranch: nonEmptyString(value.baseBranch, "baseBranch"),
-    gate: gate(value.gate),
+    gate: parseGate(value.gate),
   };
 }

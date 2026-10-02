@@ -1,4 +1,4 @@
-/** A failure the CLI reports as one line on stderr before exiting non-zero. */
+/** A failure the CLI reports on stderr, `verkstad <subcommand>: <message>`, before exiting non-zero. */
 export class Failure extends Error {
   code: number;
 

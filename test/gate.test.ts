@@ -129,17 +129,25 @@ test("run from a worktree, the log lands in the main checkout's gitignored log d
   assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
 });
 
-test("two Gate runs in the same second keep two logs", (t) => {
+test("a Gate run whose log name another run took gets the next free name", (t) => {
   const p = project(t, { contract: contract([{ name: "build", command: "echo built" }]) });
+  p.env.TZ = "UTC";
+  const dir = join(p.dir, ".claude", "verkstad");
+  mkdirSync(dir, { recursive: true });
+  // Take the name for each second the run could start in.
+  const now = Date.now();
+  for (let s = 0; s < 5; s++) {
+    const stamp = new Date(now + s * 1000).toISOString().replace(/[-:]/g, "").replace("T", "-").slice(0, 15);
+    writeFileSync(join(dir, `gate-project-${stamp}.log`), "another run\n");
+  }
 
-  const first = p.run("gate");
-  const second = p.run("gate");
+  const r = p.run("gate");
 
-  assert.equal(first.code, 0, first.stderr);
-  assert.equal(second.code, 0, second.stderr);
-  const all = logs(p);
-  assert.equal(all.length, 2);
-  assert.ok(first.stdout.includes(all[0]) !== second.stdout.includes(all[0]), "each run names its own log");
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /Gate passed\. Log: .*\/gate-project-\d{8}-\d{6}-2\.log\n$/);
+  const log = r.stdout.match(/Log: (.+)\n$/)?.[1] ?? "";
+  assert.equal(readFileSync(log, "utf8"), "== build\nbuilt\n");
+  assert.equal(readFileSync(log.replace("-2.log", ".log"), "utf8"), "another run\n");
 });
 
 test("the Gate refuses to log into a log directory git would track", (t) => {
@@ -157,6 +165,7 @@ test("the Gate refuses to log into a log directory git would track", (t) => {
     `verkstad gate: the log directory ${p.dir}/.claude/verkstad/ is not gitignored; add .claude/verkstad/ to the Project's .gitignore\n`,
   );
   assert.equal(existsSync(join(p.dir, "built")), false);
+  assert.equal(existsSync(join(p.dir, ".claude", "verkstad")), false, "a refused run leaves no log directory");
 });
 
 test("a branch that adds the log directory to .gitignore can run the Gate before it lands", (t) => {
@@ -264,7 +273,7 @@ test("without --quick the narrowed step runs whole, with its variable unset even
   assert.match(readFileSync(logs(p)[0], "utf8"), /== e2e\nfiles: \n$/);
 });
 
-test("--quick runs a step in full when a changed file matches its fullWhen globs, deleted ones included", (t) => {
+test("--quick runs a step in full when a changed file matches its fullWhen pathspecs, deleted ones included", (t) => {
   const p = project(t, {
     contract: contract([{ ...e2eStep, quick: { ...(e2eStep.quick as object), fullWhen: ["e2e/*.ts", "fake/**"] } }]),
     files: { "e2e/a.e2e.ts": "a\n", "e2e/app.ts": "harness\n", "fake/src/main.rs": "fn main() {}\n" },
@@ -357,7 +366,7 @@ const malformed: Array<[string, unknown, string]> = [
       baseBranch: "main",
       gate: { steps: [{ name: "e2e", command: "true", quick: { files: "e2e/*.ts", env: "F", fullWhen: "e2e/app.ts" } }] },
     },
-    "gate.steps[0].quick.fullWhen must be an array of path globs",
+    "gate.steps[0].quick.fullWhen must be an array of pathspecs",
   ],
   [
     "two steps with one name",

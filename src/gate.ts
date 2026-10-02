@@ -4,9 +4,9 @@
 // log directory in the main checkout.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, mkdirSync, openSync, readFileSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
-import { type Contract, type GateStep, readContract } from "./contract.ts";
+import { type Contract, type GateStep, readContract, VARIABLE } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { logDirectory, mainCheckout, tryGit, worktreeRoot } from "./git.ts";
 
@@ -15,7 +15,7 @@ const USAGE = "usage: verkstad gate [--quick]";
 const TAIL_LINES = 60;
 
 /** A step as this run runs it: under --quick, a narrowed step knows its changed files. */
-interface Planned {
+interface PlannedStep {
   step: GateStep;
   label: string;
   env: Record<string, string>;
@@ -34,7 +34,8 @@ function parseArgs(args: string[]): { quick: boolean } {
 
 /** Expands `$NAME` and `${NAME}` from the environment the Gate was started in; an unset name is empty. */
 function expand(value: string): string {
-  return value.replace(/\$\{([A-Za-z_][A-Za-z0-9_]*)\}|\$([A-Za-z_][A-Za-z0-9_]*)/g, (_, braced, bare) => process.env[braced ?? bare] ?? "");
+  const reference = new RegExp(`\\$\\{(${VARIABLE})\\}|\\$(${VARIABLE})`, "g");
+  return value.replace(reference, (_, braced, bare) => process.env[braced ?? bare] ?? "");
 }
 
 function stepEnvironment(contract: Contract): NodeJS.ProcessEnv {
@@ -61,7 +62,7 @@ function changedFiles(root: string, since: string, pathspecs: string[], deleted:
   return [...new Set(files)];
 }
 
-function plan(root: string, contract: Contract, quick: boolean): Planned[] {
+function plan(root: string, contract: Contract, quick: boolean): PlannedStep[] {
   const narrowed = quick && contract.gate.steps.some((s) => s.quick);
   let since = "";
   if (narrowed) {
@@ -72,12 +73,12 @@ function plan(root: string, contract: Contract, quick: boolean): Planned[] {
     }
     since = r.stdout.trim();
   }
-  return contract.gate.steps.map((step): Planned => {
+  return contract.gate.steps.map((step): PlannedStep => {
     if (!quick || !step.quick) return { step, label: step.name, env: {} };
-    const whole = step.quick.fullWhen.length ? changedFiles(root, since, step.quick.fullWhen, true) : [];
-    if (whole.length) {
-      const more = whole.length > 1 ? ` and ${whole.length - 1} more` : "";
-      return { step, label: `${step.name} (in full: ${whole[0]}${more} changed)`, env: {} };
+    const fullRunCauses = step.quick.fullWhen.length ? changedFiles(root, since, step.quick.fullWhen, true) : [];
+    if (fullRunCauses.length) {
+      const more = fullRunCauses.length > 1 ? ` and ${fullRunCauses.length - 1} more` : "";
+      return { step, label: `${step.name} (in full: ${fullRunCauses[0]}${more} changed)`, env: {} };
     }
     const files = changedFiles(root, since, [step.quick.files], false);
     if (files.length === 0) {
@@ -98,11 +99,11 @@ function plan(root: string, contract: Contract, quick: boolean): Planned[] {
  * in the worktree whose branch adds it to .gitignore and has not landed yet.
  */
 function checkIgnored(root: string, dir: string): void {
-  mkdirSync(dir, { recursive: true });
   const ignored = (cwd: string) => tryGit(cwd, ["check-ignore", "-q", ".claude/verkstad/"]).status === 0;
   if (!ignored(root) && !ignored(mainCheckout(root))) {
     throw new Failure(`the log directory ${dir}/ is not gitignored; add .claude/verkstad/ to the Project's .gitignore`);
   }
+  mkdirSync(dir, { recursive: true });
 }
 
 function timestamp(now: Date): string {
@@ -149,7 +150,7 @@ export function gate(args: string[]): void {
       // Checked as the step comes up, since an earlier step may create the path.
       if (p.step.unlessExists && existsSync(join(root, p.step.unlessExists))) continue;
       writeSync(log.fd, `== ${p.label}\n`);
-      const start = readFileSync(log.path).length;
+      const start = fstatSync(log.fd).size;
       const stepEnv = { ...env, ...p.env };
       // A step that runs in full never sees a narrowing left in the environment.
       if (p.step.quick && !(p.step.quick.env in p.env)) delete stepEnv[p.step.quick.env];
