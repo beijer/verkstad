@@ -31,6 +31,14 @@ Default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-huma
 Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 ```
 
+`project.md`'s pointer, which Ray's `CLAUDE.md` does not have yet:
+
+```md
+### The Contract
+
+verkstad reads `.claude/harness.json` (the Gate, the Landing mode, the Surfaces); agents read `docs/agents/project.md`. See `docs/agents/project.md`.
+```
+
 ## `issue-tracker.md`
 
 Ray's, which is the format:
@@ -165,3 +173,19 @@ If your output contradicts an existing ADR, surface it explicitly rather than si
 ````
 
 Where Ray's copy says which skills create the glossary and ADRs, and which skill a gap is noted for, the format says only that they are created when a term or decision is resolved. The glossary's format is [glossary.md](glossary.md) and the ADR's is [adr.md](adr.md).
+
+## `project.md`
+
+The prose half of the Contract ([docs/contract.md](../contract.md)): what an agent working in the Project must know that its code and `.claude/harness.json` don't say. Ray's and verkstad's are written in this shape:
+
+```md
+# <Project> as a Project
+
+The prose half of <Project>'s Contract: what an agent working on <Project> needs to know. The scripts' half is `.claude/harness.json`; this doc does not repeat it.
+
+- <A fact of this Project that an agent acts on>
+```
+
+- Each bullet is one fact of this Project: the stack in a line; how to run one test while working; that `verkstad gate --quick` runs before review and the last commit, and Landing runs the full Gate; a toolchain a shell lacks; a generated file never edited by hand and how it is regenerated; what tests and agents must never reach (a real device, a production service, the owner's config).
+- A longer one groups its bullets under `##` headings (Ray's: The stack, Testing and the Gate, References).
+- Nothing in it repeats `.claude/harness.json`; verkstad's prompts carry nothing about any one Project, so this doc is where such a fact goes.

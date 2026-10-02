@@ -2,7 +2,8 @@
 // loop and its skills use (docs/agents/triage-labels.md maps the roles to them),
 // skipping any the repo has. GitHub's label names are unique regardless of case,
 // so `Needs-Triage` counts as `needs-triage`. It prints one line per label;
-// --dry-run reads the labels and creates none.
+// --dry-run reads the labels and creates none. A label GitHub refuses is
+// reported and the rest are still tried, so one run creates all it can.
 
 import { Failure } from "./fail.ts";
 import { gh, ghJson } from "./gh.ts";
@@ -31,6 +32,7 @@ export function labels(args: string[]): void {
   const { dryRun } = parseArgs(args);
   const existing = ghJson<Array<{ name: string }>>(["label", "list", "--json", "name", "--limit", "1000"]);
   const width = Math.max(...TRIAGE_LABELS.map((l) => l.name.length)) + 1;
+  const refused: string[] = [];
   for (const label of TRIAGE_LABELS) {
     const found = existing.find((e) => e.name.toLowerCase() === label.name.toLowerCase());
     let outcome: string;
@@ -41,12 +43,14 @@ export function labels(args: string[]): void {
     } else {
       try {
         gh(["label", "create", label.name, "--description", label.description, "--color", label.color]);
+        outcome = "created";
       } catch (error) {
         if (!(error instanceof Failure)) throw error;
-        throw new Failure(`could not create ${label.name}: ${error.message}`);
+        refused.push(`could not create ${label.name}: ${error.message}`);
+        outcome = "failed";
       }
-      outcome = "created";
     }
     process.stdout.write(`${label.name.padEnd(width)} ${outcome}\n`);
   }
+  if (refused.length) throw new Failure(refused.join("; "));
 }

@@ -13,7 +13,7 @@ When it is done the Project has:
 | What | Where | Format |
 | --- | --- | --- |
 | The Contract, for the scripts | `.claude/harness.json` | [docs/contract.md](../../docs/contract.md) |
-| The Contract, for the agents | `docs/agents/project.md` | [docs/contract.md](../../docs/contract.md), and below |
+| The Contract, for the agents | `docs/agents/project.md` | [docs/formats/agent-docs.md](../../docs/formats/agent-docs.md#projectmd) |
 | The agent docs | `docs/agents/issue-tracker.md`, `triage-labels.md`, `domain.md` | [docs/formats/agent-docs.md](../../docs/formats/agent-docs.md) |
 | Pointers to them | `CLAUDE.md`, `## Agent skills` | [docs/formats/agent-docs.md](../../docs/formats/agent-docs.md#the-pointer-in-claudemd) |
 | The log directory ignored | `.gitignore`: `.claude/verkstad/` | [docs/contract.md](../../docs/contract.md#the-log-directory) |
@@ -35,11 +35,12 @@ Work at the root of the Project's main checkout. Stop and tell the owner what to
 
 - it is not a git repo, or `git status --porcelain` prints anything: setup's commit must hold only its own files;
 - `gh repo view --json nameWithOwner` does not name the GitHub repo: the repo and its `origin` come first;
+- `git ls-remote --symref origin HEAD` prints no `ref: refs/heads/<branch>` line: `origin` has no commits, and the base branch must be pushed first (`verkstad gate --quick` diffs against it, and every Ticket's worktree starts from it);
 - `verkstad help` does not run.
 
 Then find out, changing nothing:
 
-- **The base branch:** the `ref: refs/heads/<branch>` line of `git ls-remote --symref origin HEAD`; when `origin` has no commits yet, the branch checked out.
+- **The base branch:** the `<branch>` of that `ref: refs/heads/<branch>` line.
 - **What is there already:** each file in the table above, each field of `.claude/harness.json`, whether `git check-ignore -q .claude/verkstad/x` succeeds, any Verify skill in `.claude/skills/verify-*/`, and the labels: `verkstad labels --dry-run` reads them and creates none.
 - **How it builds and tests:** the lockfile names the package manager (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`); then `package.json`'s scripts, a `Makefile` or `justfile`, `Cargo.toml`, `go.mod`, `pyproject.toml`, and the README's development section.
 - **What CI runs:** the `run:` steps of each job in `.github/workflows/*.yml` that runs on push or pull request. The Gate is CI without the release build, so CI is its first source.
@@ -69,23 +70,23 @@ Run each check on what exists. A failed check is a finding for step 3.
 | `docs/agents/domain.md` | Its layout (one `CONTEXT.md`, or a `CONTEXT-MAP.md`) is the repo's. |
 | `CLAUDE.md` | It has an `## Agent skills` section. |
 | `.gitignore` | `git check-ignore -q .claude/verkstad/x` succeeds. |
-| The labels | `verkstad labels --dry-run` says `exists` for all five. |
+| The labels | `verkstad labels --dry-run` says `exists` (or `exists as <name>`, the same label in another case) for all five. |
 
 ## 3. Draft, then ask
 
 Draft each missing piece from what step 1 found:
 
 - **`baseBranch`:** step 1's base branch.
-- **The Gate** (`gate`, in [the Contract's shape](../../docs/contract.md#gate)): CI's `run:` steps in order, without the release build (packaging, publishing, deploying) and without what only a CI runner needs (checking out, installing toolchains, caches). An install step goes first with `unlessExists` (`node_modules`, `.venv`), for a fresh worktree. A slow suite whose test files a branch adds one at a time (e2e) gets `quick`. Without CI, draft it from the package scripts that check rather than ship (typecheck, lint, test, build). Every command runs from the repo root with the repo's own scripts, so that a step reads the same here as in CI.
+- **The Gate** (`gate`, in [the Contract's shape](../../docs/contract.md#gate)): CI's `run:` steps in order, without the release build (packaging, publishing, deploying) and without what only a CI runner needs (checking out, installing toolchains, caches). An install step goes first with `unlessExists` (`node_modules`, `.venv`), for a fresh worktree. A slow suite whose test files a branch adds one at a time (e2e) gets `quick`, but only when its command already reads the files from a variable (`node --test $E2E_FILES`, or a script that reads `E2E_FILES`): setup doesn't change the Project's scripts, and a `quick` its command ignores runs the whole suite. Without CI, draft it from the package scripts that check rather than ship (typecheck, lint, test, build). Every command runs from the repo root with the repo's own scripts, so that a step reads the same here as in CI.
 - **`landing`:** `"push"`.
-- **`surfaces`:** one per sign step 1 found, each a name and its globs, in the shape [docs/contract.md](../../docs/contract.md#surfaces) gives; `[]` with none.
+- **`surfaces`:** one per sign step 1 found, each a name and its globs, in the shape [docs/contract.md](../../docs/contract.md#surfaces) gives; `[]` with none. While that section gives no shape, no command reads Surfaces yet: write `[]`, and the report lists the Surfaces the owner chose, with their globs, to add once it does.
 - **`verify`:** the name of a Verify skill the repo has; left out without one.
 
-Ask the owner, with one AskUserQuestion call, the questions the repo did not settle, each with the draft as its first option, marked "(Recommended)":
+Ask the owner, with one AskUserQuestion call, the questions the repo did not settle, each with the draft as its first option, marked "(Recommended)". Each is asked only when this run writes the Contract, or when step 2 found that field missing or wrong; a field that passed its check is not asked about.
 
-- **Gate steps**, unless the Contract has a `gate` or the draft came from CI. Show the steps; offer the draft, and a smaller or larger set when the scripts suggest one.
-- **Landing mode**, unless the Contract sets `landing`: `push` (Landing pushes the rebased branch to the base branch), or `pull-request`, for a base branch that is protected; `verkstad land` refuses `pull-request` until verkstad supports it.
-- **Surfaces**, unless the Contract has `surfaces`, and even when the draft is none: a Surface left out lets a change a user can see land without a Verifier ([ADR 0004](../../docs/adr/0004-verifier-triggered-by-surface-globs.md)). Show each with its globs; offer the draft, and the draft with the doubtful ones left out. A Project with no Surfaces lands its Tickets at most `test-verified`.
+- **Gate steps**, unless the draft came from CI. Show the steps; offer the draft, and a smaller or larger set when the scripts suggest one.
+- **Landing mode:** `push` (Landing pushes the rebased branch to the base branch), or `pull-request`, for a base branch that is protected; `verkstad land` refuses `pull-request` until verkstad supports it.
+- **Surfaces**, even when the draft is none: a Surface left out lets a change a user can see land without a Verifier ([ADR 0004](../../docs/adr/0004-verifier-triggered-by-surface-globs.md)). Show each with its globs; offer the draft, and the draft with the doubtful ones left out. A Project with no Surfaces lands its Tickets at most `test-verified`.
 - **Domain layout**, only with monorepo signs: single-context or multi-context.
 
 Then show the plan: each file to write, with its content; each fix to an existing file, as a diff, with the check it fails; the labels to create. Ask once more, with AskUserQuestion, whether to go ahead or change something. When the plan is empty, say so and go to step 6.
@@ -95,30 +96,14 @@ Then show the plan: each file to write, with its content; each fix to an existin
 Only what the plan lists.
 
 - **`.claude/harness.json`:** the fields in the order `baseBranch`, `landing`, `gate`, `surfaces`, `verify`, as JSON indented by two spaces.
-- **`docs/agents/project.md`:** what an agent working here must know that the code and the scripts' half don't say, from what step 1 found. It opens:
-
-  ```md
-  # <Project> as a Project
-
-  The prose half of <Project>'s Contract: what an agent working on <Project> needs to know. The scripts' half is `.claude/harness.json`; this doc does not repeat it.
-  ```
-
-  Then short bullets, each a fact of this repo: the stack in a line; how to run one test while working; to run `verkstad gate --quick` before review and the last commit (Landing runs the full Gate); a toolchain the Gate puts on the PATH that a shell lacks; a generated file never edited by hand and how it is regenerated; what tests and agents must never reach (a real device, a production service, the owner's config). Leave out what you would have to guess; the owner adds it later.
+- **`docs/agents/project.md`:** in [its format](../../docs/formats/agent-docs.md#projectmd), with the facts step 1 found. Leave out what you would have to guess; the owner adds it later.
 - **The agent docs:** each as the block in [agent-docs.md](../../docs/formats/agent-docs.md) gives it, with this repo's name and three changes: the issue tracker names `verkstad:triage` where the block names the triage skill by a slash name; it ends with the "Specs and blockers" section that format adds; `domain.md` stays generic about which skill creates the glossary and the ADRs.
-- **`CLAUDE.md`** (created when missing; verkstad is for Claude Code, which reads it): when it has no `## Agent skills` section, add the format's, with one `###` per agent doc and a last one for the Contract:
-
-  ```md
-  ### The Contract
-
-  verkstad reads `.claude/harness.json` (the Gate, the Landing mode, the Surfaces); agents read `docs/agents/project.md`. See `docs/agents/project.md`.
-  ```
-
-  When the section is there, add a `###` only for a doc this run wrote that it does not point at yet.
-- **`.gitignore`** (created when missing): append `# verkstad's log directory` and `.claude/verkstad/`.
+- **`CLAUDE.md`** (created when missing; verkstad is for Claude Code, which reads it): when it has no `## Agent skills` section, add [the format's](../../docs/formats/agent-docs.md#the-pointer-in-claudemd), with one `###` per agent doc, `project.md`'s last. When the section is there, add a `###` only for a doc this run wrote that it does not point at yet.
+- **`.gitignore`** (created when missing): append `.claude/verkstad/`.
 
 ## 5. Create the labels
 
-Run `verkstad labels`. It prints one line per label, `created` or `exists`. When GitHub refuses one, say which and why, and go on: the Frontier works without it, but the first Park would fail.
+Run `verkstad labels`. It prints one line per label, `created`, `exists` or `failed`, and tries every label even when GitHub refuses one. For a `failed` one, say which and why (its error is on stderr), and go on: the Frontier works without it, but the first Park would fail.
 
 ## 6. Prove it
 

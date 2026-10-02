@@ -85,7 +85,7 @@ test("--dry-run says which labels it would create and creates none", (t) => {
   assert.deepEqual(p.calls(), [["label", "list", "--json", "name", "--limit", "1000"]]);
 });
 
-test("a label GitHub refuses to create fails naming it, after the ones before it were created", (t) => {
+test("a label GitHub refuses to create is named, and the others are still created", (t) => {
   const p = project(t, {
     labels: githubDefaults,
     failures: [{ command: "label create ready-for-agent", stderr: "HTTP 403: Resource not accessible by integration" }],
@@ -94,11 +94,24 @@ test("a label GitHub refuses to create fails naming it, after the ones before it
   const r = p.run("labels");
 
   assert.equal(r.code, 1);
-  assert.equal(r.stdout, ["needs-triage     created", "needs-info       created", ""].join("\n"));
-  assert.match(r.stderr, /^verkstad labels: could not create ready-for-agent: gh label create failed: HTTP 403: Resource not accessible by integration\n$/);
+  assert.equal(
+    r.stdout,
+    [
+      "needs-triage     created",
+      "needs-info       created",
+      "ready-for-agent  failed",
+      "ready-for-human  created",
+      "wontfix          exists",
+      "",
+    ].join("\n"),
+  );
+  assert.equal(
+    r.stderr,
+    "verkstad labels: could not create ready-for-agent: gh label create failed: HTTP 403: Resource not accessible by integration\n",
+  );
   assert.deepEqual(
     p.state().labels.map((l) => l.name),
-    ["bug", "question", "wontfix", "needs-triage", "needs-info"],
+    ["bug", "question", "wontfix", "needs-triage", "needs-info", "ready-for-human"],
   );
 });
 
