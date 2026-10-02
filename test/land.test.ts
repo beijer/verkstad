@@ -621,6 +621,28 @@ test("a conflict resolution that changes the patch voids the Verdict: land exits
   assertStoppedByVerdict(p, wt, base);
 });
 
+test("a Ticket touching no Surface lands whatever its Verdict says, and closes test-verified with that Verdict shown", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+  });
+  const wt = ticket(p, 7, { "src/core/time.ts": "time\n" });
+  recordVerdict(p, 7, wt, "failed");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  const evidence = join(p.dir, ".claude", "verkstad", "evidence-7");
+  const body =
+    `Landed on main in ${sha}.\n\n${REPORT}\n` +
+    `Verification state: test-verified. Surfaces: none. The Verifier's Verdict for this patch was failed. Evidence: \`${evidence}\`.\n\n` +
+    "- The panel shows the job's time: Opened the panel: it read 3 min 12 s.\n" +
+    "- Export saves an SVG: Clicked Export; out.svg opened with both layers.\n";
+  assert.deepEqual(p.calls(), [["issue", "close", "7", "--comment", body]]);
+  assert.equal(originLog(p)[0], "Adds src/core/time.ts. Refs #7");
+});
+
 test("Landing refuses a Contract whose surfaces are malformed, touching nothing", (t) => {
   const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "touch ../gate-ran" }], { surfaces: "src/ui" }) });
   const wt = ticket(p, 7, { "src/ui/panel.ts": "panel\n" });

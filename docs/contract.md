@@ -120,7 +120,7 @@ Verification state: live-verified. Surfaces: ui. Evidence: `/home/me/code/app/.c
 - The panel shows the job's time: Opened the panel: it read 3 min 12 s.
 ```
 
-Without one, which only a Ticket touching no Surface lands with, it is `Verification state: test-verified. Surfaces: none.`: its Gate is its proof.
+Without one, which only a Ticket touching no Surface lands with, it is `Verification state: test-verified. Surfaces: none.`: its tests, run by the Gate, are what proved it. Only a `live-verified` Verdict makes a Ticket more than `test-verified`: a Ticket touching no Surface lands whatever its Verdict says, and closes `test-verified`, with `The Verifier's Verdict for this patch was <state>.`, its Evidence and its criteria after the Surfaces.
 
 It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Every failure prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error` and a failed Verdict check, whose worktree the Verifier Walks next.
 

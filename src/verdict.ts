@@ -10,7 +10,7 @@
 
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readContract, readSurfaces } from "./contract.ts";
+import { isObject, readContract, readSurfaces } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { ensureLogDirectory, git, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 import { branchPoint, describeSurfaces, type TouchedSurface, touchedSurfaces } from "./surfaces.ts";
@@ -78,6 +78,8 @@ export function patchId(root: string, since: string): string | null {
     "--no-renames",
     "--binary",
     "--diff-algorithm=myers",
+    "--indent-heuristic",
+    "--inter-hunk-context=0",
     "-U3",
     "--src-prefix=a/",
     "--dst-prefix=b/",
@@ -88,10 +90,6 @@ export function patchId(root: string, since: string): string | null {
   const r = tryGit(root, ["patch-id", "--stable"], diff);
   if (r.status !== 0) throw new Failure(`git patch-id failed: ${r.stderr.trim()}`);
   return r.stdout.split(" ")[0] || null;
-}
-
-function isObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function nonEmpty(value: unknown): value is string {
@@ -146,8 +144,9 @@ export function checkVerdict(root: string, n: number, base: string): VerdictChec
   const touched = touchedSurfaces(root, readSurfaces(root), since);
   const path = verdictPath(logDirectory(root), n);
   const read = readVerdict(path, n);
-  const patch = read !== null && typeof read !== "string" ? patchId(root, since) : null;
-  const verdict = read !== null && typeof read !== "string" && read.patchId === patch ? read : null;
+  const recorded = read !== null && typeof read !== "string" ? read : null;
+  const patch = recorded ? patchId(root, since) : null;
+  const verdict = recorded?.patchId === patch ? recorded : null;
 
   if (touched.length === 0) return { touched, verdict, passed: `#${n} touches no Surface, so it needs no Verdict.` };
   const touches = `#${n} touches ${describeSurfaces(touched)}`;
@@ -167,14 +166,20 @@ export function checkVerdict(root: string, n: number, base: string): VerdictChec
   return { touched, verdict, passed: `${touches}; its Verdict is live-verified for this patch.` };
 }
 
-/** The lines Landing's closing comment ends with: how far the Ticket was proven, and the Verdict if it has one. */
+/**
+ * The lines Landing's closing comment ends with: how far the landed Ticket was proven, and its Verdict if it
+ * has one for the landed patch. Only a `live-verified` Verdict makes it more than `test-verified`; a Ticket
+ * touching no Surface lands whatever its Verdict says, and the comment shows that Verdict as it was.
+ */
 export function describeVerification(check: VerdictCheck): string {
   const surfaces = check.touched.length ? check.touched.map((s) => s.name).join(", ") : "none";
-  if (check.verdict === null) return `Verification state: test-verified. Surfaces: ${surfaces}.\n`;
   const v = check.verdict;
+  if (v === null) return `Verification state: test-verified. Surfaces: ${surfaces}.\n`;
   const oneLine = (text: string) => text.trim().replace(/\s*\n\s*/g, " ");
   const criteria = v.criteria.map((c) => `- ${oneLine(c.criterion)}: ${oneLine(c.seen)}\n`).join("");
-  return `Verification state: ${v.state}. Surfaces: ${surfaces}. Evidence: \`${v.evidence}\`.\n\n${criteria}`;
+  const evidence = `Evidence: \`${v.evidence}\`.`;
+  if (v.state === "live-verified") return `Verification state: live-verified. Surfaces: ${surfaces}. ${evidence}\n\n${criteria}`;
+  return `Verification state: test-verified. Surfaces: ${surfaces}. The Verifier's Verdict for this patch was ${v.state}. ${evidence}\n\n${criteria}`;
 }
 
 function ticketNumber(value: string | undefined): number {

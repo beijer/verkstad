@@ -44,7 +44,7 @@ function malformed(problem: string): Failure {
   return new Failure(`${CONTRACT_PATH}: ${problem}`);
 }
 
-function isObject(value: unknown): value is JsonObject {
+export function isObject(value: unknown): value is JsonObject {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 

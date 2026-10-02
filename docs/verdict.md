@@ -29,7 +29,7 @@ In the log directory, `<main checkout>/.claude/verkstad/` (docs/contract.md), ou
 
 - `ticket`: the Ticket's number.
 - `state`: the Verification state: `live-verified` (seen working on its Surface), `test-verified` (proven by its tests only), `blocked` (needs a human, e.g. real hardware) or `failed`.
-- `patchId`: the patch-id of the diff the Verdict was given for: the branch's committed changes since it left `origin/<baseBranch>`, as `git diff $(git merge-base origin/<baseBranch> HEAD) HEAD | git patch-id --stable` computes it. (`verkstad` spells out the diff's options, so that a user's diff configuration cannot change it.)
+- `patchId`: the patch-id of the diff the Verdict was given for: the branch's committed changes since it left `origin/<baseBranch>`, `git diff $(git merge-base origin/<baseBranch> HEAD) HEAD | git patch-id --stable`. `verkstad` spells out the diff's options, so that a user's diff configuration cannot give one patch two ids, and adds `--binary`, so that a change to a binary file changes the id; for a branch without binary files, under git's default configuration, the plain command above gives the same id.
 - `criteria`: one entry per acceptance criterion, in the Ticket's order: the `criterion` and what was `seen` when it was Walked. For a `failed` or `blocked` Verdict, what was seen says what went wrong or what a human must check.
 - `evidence`: the Evidence directory, an absolute path.
 - `recordedAt`: when the Verdict was recorded, an ISO 8601 time in UTC.
@@ -60,4 +60,6 @@ On a pass it prints why and exits 0. On a failure it prints why on stderr and a 
 | `verdict-void` | The branch touches a Surface and its Verdict was given for another patch. |
 | `verdict-not-live` | The branch touches a Surface and its Verdict for this patch is `test-verified`, `blocked` or `failed`. |
 
-Landing runs the same check after its Gate and fails with the same reason (docs/contract.md), keeping the rebased branch in its worktree. A Landing that passes it closes the Ticket with the Verdict's state, its Evidence directory and a line per criterion after the report; a Ticket that touches no Surface and has no Verdict for its patch closes as `test-verified`.
+Landing runs the same check after its Gate and fails with the same reason (docs/contract.md), keeping the rebased branch in its worktree. A Landing that passes it closes the Ticket with its Verification state after the report, and the Verdict for the landed patch, if there is one, with its Evidence directory and a line per criterion. Only a `live-verified` Verdict makes it more than `test-verified`.
+
+The check knows only the Surfaces whose globs the diff matches. A Surface the implementer's report names, which the globs miss, is the orchestrator's to add (ADR 0004): it runs the Verifier for it, but `land` does not hold the Ticket to that Verdict.
