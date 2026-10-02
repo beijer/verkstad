@@ -90,6 +90,7 @@ const DENIED = "Permission for this action was denied by the Claude Code auto mo
 
 /** A Run with two implementers (one Resumed after a red Gate at Landing, one Parked) and a nested reviewer. */
 function seedRun(p: Project): void {
+  const failedLog = join(realpathSync(p.dir), ".claude", "verkstad", "gate-agent-a1-20261001-214400.log");
   writeSession(p, "old-run", [prompt(0, ORCHESTRATE), say(1, "m0", "Nothing is ready.")]);
 
   const agents: Agent[] = [
@@ -102,7 +103,7 @@ function seedRun(p: Project): void {
         call(102, "m1", "t1", "Bash", { command: "git -C /elsewhere status\ngit log" }, 30_000),
         result(103, "t1", ISOLATED, true),
         call(104, "m2", "t2", "Bash", { command: "verkstad gate --quick" }, 40_600),
-        result(110, "t2", "ok  typecheck\nverkstad gate: unit tests failed (exit 1). The end of its output:\nexpected 2\nFull log: /x/gate-a1.log", true),
+        result(110, "t2", `ok  typecheck\nverkstad gate: unit tests failed (exit 1). The end of its output:\nexpected 2\nFull log: ${failedLog}`, true),
         call(111, "m3", "t3", "SubagentHandback", { message: "status: done\nworktree: /p/.claude/worktrees/agent-a1\ntier: too low" }, 41_000),
         say(112, "m4", "I've handed my report back.", 41_000),
       ],
@@ -229,7 +230,7 @@ test("run-log digests the last session that invoked verkstad:orchestrate: its ow
       "  verdict-9.json  failed",
       "    Export opens a dialog: It opened.",
       "    Export saves an SVG: Clicked Export; nothing was saved.",
-      "  gate logs: 2",
+      "  gate logs: 2; failed: gate-agent-a1-20261001-214400.log",
       "",
     ].join("\n"),
   );
@@ -239,6 +240,7 @@ test("run-log --session digests the session the owner names, even one that never
   const p = project(t);
   seedRun(p);
   writeSession(p, "legacy-1234", [
+    prompt(300, "run the open Tickets"),
     prompt(300, "<command-message>orchestrate-issues</command-message>\n<command-name>/orchestrate-issues</command-name>"),
     prompt(301, "go ahead"),
     say(302, "m1", "Done."),
@@ -250,9 +252,69 @@ test("run-log --session digests the session the owner names, even one that never
   assert.equal(r.code, 0);
   const lines = r.stdout.split("\n");
   assert.equal(lines[0], "Run legacy-1234, named by --session, from 2026-10-02 01:00 to 2026-10-02 01:02 UTC");
-  assert.ok(r.stdout.includes("Owner prompts (1):\n  2026-10-02 01:01  go ahead\n"), r.stdout);
+  assert.ok(r.stdout.includes("Owner prompts (2):\n  2026-10-02 01:00  run the open Tickets\n  2026-10-02 01:01  go ahead\n"), r.stdout);
   assert.ok(r.stdout.includes("Agents (0)\n"), r.stdout);
   assert.ok(r.stdout.includes("Log directory, written during the Run (0 entries)\n"), r.stdout);
+});
+
+test("run-log --session starts a named session's Run at its last verkstad:orchestrate, through the Skill tool too", (t) => {
+  const p = project(t);
+  writeSession(p, "mixed", [
+    prompt(500, "fix the README first"),
+    say(501, "m1", "Fixed."),
+    call(510, "m2", "s1", "Skill", { skill: "verkstad:orchestrate" }),
+    prompt(511, "go"),
+    say(512, "m3", "Nothing is ready."),
+  ]);
+
+  const r = p.run("run-log", "--session", "mixed");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^Run mixed, named by --session, from 2026-10-02 04:30 to 2026-10-02 04:32 UTC\n/);
+  assert.ok(r.stdout.includes("Owner prompts (1):\n  2026-10-02 04:31  go\n"), r.stdout);
+  assert.ok(r.stdout.includes("Orchestrator: 2 turns\n"), r.stdout);
+});
+
+test("run-log ends the Run where its session invoked verkstad:reflect, and marks an agent whose task was killed", (t) => {
+  const p = project(t);
+  const killed = "<task-notification>\n<task-id>b1</task-id>\n<status>killed</status>\n</task-notification>";
+  writeSession(
+    p,
+    "run-then-reflect",
+    [
+      call(600, "m1", "s1", "Skill", { skill: "verkstad:orchestrate" }),
+      call(601, "m2", "o1", "Agent", { description: "Ticket #3 parser", prompt: "You are implementing Ticket #3" }),
+      { type: "queue-operation", operation: "enqueue", timestamp: at(605), content: killed },
+      call(606, "m3", "o2", "Bash", { command: 'grep -n "verkstad gate" docs/contract.md' }),
+      result(606, "o2", "Exit code 1", true),
+      prompt(610, "<command-message>verkstad:reflect</command-message>\n<command-name>/verkstad:reflect</command-name>"),
+      call(611, "m4", "o3", "Bash", { command: "verkstad run-log" }),
+      result(611, "o3", "Exit code 1\nverkstad run-log: no Run found", true),
+      prompt(612, "apply the first one"),
+    ],
+    [
+      {
+        id: "b1",
+        meta: { agentType: "ticket-light", description: "Ticket #3 parser" },
+        entries: [prompt(601, "You are implementing Ticket #3"), call(602, "m1", "t1", "Bash", { command: "verkstad gate --quick" }, 9_000), result(604, "t1", "Quick gate passed.")],
+      },
+      { id: "c1", meta: { agentType: "Explore", description: "Find the Run's errors" }, entries: [prompt(611, "Find errors"), say(612, "m1", "None.")] },
+    ],
+  );
+  logFile(p, "report-3.md", "status: partial\ntier: too low\n", 606);
+  logFile(p, "proposals.md", "written while reflecting", 640);
+
+  const r = p.run("run-log");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(
+    r.stdout.split("Agents' transcripts")[0].split("\n")[0],
+    "Run run-then-reflect, invoked as Skill verkstad:orchestrate, from 2026-10-02 06:00 to 2026-10-02 06:06 UTC",
+  );
+  assert.ok(r.stdout.includes("Owner prompts (0)\n\nOrchestrator: 3 turns, 1 error\n  Dispatched: 1 agent\n\n"), r.stdout);
+  assert.ok(r.stdout.includes('Agents (1):\n  b1  ticket-light  #3  1 turn, context 9k, gate 1, killed  "Ticket #3 parser"\n'), r.stdout);
+  assert.ok(r.stdout.includes("Tool errors (1), by kind:\n  1x: exit N from grep\n"), r.stdout);
+  assert.ok(r.stdout.endsWith("Log directory, written during the Run (1 entry):\n  report-3.md  status partial, tier too low\n"), r.stdout);
 });
 
 test("run-log --log-dir reads the Run's files from another directory", (t) => {
@@ -317,4 +379,13 @@ test("run-log refuses an unknown argument", (t) => {
 
   assert.equal(r.code, 2);
   assert.equal(r.stderr, "verkstad run-log: unknown argument '--verbose'; usage: verkstad run-log [--session <id>] [--log-dir <dir>]\n");
+});
+
+test("run-log refuses --session without a value", (t) => {
+  const p = project(t);
+
+  const r = p.run("run-log", "--session", "--log-dir", "x");
+
+  assert.equal(r.code, 2);
+  assert.equal(r.stderr, "verkstad run-log: --session needs a value; usage: verkstad run-log [--session <id>] [--log-dir <dir>]\n");
 });

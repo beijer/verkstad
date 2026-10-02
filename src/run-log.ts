@@ -17,7 +17,8 @@ import { logDirectory, mainCheckout } from "./git.ts";
 
 const USAGE = "usage: verkstad run-log [--session <id>] [--log-dir <dir>]";
 const SKILL = "verkstad:orchestrate";
-const COMMAND = `<command-name>/${SKILL}</command-name>`;
+/** Reflecting in the Run's own session ends the Run. */
+const REFLECT = "verkstad:reflect";
 /** How long after the Run's last entry a file it wrote may still have been written. */
 const SLACK_MS = 60_000;
 const EXAMPLES_PER_KIND = 2;
@@ -51,6 +52,8 @@ interface Transcript {
   errors: ToolError[];
   gateRuns: number;
   gateFailures: number;
+  /** The names of the Gate logs a failed Gate named. */
+  failedGateLogs: string[];
   dispatches: number[];
   dispatchCount: number;
   landings: number;
@@ -67,9 +70,12 @@ const num = (v: unknown): number => (typeof v === "number" ? v : 0);
 const obj = (v: unknown): Json => (isObject(v) ? v : {});
 const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
-function readEntries(path: string): Entry[] {
+/** `name` without its extension `ext`. */
+const stem = (name: string, ext: string): string => (name.endsWith(ext) ? name.slice(0, -ext.length) : name);
+
+function readEntries(path: string, text = readFileSync(path, "utf8")): Entry[] {
   const entries: Entry[] = [];
-  readFileSync(path, "utf8")
+  text
     .split("\n")
     .forEach((text, i) => {
       if (!text.trim()) return;
@@ -109,12 +115,12 @@ function resultText(block: Json): string {
     .join("\n");
 }
 
-/** When this entry invoked verkstad:orchestrate: as the owner's slash command, or through the Skill tool. */
-function invokes(json: Json): string | undefined {
+/** How this entry invoked `skill`, as the owner's slash command or through the Skill tool; undefined when it did not. */
+function invocationOf(json: Json, skill: string): string | undefined {
   if (json.isSidechain === true) return undefined;
-  if (json.type === "user" && messageText(json).includes(COMMAND)) return `/${SKILL}`;
-  if (json.type === "assistant" && blocks(json).some((b) => b.type === "tool_use" && b.name === "Skill" && obj(b.input).skill === SKILL)) {
-    return `Skill ${SKILL}`;
+  if (json.type === "user" && messageText(json).includes(`<command-name>/${skill}</command-name>`)) return `/${skill}`;
+  if (json.type === "assistant" && blocks(json).some((b) => b.type === "tool_use" && b.name === "Skill" && obj(b.input).skill === skill)) {
+    return `Skill ${skill}`;
   }
   return undefined;
 }
@@ -147,13 +153,30 @@ function clip(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
 
-/** The program a shell command ran: the first word of its first part that is not a `cd` or an assignment. */
+/** The simple commands of a shell command line, each as its words, without leading assignments, and `cd`s left out. */
+function simpleCommands(command: string): string[][] {
+  return command
+    .split(/\n|&&|\|\||;|\|/)
+    .map((part) => {
+      const words = part.trim().split(/\s+/).filter(Boolean);
+      while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+      return words;
+    })
+    .filter((words) => words.length && words[0] !== "cd");
+}
+
+/** The program a shell command ran: the first word of its first simple command. */
 function program(command: string): string {
-  for (const part of command.split("\n")[0].split(/&&|\|\||;|\|/)) {
-    const words = part.trim().split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
-    if (words.length && words[0] !== "cd") return words[0];
+  return simpleCommands(command.split("\n")[0])[0]?.[0] ?? "?";
+}
+
+/** The arguments of the first `verkstad <subcommand>` (or `<subcommand>.sh` script) the command line runs. */
+function verkstadCall(command: string, subcommand: string): string[] | undefined {
+  for (const [first, ...rest] of simpleCommands(command)) {
+    if (/(^|\/)verkstad$/.test(first) && rest[0] === subcommand) return rest.slice(1);
+    if (new RegExp(`(^|/)${subcommand}\\.sh$`).test(first)) return rest;
   }
-  return "?";
+  return undefined;
 }
 
 /** What kind of error a tool result is, the same for every occurrence: paths, ids and numbers taken out. */
@@ -169,11 +192,10 @@ function errorKind(text: string, command: string): string {
   return clip(line, 120);
 }
 
-const GATE = /\bverkstad gate\b|\bgate\.sh\b/;
-const LAND = /\b(?:verkstad land|land\.sh)\s+(--park\s+)?(\d+)/;
 const DENIAL = /permission[^\n]*denied|denied by|doesn't want to proceed|rejected by the user/i;
 
-function readTranscript(path: string, agent: string, from: number): Transcript {
+/** Reads what the transcript at `path` says between `from` and `until`. */
+function readTranscript(path: string, agent: string, from: number, until: number): Transcript {
   const file = basename(path);
   const t: Transcript = {
     file,
@@ -185,6 +207,7 @@ function readTranscript(path: string, agent: string, from: number): Transcript {
     errors: [],
     gateRuns: 0,
     gateFailures: 0,
+    failedGateLogs: [],
     dispatches: [],
     dispatchCount: 0,
     landings: 0,
@@ -200,7 +223,7 @@ function readTranscript(path: string, agent: string, from: number): Transcript {
   let lastText = "";
   for (const e of readEntries(path)) {
     const at = time(e);
-    if (at && at < from) continue;
+    if (at && (at < from || at >= until)) continue;
     const json = e.json;
     if (at) {
       t.first = Math.min(t.first, at);
@@ -224,29 +247,35 @@ function readTranscript(path: string, agent: string, from: number): Transcript {
           const n = ticketIn(str(input.description), str(input.prompt));
           if (n !== undefined) t.dispatches.push(n);
         }
-        if (name === "Bash" && GATE.test(str(input.command))) t.gateRuns++;
+        if (name === "Bash" && verkstadCall(str(input.command), "gate")) t.gateRuns++;
       }
       continue;
     }
-    if (json.type !== "user") continue;
-    if (!t.firstPrompt) t.firstPrompt = messageText(json);
-    if (isOwnerPrompt(json)) t.ownerPrompts.push({ at, text: messageText(json).trim() });
-    const text = messageText(json);
-    if (str(obj(json.origin).kind) === "task-notification" || text.startsWith("<task-notification>")) {
+    // A task's notification comes as a user entry, or only as a queued one.
+    const text = json.type === "user" ? messageText(json) : json.type === "queue-operation" ? str(json.content) : "";
+    if (text.startsWith("<task-notification>")) {
       const status = /<status>([^<]+)<\/status>/.exec(text)?.[1] ?? "";
       for (const m of text.matchAll(/<task-id>([^<]+)<\/task-id>/g)) t.notifications.push({ taskId: m[1], status });
     }
+    if (json.type !== "user") continue;
+    if (!t.firstPrompt) t.firstPrompt = text;
+    if (isOwnerPrompt(json)) t.ownerPrompts.push({ at, text: text.trim() });
     for (const b of blocks(json)) {
       if (b.type !== "tool_result") continue;
       const call = calls.get(str(b.tool_use_id)) ?? { name: "", input: {} };
       const output = resultText(b);
       const command = str(call.input.command);
       const where = `${file}:${e.line}`;
-      if (call.name === "Bash" && GATE.test(command) && (b.is_error === true || /\bgate\b[^\n]*\bfailed\b/i.test(output))) t.gateFailures++;
-      const land = call.name === "Bash" ? LAND.exec(command) : null;
-      if (land) {
-        const ticket = Number(land[2]);
-        if (land[1]) t.parks.push(ticket);
+      if (call.name === "Bash" && verkstadCall(command, "gate") && (b.is_error === true || /\bgate\b[^\n]*\bfailed\b/i.test(output))) {
+        t.gateFailures++;
+        const log = /Full log: (\S+)/.exec(output)?.[1];
+        if (log) t.failedGateLogs.push(basename(log));
+      }
+      const land = call.name === "Bash" ? verkstadCall(command, "land") : undefined;
+      const park = land?.[0] === "--park";
+      const ticket = Number(land?.[park ? 1 : 0]);
+      if (land && Number.isInteger(ticket)) {
+        if (park) t.parks.push(ticket);
         else {
           t.landings++;
           const reason = /^reason: ([a-z-]+)\s*$/m.exec(output)?.[1];
@@ -294,7 +323,7 @@ function sessionsIn(dirs: string[]): Array<{ id: string; path: string }> {
   return dirs.flatMap((dir) =>
     readdirSync(dir)
       .filter((f) => f.endsWith(".jsonl"))
-      .map((f) => ({ id: f.slice(0, -".jsonl".length), path: join(dir, f) })),
+      .map((f) => ({ id: stem(f, ".jsonl"), path: join(dir, f) })),
   );
 }
 
@@ -303,7 +332,25 @@ interface Run {
   path: string;
   /** How the Run was found: the invocation, or `--session`. */
   how: string;
+  /** The Run's window: from its invocation (or its session's start) until the session invoked verkstad:reflect, if it did. */
   start: number;
+  until: number;
+}
+
+/** When a session read as `entries` last invoked verkstad:orchestrate, and how; undefined when it never did. */
+function lastInvocation(entries: Entry[]): { at: number; how: string } | undefined {
+  let found: { at: number; how: string } | undefined;
+  for (const e of entries) {
+    const how = invocationOf(e.json, SKILL);
+    if (how) found = { at: time(e), how };
+  }
+  return found;
+}
+
+/** When the session first invoked verkstad:reflect after `start`, which ends the Run; Infinity when it did not. */
+function reflectedAt(entries: Entry[], start: number): number {
+  const e = entries.find((e) => time(e) > start && invocationOf(e.json, REFLECT));
+  return e ? time(e) : Infinity;
 }
 
 function findRun(main: string, session: string | undefined): Run {
@@ -318,19 +365,23 @@ function findRun(main: string, session: string | undefined): Run {
       throw new Failure(`--session ${session} matches more than one session: ${matches.map((s) => s.id).sort().join(", ")}`);
     }
     const [s] = matches;
-    const start = readEntries(s.path).map(time).find((t) => t > 0) ?? 0;
-    return { ...s, how: "named by --session", start };
+    const entries = readEntries(s.path);
+    const start = lastInvocation(entries)?.at ?? entries.map(time).find((t) => t > 0) ?? 0;
+    return { ...s, how: "named by --session", start, until: reflectedAt(entries, start) };
   }
-  let found: Run | undefined;
+  let found: (Run & { entries: Entry[] }) | undefined;
   for (const s of sessions) {
-    if (!readFileSync(s.path, "utf8").includes(SKILL)) continue;
-    for (const e of readEntries(s.path)) {
-      const how = invokes(e.json);
-      if (how && (!found || time(e) > found.start)) found = { ...s, how: `invoked as ${how}`, start: time(e) };
+    const text = readFileSync(s.path, "utf8");
+    if (!text.includes(SKILL)) continue;
+    const entries = readEntries(s.path, text);
+    const invocation = lastInvocation(entries);
+    if (invocation && (!found || invocation.at > found.start)) {
+      found = { ...s, how: `invoked as ${invocation.how}`, start: invocation.at, until: Infinity, entries };
     }
   }
   if (!found) throw new Failure(`no Run found: no session in ${where} invoked ${SKILL}; name one with --session <id>`);
-  return found;
+  const { entries, ...run } = found;
+  return { ...run, until: reflectedAt(entries, run.start) };
 }
 
 interface Agent {
@@ -341,12 +392,12 @@ interface Agent {
   transcript: Transcript;
 }
 
-function readAgents(dir: string, from: number): Agent[] {
+function readAgents(dir: string, from: number, until: number): Agent[] {
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
     .filter((f) => f.startsWith("agent-") && f.endsWith(".jsonl"))
     .map((f) => {
-      const id = f.slice("agent-".length, -".jsonl".length);
+      const id = stem(f, ".jsonl").slice("agent-".length);
       const metaPath = join(dir, `agent-${id}.meta.json`);
       let meta: Json = {};
       try {
@@ -359,7 +410,7 @@ function readAgents(dir: string, from: number): Agent[] {
         type: str(meta.agentType) || "?",
         description: str(meta.description),
         parent: str(meta.parentAgentId),
-        transcript: readTranscript(join(dir, f), id, from),
+        transcript: readTranscript(join(dir, f), id, from, until),
       };
     })
     .filter((a) => a.transcript.last > 0)
@@ -420,7 +471,7 @@ function firstLine(text: string): string {
 }
 
 /** The log directory's entries written during the Run, each with what it says in a line or two. */
-function logLines(dir: string, from: number, to: number): string[] {
+function logLines(dir: string, from: number, to: number, failedGateLogs: Set<string>): string[] {
   if (!existsSync(dir)) return ["Log directory, written during the Run (0 entries)"];
   const names = readdirSync(dir)
     .filter((name) => {
@@ -446,8 +497,9 @@ function logLines(dir: string, from: number, to: number): string[] {
     if (state === "live-verified") continue;
     for (const c of arr(verdict.criteria).map(obj)) lines.push(`    ${clip(`${str(c.criterion)}: ${str(c.seen).replace(/\s+/g, " ")}`, 160)}`);
   }
-  const gates = of(/^gate-.*\.log$/).length;
-  if (gates) lines.push(`  gate logs: ${gates}`);
+  const gates = of(/^gate-.*\.log$/);
+  const failed = gates.filter((name) => failedGateLogs.has(name));
+  if (gates.length) lines.push(`  gate logs: ${gates.length}${failed.length ? `; failed: ${failed.join(", ")}` : ""}`);
   const evidence = of(/^evidence-\d+$/).length;
   if (evidence) lines.push(`  evidence directories: ${evidence}`);
   const shown = /^((report|conflict|verifier|park)-\d+\.md|verdict-\d+\.json|gate-.*\.log|evidence-\d+)$/;
@@ -466,7 +518,8 @@ export function runLog(args: string[]): void {
   let logDir: string | undefined;
   for (let i = 0; i < args.length; i++) {
     const value = args[i + 1];
-    if ((args[i] === "--session" || args[i] === "--log-dir") && value !== undefined && !value.startsWith("--")) {
+    if (args[i] === "--session" || args[i] === "--log-dir") {
+      if (value === undefined || value.startsWith("--")) throw new Failure(`${args[i]} needs a value; ${USAGE}`, 2);
       if (args[i] === "--session") session = value;
       else logDir = value;
       i++;
@@ -479,9 +532,9 @@ export function runLog(args: string[]): void {
   const main = mainCheckout(cwd);
   const run = findRun(main, session);
   const dir = logDir ?? logDirectory(cwd);
-  const orchestrator = readTranscript(run.path, "orchestrator", run.start);
-  const agentsDir = join(run.path.slice(0, -".jsonl".length), "subagents");
-  const agents = readAgents(agentsDir, run.start);
+  const orchestrator = readTranscript(run.path, "orchestrator", run.start, run.until);
+  const agentsDir = join(stem(run.path, ".jsonl"), "subagents");
+  const agents = readAgents(agentsDir, run.start, run.until);
   const end = Math.max(orchestrator.last, ...agents.map((a) => a.transcript.last));
 
   const out: string[] = [
@@ -492,7 +545,7 @@ export function runLog(args: string[]): void {
     "",
   ];
 
-  const prompts = orchestrator.ownerPrompts.filter((p) => p.at > run.start || !p.at);
+  const prompts = orchestrator.ownerPrompts.filter((p) => p.at >= run.start || !p.at);
   out.push(`Owner prompts (${prompts.length})${prompts.length ? ":" : ""}`);
   for (const p of prompts) out.push(`  ${utc(p.at)}  ${clip(p.text.replace(/\s+/g, " "), 200)}`);
   out.push("");
@@ -523,6 +576,6 @@ export function runLog(args: string[]): void {
   const errors = [...orchestrator.errors, ...agents.flatMap((a) => a.transcript.errors)];
   if (errors.length) out.push(`Tool errors (${errors.length}), by kind:`, ...errorKinds(errors), "");
 
-  out.push(...logLines(dir, run.start, end));
+  out.push(...logLines(dir, run.start, end, new Set([orchestrator, ...agents.map((a) => a.transcript)].flatMap((t) => t.failedGateLogs))));
   process.stdout.write(out.join("\n") + "\n");
 }
