@@ -1,0 +1,3 @@
+# A Verdict holds while the patch-id is unchanged
+
+Landing rebases a Ticket's branch onto the latest base branch, which changes every commit's SHA, so a Verdict tied to a SHA would never survive to Landing. A Verdict records the `git patch-id` of the diff it was given for, and Landing accepts it only if the rebased diff has the same patch-id. A clean rebase keeps the Verdict; a conflict whose resolution changed the patch voids it, and the Ticket is verified again. We rejected trusting every Verdict after a rebase, which would let a conflict that broke the feature land unseen, and re-verifying after every rebase, which costs a Verifier run per Landing.

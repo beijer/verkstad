@@ -1,0 +1,3 @@
+# Borrowed skills are reached only through verkstad's names
+
+verkstad starts on other people's skills (mattpocock-skills' tdd, code review, specs and tickets) but means to replace them with its own over time. So every skill the loop uses has a verkstad name (`verkstad:tdd`, `verkstad:review`, …), and a Borrowed skill is only a few lines saying which skill to follow. Prompts, agents and other skills name the verkstad skill, never the borrowed one. Replacing a Borrowed skill is then a one-file change that nothing calling it notices. We rejected naming the other plugin's skills directly, which would mean hunting down every reference the day we leave.
