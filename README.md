@@ -6,6 +6,7 @@ Work in progress. Ray (`beijer/ray`) is the first Project to use it.
 
 - [CONTEXT.md](CONTEXT.md): the words verkstad uses and what each means.
 - [docs/adr/](docs/adr/): the decisions that shape it, and why.
+- [docs/formats/](docs/formats/): the formats a Project's glossary, ADRs, agent docs, Tickets and Agent Briefs are written in.
 
 ## Install
 
