@@ -4,11 +4,16 @@
 import { spawnSync } from "node:child_process";
 import { Failure } from "./fail.ts";
 
+/** How an error names a gh call: its subcommand, e.g. `gh api graphql`. */
+function describe(args: string[]): string {
+  return `gh ${args.slice(0, 2).join(" ")}`;
+}
+
 export function gh(args: string[]): string {
   const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.error) throw new Failure(`could not run gh: ${r.error.message}`);
   if (r.status !== 0) {
-    throw new Failure(`gh ${args[0]} ${args[1] ?? ""} failed: ${r.stderr.trim() || `exit ${r.status}`}`);
+    throw new Failure(`${describe(args)} failed: ${r.stderr.trim() || `exit ${r.status}`}`);
   }
   return r.stdout;
 }
@@ -18,7 +23,7 @@ export function ghJson<T>(args: string[]): T {
   try {
     return JSON.parse(out) as T;
   } catch {
-    throw new Failure(`gh ${args[0]} ${args[1] ?? ""} printed something that is not JSON: ${out.slice(0, 200)}`);
+    throw new Failure(`${describe(args)} printed something that is not JSON: ${out.slice(0, 200)}`);
   }
 }
 

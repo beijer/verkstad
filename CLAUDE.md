@@ -26,7 +26,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 One seam: a test runs `bin/verkstad` as a process and observes exit code, stdout, stderr, the bare origin's git state, the stub's state and the `gh` calls it recorded. Tests never import from `src/`.
 
 - `project(t, seed)` (test/project.ts) builds a throwaway Project in a temp dir: a git repo with a Contract whose `origin` is a local bare repo, the stub `gh` first on the PATH, and a clean environment, so nothing reaches GitHub or the owner's git config.
-- The stub (test/stub/gh.ts) is a small fake GitHub kept in a JSON state file (types in test/stub/state.ts). It implements exactly the gh subcommands, GraphQL operations and REST endpoints verkstad calls and fails on anything else. A new call in the CLI gets a handler there, in the same commit; seed `failures` to make a call fail.
+- The stub (test/stub/gh.ts) is a small fake GitHub kept in a JSON state file (types in test/stub/state.ts). It implements exactly the gh subcommands, GraphQL operations and REST endpoints verkstad calls and fails on anything else. A new call in the CLI gets a handler there, in the same commit. A GraphQL handler returns every field it can and the stub keeps only those the query selects, failing on an unknown one, so a misspelt field fails in tests. Seed `failures` to make a call fail.
 - Write each test as a concrete scenario with literal expected output. A test that would still pass if the CLI did nothing is wrong. Work test-first where there is logic.
 
 ## Commits

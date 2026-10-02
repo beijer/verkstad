@@ -9,6 +9,8 @@
 //   - a GraphQL operation (`query Frontier(...)`): to `graphql`, keyed by its name;
 //   - a REST endpoint (`gh api repos/{owner}/{repo}/...`): to `rest`.
 // Handlers read and change `state`; it is written back after every call.
+// A GraphQL operation returns every field it can; the stub then keeps only the
+// fields the query selects and fails on a field it doesn't know, as GitHub does.
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -32,7 +34,11 @@ interface RestRoute {
 // --- gh subcommands ---------------------------------------------------------
 
 const commands: Record<string, Command> = {
-  "repo view": (args, state) => json(pick({ nameWithOwner: state.repo, name: state.repo.split("/")[1] }, args)),
+  "repo view": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--json"] });
+    if (positionals.length) return fail(`repo view of another repo (${positionals[0]}) is not supported`);
+    return json(pick({ nameWithOwner: state.repo, name: state.repo.split("/")[1] }, flags.get("--json")));
+  },
   api: (args, state) => api(args, state),
 };
 
@@ -75,11 +81,8 @@ const rest: RestRoute[] = [];
 
 function api(args: string[], state: StubState): Reply {
   const { positionals, flags } = parse(args, {
-    value: ["-X", "--method", "-f", "--raw-field", "-F", "--field", "-H", "--header", "--input", "-q", "--jq", "-t", "--template"],
+    value: ["-X", "--method", "-f", "--raw-field", "-F", "--field", "-H", "--header", "--input"],
   });
-  if (flags.has("-q") || flags.has("--jq") || flags.has("-t") || flags.has("--template")) {
-    return fail("--jq and --template are not supported: verkstad parses gh's JSON itself");
-  }
   const fields: Variables = {};
   for (const raw of [...(flags.get("-f") ?? []), ...(flags.get("--raw-field") ?? [])]) {
     const [key, value] = splitField(raw);
@@ -96,7 +99,7 @@ function api(args: string[], state: StubState): Reply {
     const operation = name ? graphql[name] : undefined;
     if (!operation) return fail(`no GraphQL operation ${name ?? "(unnamed)"}`);
     try {
-      return json({ data: operation(variables, state, String(query)) });
+      return json({ data: select(String(query), operation(variables, state, String(query))) });
     } catch (error) {
       return fail(`GraphQL: ${(error as Error).message}`);
     }
@@ -114,6 +117,46 @@ function api(args: string[], state: StubState): Reply {
     }
   }
   return fail(`no REST route for ${method} ${path}`);
+}
+
+/** Keeps the fields the query's selection set asks for, failing on any `data` lacks. */
+function select(query: string, data: unknown): unknown {
+  const tokens = query.match(/[A-Za-z_]\w*|"(?:[^"\\]|\\.)*"|\S/g) ?? [];
+  let i = 0;
+  const skipArguments = () => {
+    if (tokens[i] !== "(") return;
+    for (let depth = 0; i < tokens.length; i++) {
+      if (tokens[i] === "(") depth++;
+      if (tokens[i] === ")" && --depth === 0) break;
+    }
+    i++;
+  };
+  type Selection = Map<string, Selection | null>;
+  const selection = (): Selection => {
+    const fields: Selection = new Map();
+    for (i++; tokens[i] !== "}"; ) {
+      const name = tokens[i++];
+      if (tokens[i] === ":") throw new Error(`aliases are not supported (${name})`);
+      skipArguments();
+      fields.set(name, tokens[i] === "{" ? selection() : null);
+    }
+    i++;
+    return fields;
+  };
+  const project = (fields: Selection | null, value: unknown, path: string): unknown => {
+    if (Array.isArray(value)) return value.map((item) => project(fields, item, path));
+    if (fields === null || value === null || typeof value !== "object") return value;
+    const object = value as Record<string, unknown>;
+    return Object.fromEntries(
+      [...fields].map(([name, sub]) => {
+        if (!(name in object)) throw new Error(`Field '${name}' doesn't exist on ${path}`);
+        return [name, project(sub, object[name], `${path}.${name}`)];
+      }),
+    );
+  };
+  i = 2; // past `query Name`
+  skipArguments();
+  return project(selection(), data, "data");
 }
 
 function issueRef(state: StubState, number: number) {
@@ -144,14 +187,21 @@ function page(items: StubIssue[], v: Variables, state: StubState) {
   };
 }
 
-/** `--json a,b` selects fields, as gh does. */
-function pick(object: Record<string, unknown>, args: string[]): Record<string, unknown> {
-  const fields = parse(args, { value: ["--json", "-q", "--jq", "-R", "--repo"] }).flags.get("--json");
-  if (!fields) return object;
-  return Object.fromEntries(fields[0].split(",").map((field) => [field, object[field]]));
+/** `--json a,b` selects fields, as gh does; an unknown field fails. */
+function pick(object: Record<string, unknown>, json: string[] | undefined): Record<string, unknown> {
+  if (!json) throw new Error("only --json output is supported");
+  return Object.fromEntries(
+    json[0].split(",").map((field) => {
+      if (!(field in object)) throw new Error(`Unknown JSON field: "${field}"`);
+      return [field, object[field]];
+    }),
+  );
 }
 
-function parse(args: string[], spec: { value: string[] }) {
+/** Splits argv into positionals and flags. `spec.value` lists the flags taking a value and
+ * `spec.boolean` those that don't; any other flag throws, so a call the stub doesn't
+ * understand fails rather than being half-answered. */
+function parse(args: string[], spec: { value: string[]; boolean?: string[] }) {
   const positionals: string[] = [];
   const flags = new Map<string, string[]>();
   for (let i = 0; i < args.length; i++) {
@@ -162,7 +212,9 @@ function parse(args: string[], spec: { value: string[] }) {
     }
     const eq = arg.indexOf("=");
     const [name, inline] = arg.startsWith("--") && eq > 0 ? [arg.slice(0, eq), arg.slice(eq + 1)] : [arg, undefined];
-    const value = inline ?? (spec.value.includes(name) ? args[++i] : "");
+    const takesValue = spec.value.includes(name);
+    if (!takesValue && !spec.boolean?.includes(name)) throw new Error(`unsupported flag ${name}`);
+    const value = inline ?? (takesValue ? args[++i] : "");
     flags.set(name, [...(flags.get(name) ?? []), value]);
   }
   return { positionals, flags };
@@ -190,6 +242,22 @@ function fail(message: string): Reply {
   return { stderr: `stub gh: ${message}\n`, code: 1 };
 }
 
+function dispatch(args: string[], state: StubState): Reply {
+  if (args.some((arg) => /^(-q|--jq|-t|--template)(=|$)/.test(arg))) {
+    return fail("--jq and --template are not supported: verkstad parses gh's JSON itself");
+  }
+  const [key, rest] = commands[`${args[0]} ${args[1]}`]
+    ? [`${args[0]} ${args[1]}`, args.slice(2)]
+    : [args[0], args.slice(1)];
+  const command = commands[key];
+  if (!command) return fail(`no handler for: gh ${args.join(" ")}`);
+  try {
+    return command(rest, state);
+  } catch (error) {
+    return fail(`gh ${key}: ${(error as Error).message}`);
+  }
+}
+
 function main(): number {
   const dir = process.env.VERKSTAD_GH_STUB_DIR;
   if (!dir) {
@@ -205,10 +273,7 @@ function main(): number {
     process.stderr.write(failure.stderr + "\n");
     return failure.code ?? 1;
   }
-  const command = commands[`${args[0]} ${args[1]}`] ?? commands[args[0]];
-  const reply: Reply = command
-    ? command(commands[`${args[0]} ${args[1]}`] ? args.slice(2) : args.slice(1), state)
-    : fail(`no handler for: gh ${args.join(" ")}`);
+  const reply = dispatch(args, state);
   writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
   if (reply.stdout) process.stdout.write(reply.stdout);
   if (reply.stderr) process.stderr.write(reply.stderr);

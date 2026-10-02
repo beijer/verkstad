@@ -1,3 +1,4 @@
 #!/bin/sh
 # The stub `gh` tests put first on the PATH; see test/stub/gh.ts.
-exec node --no-warnings "$(dirname "$(readlink -f "$0")")/gh.ts" "$@"
+self=$(readlink -f "$0" 2>/dev/null || realpath "$0")
+exec node --no-warnings "$(dirname "$self")/gh.ts" "$@"

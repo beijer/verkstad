@@ -10,7 +10,12 @@
 import { Failure } from "./fail.ts";
 import { currentRepo, graphql } from "./gh.ts";
 
-export const READY_LABEL = "ready-for-agent";
+const READY_LABEL = "ready-for-agent";
+/** A blocker with one of these labels waits on the owner, not on an agent; the view marks it. */
+const OWNER_MARKERS: Array<[label: string, marker: string]> = [
+  ["ready-for-human", "[human]"],
+  ["needs-info", "[needs-info]"],
+];
 
 const QUERY = `query Frontier($owner: String!, $name: String!, $label: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
@@ -28,17 +33,18 @@ const QUERY = `query Frontier($owner: String!, $name: String!, $label: String!, 
   }
 }`;
 
-interface Names<T> {
+/** A GraphQL connection, as far as the query reads it. */
+interface Connection<T> {
   nodes: T[];
 }
 
 interface IssueNode {
   number: number;
   title: string;
-  labels: Names<{ name: string }>;
-  assignees: Names<{ login: string }>;
+  labels: Connection<{ name: string }>;
+  assignees: Connection<{ login: string }>;
   subIssues: { totalCount: number };
-  blockedBy: Names<{ number: number; state: "OPEN" | "CLOSED"; title: string; labels: Names<{ name: string }> }> & {
+  blockedBy: Connection<{ number: number; state: "OPEN" | "CLOSED"; title: string; labels: Connection<{ name: string }> }> & {
     totalCount: number;
   };
 }
@@ -49,13 +55,14 @@ interface FrontierPage {
   } | null;
 }
 
-export interface Blocker {
+interface Blocker {
   number: number;
   title: string;
   labels: string[];
 }
 
-export interface Ticket {
+/** One labelled issue: a Ticket, or a Spec labelled by mistake. */
+interface Entry {
   number: number;
   title: string;
   labels: string[];
@@ -63,11 +70,12 @@ export interface Ticket {
   open_blockers: Blocker[];
 }
 
-export interface Frontier {
-  ready: Ticket[];
-  in_progress: Ticket[];
-  waiting: Ticket[];
-  specs_labelled: Ticket[];
+/** The Frontier (`ready`) and the rest of the labelled issues, by what holds each back. */
+interface Listing {
+  ready: Entry[];
+  in_progress: Entry[];
+  waiting: Entry[];
+  specs_labelled: Entry[];
 }
 
 export function frontier(args: string[]): void {
@@ -87,18 +95,20 @@ function fetchLabelled(label: string): IssueNode[] {
     const page: FrontierPage = graphql<FrontierPage>(QUERY, { owner, name, label, first: 100, after });
     if (!page.repository) throw new Failure(`GitHub has no repository ${owner}/${name}`);
     nodes.push(...page.repository.issues.nodes);
-    after = page.repository.issues.pageInfo.hasNextPage ? page.repository.issues.pageInfo.endCursor : null;
+    const { hasNextPage, endCursor } = page.repository.issues.pageInfo;
+    if (hasNextPage && !endCursor) throw new Failure("GitHub said there are more issues but gave no cursor to them");
+    after = hasNextPage ? endCursor : null;
   } while (after);
   return nodes;
 }
 
-function classify(nodes: IssueNode[]): Frontier {
-  const result: Frontier = { ready: [], in_progress: [], waiting: [], specs_labelled: [] };
+function classify(nodes: IssueNode[]): Listing {
+  const result: Listing = { ready: [], in_progress: [], waiting: [], specs_labelled: [] };
   for (const node of [...nodes].sort((a, b) => a.number - b.number)) {
     if (node.blockedBy.totalCount > node.blockedBy.nodes.length) {
       throw new Failure(`#${node.number} has ${node.blockedBy.totalCount} blockers, more than one query reads`);
     }
-    const ticket: Ticket = {
+    const entry: Entry = {
       number: node.number,
       title: node.title,
       labels: node.labels.nodes.map((l) => l.name),
@@ -108,22 +118,20 @@ function classify(nodes: IssueNode[]): Frontier {
         .sort((a, b) => a.number - b.number)
         .map((b) => ({ number: b.number, title: b.title, labels: b.labels.nodes.map((l) => l.name) })),
     };
-    if (node.subIssues.totalCount > 0) result.specs_labelled.push(ticket);
-    else if (ticket.assignees.length > 0) result.in_progress.push(ticket);
-    else if (ticket.open_blockers.length > 0) result.waiting.push(ticket);
-    else result.ready.push(ticket);
+    if (node.subIssues.totalCount > 0) result.specs_labelled.push(entry);
+    else if (entry.assignees.length > 0) result.in_progress.push(entry);
+    else if (entry.open_blockers.length > 0) result.waiting.push(entry);
+    else result.ready.push(entry);
   }
   return result;
 }
 
-/** A blocker that waits on the owner rather than on an agent. */
-function owner(blocker: Blocker): string {
-  if (blocker.labels.includes("ready-for-human")) return " [human]";
-  if (blocker.labels.includes("needs-info")) return " [needs-info]";
-  return "";
+function blockerName(blocker: Blocker): string {
+  const marker = OWNER_MARKERS.find(([label]) => blocker.labels.includes(label))?.[1];
+  return marker ? `#${blocker.number} ${marker}` : `#${blocker.number}`;
 }
 
-function render(f: Frontier): string {
+function render(f: Listing): string {
   const lines = [
     `Ready (${f.ready.length}):`,
     ...f.ready.map((t) => `  #${t.number} ${t.title}`),
@@ -131,7 +139,7 @@ function render(f: Frontier): string {
     ...f.in_progress.map((t) => `  #${t.number} ${t.title}  (${t.assignees.map((a) => `@${a}`).join(", ")})`),
     `Waiting (${f.waiting.length}):`,
     ...f.waiting.map(
-      (t) => `  #${t.number} ${t.title}  <- ${t.open_blockers.map((b) => `#${b.number}${owner(b)}`).join(", ")}`,
+      (t) => `  #${t.number} ${t.title}  <- ${t.open_blockers.map(blockerName).join(", ")}`,
     ),
   ];
   if (f.specs_labelled.length) {

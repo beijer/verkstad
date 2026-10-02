@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync, symlinkSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdirSync, symlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -20,18 +19,19 @@ test("an unknown subcommand is a usage error that lists the subcommands", (t) =>
 });
 
 test("verkstad runs through a symlink on the PATH, as a plugin's bin/ or a Project's PATH puts it", (t) => {
-  const dir = mkdtempSync(join(tmpdir(), "verkstad-link-"));
-  t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const p = project(t, { issues: [{ number: 2, title: "Plugin skeleton", labels: ["ready-for-agent"] }] });
+  const links = join(p.dir, "..", "links");
+  mkdirSync(links);
   const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-  symlinkSync(join(root, "bin", "verkstad"), join(dir, "verkstad"));
+  symlinkSync(join(root, "bin", "verkstad"), join(links, "verkstad"));
 
-  const r = spawnSync("verkstad", ["--help"], {
+  const r = spawnSync("verkstad", ["frontier"], {
+    cwd: p.dir,
     encoding: "utf8",
-    env: { PATH: `${dir}:${process.env.PATH}` },
+    env: { ...p.env, PATH: `${links}:${p.env.PATH}` },
   });
 
   assert.equal(r.stderr, "");
   assert.equal(r.status, 0);
-  assert.match(r.stdout, /^usage: verkstad <subcommand>/);
-  assert.match(r.stdout, /verkstad frontier \[--json\]/);
+  assert.match(r.stdout, /^Ready \(1\):\n {2}#2 Plugin skeleton\n/);
 });

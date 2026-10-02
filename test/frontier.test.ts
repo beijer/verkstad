@@ -113,7 +113,7 @@ test("a waiting Ticket shows which of its blockers wait on the owner", (t) => {
   assert.match(r.stdout, /^ {2}#23 Behind all three {2}<- #20 \[human\], #21 \[needs-info\], #22$/m);
 });
 
-test("--json prints the same Frontier as data", (t) => {
+test("--json prints the same lists as data", (t) => {
   const p = project(t, {
     issues: [
       { number: 1, title: "Spec", labels: [READY] },

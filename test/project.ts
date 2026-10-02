@@ -9,7 +9,7 @@
 //   p.state();  // the stub's GitHub after the run
 
 import { spawnSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
@@ -44,6 +44,8 @@ export interface Project {
   dir: string;
   /** The bare repo that is the checkout's `origin`. */
   origin: string;
+  /** The environment the CLI runs in: the stub `gh` first on PATH, an isolated HOME and git config. */
+  env: NodeJS.ProcessEnv;
   /** Runs `bin/verkstad` in the main checkout. */
   run(...args: string[]): Result;
   /** Runs `bin/verkstad` in another directory (a worktree, say). */
@@ -107,7 +109,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   };
 
   const git = (...args: string[]): string => {
-    const r = spawnSync("git", args, { cwd: dir, env, encoding: "utf8" });
+    const r = spawnSync("git", args, { cwd: existsSync(dir) ? dir : tmp, env, encoding: "utf8" });
     if (r.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${r.stderr}`);
     return r.stdout.trim();
   };
@@ -120,7 +122,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   const contract = seed.contract === undefined ? defaultContract : seed.contract;
   if (contract !== null) files[".claude/harness.json"] = JSON.stringify(contract, null, 2) + "\n";
 
-  spawnSync("git", ["init", "--quiet", "--bare", "-b", "main", origin], { env });
+  git("init", "--quiet", "--bare", "-b", "main", origin);
   mkdirSync(dir);
   git("init", "--quiet", "-b", "main");
   for (const [path, content] of Object.entries(files)) {
@@ -140,6 +142,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   return {
     dir,
     origin,
+    env,
     run: (...args) => runIn(dir, ...args),
     runIn,
     git,
