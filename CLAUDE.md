@@ -8,7 +8,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 
 - `.claude-plugin/plugin.json` and `marketplace.json`: the repo is its own marketplace, with one plugin, `verkstad`, whose source is `./`.
 - `bin/verkstad`: a sh wrapper that resolves its own real path and runs `node --no-warnings <plugin root>/src/cli.ts`. Claude Code puts a plugin's `bin/` on the Bash tool's PATH, so agents run plain `verkstad`. Outside Claude Code a Project finds it on PATH or at `${VERKSTAD_HOME:-$HOME/code/verkstad}/bin/verkstad`.
-- `src/cli.ts` dispatches to one module per subcommand (`src/frontier.ts`, …). `src/gh.ts` is the only way to GitHub.
+- `src/cli.ts` dispatches to one module per subcommand (`src/frontier.ts`, …). `src/gh.ts` is the only way to GitHub, `src/git.ts` the way to git, and `src/contract.ts` reads and checks the Contract.
 - `test/*.test.ts`: run by `node --test`. `test/project.ts` builds a throwaway Project; `test/stub/` is the stub `gh`.
 - `skills/<name>/SKILL.md`, `agents/<name>.md`.
 - `docs/`: the Contract (`docs/contract.md`) and, in `docs/formats/`, the formats a Project's files and issues are written in.

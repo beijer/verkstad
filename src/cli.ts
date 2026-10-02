@@ -3,6 +3,7 @@
 import { convertLinks } from "./convert-links.ts";
 import { Failure } from "./fail.ts";
 import { frontier } from "./frontier.ts";
+import { gate } from "./gate.ts";
 
 interface Subcommand {
   usage: string;
@@ -20,6 +21,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad convert-links [--dry-run]",
     summary: "Turns the parent and blockers open issues name in their text into native sub-issue and blocked_by links",
     run: convertLinks,
+  },
+  gate: {
+    usage: "verkstad gate [--quick]",
+    summary: "Runs the Contract's Gate steps, printing only failures and the full log's path",
+    run: gate,
   },
 };
 
