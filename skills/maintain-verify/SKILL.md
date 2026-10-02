@@ -23,7 +23,7 @@ You change the Verify skill and nothing else: its `SKILL.md`, its `features/`, a
 
 - The Contract's `verify` field in `.claude/harness.json` names the skill: `.claude/skills/<verify>/`. Without one, look for a single `.claude/skills/verify-*/` whose `SKILL.md` has Launch and Doctor sections and a `features/` directory. If there are several, ask the owner which one. If there is none, stop and point at `verkstad:create-verify`.
 - Work in a worktree on its own branch, `maintain-verify-<YYYY-MM-DD>`, from `origin/<baseBranch>`. If a caller gave you a branch (a Ticket's), work there instead.
-- Your notes and Evidence go where the Verify skill's Evidence section puts them: `ev="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/verkstad/evidence/<name>"`, where `<name>` is the Ticket's number when you work for a Ticket, else the branch's name. Keep running notes in `$ev/notes.md` (features covered, drift confirmed, what couldn't be reached). They are never committed.
+- Your notes and Evidence go where the Verify skill's Evidence section puts them: for a Walk that is not the Verifier's, `ev="$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/verkstad/evidence-$(git branch --show-current)"; mkdir -p "$ev"`. The Ticket's own `evidence-<n>/` is the Verifier's alone. Keep running notes in `$ev/notes.md` (features covered, drift confirmed, what couldn't be reached). They are never committed.
 
 ## 1. Check the index
 
