@@ -24,8 +24,8 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 
 ## Skills and agents
 
-- A skill, agent or prompt calls another skill by its verkstad name (`verkstad:tdd`), never another plugin's. Only a Borrowed skill names the skill it borrows (ADR 0002); the Gate's `borrowed` step (`scripts/check-borrowed.sh`) fails on any other mention in `skills/`, `agents/` or `docs/` outside `docs/adr/`.
-- A Borrowed skill is `skills/<name>/SKILL.md`, at most 30 lines: a description saying when to use it under its verkstad name, the line ``This is a Borrowed skill: follow `<plugin>:<skill>`.``, how to reach that skill, and any verkstad rule that overrides it. When the borrowed skill is user-only, so is the Borrowed one (`disable-model-invocation: true`), and it says to read the skill's SKILL.md instead of invoking it.
+- A skill, agent or prompt calls another skill by its verkstad name (`verkstad:tdd`), never another plugin's. Only a Borrowed skill names the skill it borrows (ADR 0002). The Gate's `borrowed` step (`scripts/check-borrowed.sh`) enforces it: it fails on the borrowed plugin's name in `skills/`, `agents/`, `docs/` outside `docs/adr/`, `CLAUDE.md` and `.claude/`, and on a bare slash name of one of its skills (`/to-tickets`) in `skills/` and `agents/`.
+- A Borrowed skill is one short `skills/<name>/SKILL.md` naming one borrowed skill; `check-borrowed.sh` sets how many lines it may have. It holds a description saying when to use it under its verkstad name, the line ``This is a Borrowed skill: follow `<plugin>:<skill>`.``, how to reach that skill, and any verkstad rule that overrides it. When the borrowed skill is user-only, so is the Borrowed one (`disable-model-invocation: true`), and it says to read the skill's SKILL.md instead of invoking it.
 - A skill that writes a Project's files or issues follows the formats in `docs/formats/` (ADR 0003).
 
 ## Tests

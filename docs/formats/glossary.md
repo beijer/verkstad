@@ -31,4 +31,4 @@ _Avoid_: <word>, <word>
 - **Capitalised terms.** Inside definitions and elsewhere, a glossary term is written with its capital (a Ticket, the Frontier), so a reader can tell the term from the everyday word.
 - **Changed as it is settled.** When a term is pinned down or renamed, `CONTEXT.md` changes in the same commit, and the old word joins `_Avoid_`.
 
-A repo with several separate contexts may instead have a `CONTEXT-MAP.md` at its root pointing at one `CONTEXT.md` per context; see [agent-docs.md](agent-docs.md#domainmd). Ray and verkstad each have one context.
+A Project with several separate contexts may instead have a `CONTEXT-MAP.md` at its root pointing at one `CONTEXT.md` per context; see [agent-docs.md](agent-docs.md#domainmd). Ray and verkstad each have one context.

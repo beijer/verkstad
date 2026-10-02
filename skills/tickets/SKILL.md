@@ -1,6 +1,6 @@
 ---
 name: tickets
-description: Break a Spec into Tickets and publish them as its GitHub sub-issues, with native blocked_by links.
+description: Break a Spec into Tickets and publish them as its GitHub sub-issues, with native blocked_by links. Use when a Spec is settled and its work should become Tickets an agent can pick up.
 disable-model-invocation: true
 ---
 
@@ -12,7 +12,5 @@ That skill is user-only, so the Skill tool cannot invoke it: read it instead. Th
 
 If it prints nothing, the mattpocock-skills plugin is not installed: stop and say so. Otherwise follow it as written, with verkstad's rules where they differ:
 
-- Write each Ticket in verkstad's [Ticket format](../../docs/formats/ticket.md).
-- Publish each Ticket as a native sub-issue of its Spec, and each of its blockers as a native `blocked_by` link, with the `gh api` calls the Ticket format gives. The Frontier reads only these links; the Parent and Blocked by sections repeat them for a reader.
-- A Ticket carries no file paths or line numbers: name the behaviour, the types and the commands instead.
-- Label each Ticket `ready-for-agent`; the Spec stays open and without that label.
+- The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`; where the skill says to run a setup skill for them, read those instead.
+- Write and publish each Ticket as verkstad's [Ticket format](../../docs/formats/ticket.md) says: a native sub-issue of its Spec, its blockers as native `blocked_by` links, no file paths or line numbers.
