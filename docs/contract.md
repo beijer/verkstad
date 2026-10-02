@@ -31,7 +31,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 | `gate` | `gate`, `land` | The Gate's named steps. |
 | `landing` | `land` | The Landing mode: `push` (the default) or `pull-request`. |
 | `surfaces` | `surfaces`, `verdict`, `land` | The Surfaces, each a name and the path globs whose changes can alter it. `[]` for a Project with none. |
-| `verify` | the Verifier | The name of the Project's Verify skill. |
+| `verify` | the orchestrator, for the Verifier | The name of the Project's Verify skill. |
 
 ### `baseBranch`
 
@@ -82,7 +82,7 @@ An array, required: the Project's Surfaces (ADR 0004), `[]` for a Project with n
 
 ```json
 "surfaces": [
-  { "name": "ui", "globs": ["src/**", "index.html"] },
+  { "name": "ui", "globs": ["src/**", "!src/**/*.test.ts", "index.html"] },
   { "name": "api", "globs": ["server/routes/**"] }
 ]
 ```
@@ -90,15 +90,19 @@ An array, required: the Project's Surfaces (ADR 0004), `[]` for a Project with n
 Each Surface has:
 
 - `name` (required, unique): what `verkstad surfaces`, the Verdict check and the closing comment call it.
-- `globs` (required, non-empty): globs, relative to the Project's root, for the paths whose changes can alter the Surface. They are git pathspecs with the `glob` magic (`:(glob)<glob>`): `*` matches within one directory, so `*.html` is `index.html` but not `docs/page.html`; `**` matches across directories, so `src/ui/**` is everything under `src/ui/`. A glob may not start with `:` or `/`.
+- `globs` (required, non-empty): globs, relative to the Project's root, for the paths whose changes can alter the Surface. They are git pathspecs with the `glob` magic (`:(glob)<glob>`): `*` matches within one directory, so `*.html` is `index.html` but not `docs/page.html`; `**` matches across directories, so `src/ui/**` is everything under `src/ui/`. A glob starting with `!` takes the paths it matches out of the Surface, whichever of its globs matched them: `!src/**/*.test.ts` keeps the tests beside the code out, since a change to a test alone cannot alter what a user sees. It applies to its own Surface only, and a Surface needs at least one glob without `!`. A glob, after its `!`, may not be empty or start with `:` or `/`.
 
 A missing or malformed field fails naming it (`.claude/harness.json: surfaces[0].globs must be a non-empty array of globs`). `gate` does not read `surfaces`; `land` refuses a Contract whose `surfaces` are malformed.
 
-**`verkstad surfaces <base> [--json]`** prints, one per line in the Contract's order, each Surface touched by the branch checked out where it runs: a Surface is touched when one of its globs matches a path the branch's commits changed since it left `<base>` (`git diff <base>...HEAD`, so not what landed on `<base>` meanwhile). A deleted path counts, and a renamed one counts as both its old and its new path, so moving a file out of a Surface touches it. Uncommitted and untracked files are not part of the branch, and do not count: the branch is what lands and what a Verdict is given for. It prints nothing when the branch touches no Surface. With `--json` it prints an array of `{ "name": "ui", "files": ["src/ui/panel.ts"] }`, the changed paths each Surface's globs matched, `[]` for none. The orchestrator unions these with the Surfaces the implementer's report names.
+**`verkstad surfaces <base> [--json]`** prints, one per line in the Contract's order, each Surface touched by the branch checked out where it runs: a Surface is touched when one of its globs, and none of its `!` globs, matches a path the branch's commits changed since it left `<base>` (`git diff <base>...HEAD`, so not what landed on `<base>` meanwhile). A deleted path counts, and a renamed one counts as both its old and its new path, so moving a file out of a Surface touches it. Uncommitted and untracked files are not part of the branch, and do not count: the branch is what lands and what a Verdict is given for. It prints nothing when the branch touches no Surface. With `--json` it prints an array of `{ "name": "ui", "files": ["src/ui/panel.ts"] }`, the changed paths each Surface's globs matched, `[]` for none. The orchestrator unions these with the Surfaces the implementer's report names.
 
 ### `verify`
 
-<!-- Documented by the Ticket that adds the Verifier. -->
+A string, required when `surfaces` is not empty: the name of the Project's Verify skill (`verify-<app>`, in `.claude/skills/`), which teaches an agent to launch the Project, check it with its Doctor, drive its Surfaces and capture Evidence. `verkstad:create-verify` writes one. No script reads it: `verkstad:orchestrate` passes it to the Verifier, which Walks a Ticket's acceptance criteria with it, and an implementer Walks its own change with it before writing the change's end-to-end test.
+
+```json
+"verify": "verify-ray"
+```
 
 verkstad's own `.claude/harness.json` is an example Contract for a Project with no Surfaces.
 

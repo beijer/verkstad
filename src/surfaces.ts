@@ -1,8 +1,8 @@
 // `verkstad surfaces <base> [--json]`: the Surfaces the branch checked out here
 // touches: those with a glob matching a path the branch's commits changed since
 // it left <base> (`git diff <base>...HEAD`), deleted paths and both sides of a
-// rename included (ADR 0004). Uncommitted and untracked files are not part of
-// the branch, so they never count.
+// rename included (ADR 0004), and no `!` glob of the Surface's matching it.
+// Uncommitted and untracked files are not part of the branch, so they never count.
 
 import { readSurfaces, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
@@ -29,7 +29,7 @@ export function branchPoint(root: string, base: string): string {
 export function touchedSurfaces(root: string, surfaces: Surface[], since: string): TouchedSurface[] {
   const touched: TouchedSurface[] = [];
   for (const surface of surfaces) {
-    const pathspecs = surface.globs.map((glob) => `:(glob)${glob}`);
+    const pathspecs = surface.globs.map((glob) => (glob.startsWith("!") ? `:(exclude,glob)${glob.slice(1)}` : `:(glob)${glob}`));
     const r = tryGit(root, ["diff", "-z", "--name-only", "--no-renames", "--no-relative", since, "HEAD", "--", ...pathspecs]);
     if (r.status !== 0) throw new Failure(`could not match the Surface ${surface.name}'s globs: ${r.stderr.trim()}`);
     const files = r.stdout.split("\0").filter(Boolean);

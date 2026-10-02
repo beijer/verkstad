@@ -132,7 +132,10 @@ export function readLandingMode(root: string): LandingMode {
   return landing;
 }
 
-/** A Surface: a name, and the globs (git `:(glob)` pathspecs) of the paths whose changes can alter it. */
+/**
+ * A Surface: a name, and the globs (git `:(glob)` pathspecs) of the paths whose changes can alter it. A glob
+ * starting with `!` takes the paths it matches out of the Surface (its tests, a generated file).
+ */
 export interface Surface {
   name: string;
   globs: string[];
@@ -150,11 +153,14 @@ export function readSurfaces(root: string): Surface[] {
     if (!Array.isArray(value.globs) || value.globs.length === 0) throw malformed(`${where}.globs must be a non-empty array of globs`);
     const globs = value.globs.map((glob, j) => {
       const g = nonEmptyString(glob, `${where}.globs[${j}]`);
-      if (g.startsWith(":") || g.startsWith("/")) {
+      const pattern = g.startsWith("!") ? g.slice(1) : g;
+      if (pattern === "") throw malformed(`${where}.globs[${j}] '${g}' must be a glob after its !`);
+      if (pattern.startsWith(":") || pattern.startsWith("/")) {
         throw malformed(`${where}.globs[${j}] '${g}' must be a glob relative to the Project's root, without pathspec magic`);
       }
       return g;
     });
+    if (globs.every((g) => g.startsWith("!"))) throw malformed(`${where}.globs must have a glob that does not start with !`);
     return { name, globs };
   });
   result.forEach((s, i) => {

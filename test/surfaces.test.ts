@@ -90,6 +90,36 @@ test("deleting a file, or moving it out of a Surface, touches the Surface", (t) 
   assert.deepEqual(JSON.parse(r.stdout), [{ name: "ui", files: ["index.html", "src/ui/panel.ts"] }]);
 });
 
+test("a glob starting with ! takes the paths it matches out of the Surface, whichever glob put them in", (t) => {
+  const surfaces = [
+    { name: "ui", globs: ["src/**", "!src/**/*.test.ts", "!src/generated.ts", "*.html"] },
+    { name: "api", globs: ["src/api/**"] },
+  ];
+  const p = project(t, { contract: contract(surfaces), files: BASE_FILES });
+  p.git("checkout", "--quiet", "-b", "issue-7");
+  commit(p, {
+    "src/ui/panel.test.ts": "a test\n",
+    "src/generated.ts": "generated types\n",
+    "src/api/routes.test.ts": "an api test\n",
+    "index.html": "<html>changed\n",
+  });
+
+  const touched = p.run("surfaces", "main", "--json");
+  assert.equal(touched.code, 0, touched.stderr);
+  // The exclusions are ui's own: api still matches its test file.
+  assert.deepEqual(JSON.parse(touched.stdout), [
+    { name: "ui", files: ["index.html"] },
+    { name: "api", files: ["src/api/routes.test.ts"] },
+  ]);
+
+  p.git("checkout", "--quiet", "-b", "issue-8", "main");
+  commit(p, { "src/ui/panel.test.ts": "a test\n", "src/generated.ts": "generated types\n" });
+
+  const none = p.run("surfaces", "main");
+  assert.equal(none.code, 0, none.stderr);
+  assert.equal(none.stdout, "");
+});
+
 test("a Project with no Surfaces touches none, whatever the branch changed", (t) => {
   const p = project(t, { contract: contract([]), files: BASE_FILES });
   p.git("checkout", "--quiet", "-b", "issue-7");
@@ -124,6 +154,9 @@ test("a malformed surfaces field fails naming the field", (t) => {
     [[{ name: "ui", globs: [] }], "surfaces[0].globs must be a non-empty array of globs"],
     [[{ name: "ui", globs: ["src/**", 3] }], "surfaces[0].globs[1] must be a non-empty string"],
     [[{ name: "ui", globs: [":(exclude)src/**"] }], "surfaces[0].globs[0] ':(exclude)src/**' must be a glob relative to the Project's root, without pathspec magic"],
+    [[{ name: "ui", globs: ["!src/**/*.test.ts"] }], "surfaces[0].globs must have a glob that does not start with !"],
+    [[{ name: "ui", globs: ["src/**", "!"] }], "surfaces[0].globs[1] '!' must be a glob after its !"],
+    [[{ name: "ui", globs: ["src/**", "!/src/x.ts"] }], "surfaces[0].globs[1] '!/src/x.ts' must be a glob relative to the Project's root, without pathspec magic"],
     [[{ name: "ui", globs: ["src/**"], verify: true }], "surfaces[0] has an unknown field 'verify' (known: name, globs)"],
     [[{ name: "ui", globs: ["a/**"] }, { name: "ui", globs: ["b/**"] }], "surfaces[1].name 'ui' is already the name of surfaces[0]"],
   ];
