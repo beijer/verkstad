@@ -13,10 +13,10 @@ Run from the Project's main checkout. Every Ticket starts from the latest base b
 | `verkstad frontier` | Lists the Tickets that are ready, in progress and waiting, and what each waits on (`--json` for the data) |
 | `verkstad gate [--quick]` | Runs the Project's Gate; the agents run it, and Landing runs it in full |
 | `verkstad land <n> <worktree> <report>` | Rebases, runs the full Gate, pushes to the base branch, closes the Ticket with the report, removes the worktree and branch; a failure ends with `reason: <code>` |
-| `verkstad land --park <n> <worktree> <reason>` | Parks: pushes `issue-<n>` to origin, removes the worktree, labels the Ticket `needs-info`, unassigns it and comments the reason |
-| `verkstad prune` | Deletes what the log directory holds once it is 30 days old |
+| `verkstad land --park <n> <worktree> <reason>` | Parks: force-pushes `issue-<n>` to origin, removes the worktree, labels the Ticket `needs-info`, unassigns it and comments the reason |
+| `verkstad prune` | Deletes what the log directory holds once it is older than 30 days |
 
-The log directory is `.claude/verkstad/` in the main checkout: gitignored and outside every worktree, so Landing never removes it. Reports and Park reasons go there, beside the Gate's logs.
+The log directory, `<log>` below, is `.claude/verkstad/` in the main checkout, as an absolute path: gitignored and outside every worktree, so Landing never removes it. Reports and Park reasons go there, beside the Gate's logs.
 
 ## Steps
 
@@ -36,7 +36,7 @@ The log directory is `.claude/verkstad/` in the main checkout: gitignored and ou
    | Tier | Agent type | Model, effort, turns | Use when |
    | --- | --- | --- | --- |
    | light | `verkstad:ticket-light` | sonnet, medium, 100 | Copies a pattern already in the Project, few acceptance criteria, no new module, protocol or Surface. |
-   | standard | `verkstad:ticket-standard` | opus, medium, 120 | Default. A new vertical slice on infrastructure earlier Tickets landed. |
+   | standard | `verkstad:ticket-standard` | opus, medium, 120 | Default. A new feature, end to end, on infrastructure earlier Tickets landed. |
    | hard | `verkstad:ticket-hard` | opus, high, 200 | Lays down what later Tickets build on (a protocol, a data model and its file format, a core pipeline), or the Ticket leaves a design decision to the agent. |
 
    The prose doc may give the Project's own examples for each Tier; where it does, they win over the examples here. The first Ticket of any kind (the first message of a protocol, the first import, the first file written to disk) is at least standard. When two Tiers fit, take the lower; going up a Tier on a report of `tier: too low` is cheaper than running everything hot.
@@ -47,9 +47,9 @@ The log directory is `.claude/verkstad/` in the main checkout: gitignored and ou
 
 4. **Dispatch.** Claim the Ticket, `gh issue edit <n> --add-assignee @me`, then launch `Agent` with `subagent_type` set to the Tier's agent type, `isolation: "worktree"` and `run_in_background: true`, its prompt built from [implement-prompt.md](implement-prompt.md). Done when the agent is launched.
 
-5. **Route each completion.** Write the agent's report to `.claude/verkstad/report-<n>.md`, then act on its `status`. Its `worktree:` line is the worktree the commands below take.
-   - **done**: `verkstad land <n> <worktree> .claude/verkstad/report-<n>.md`. On success the Ticket is closed with the report and the base branch has moved; go to step 6. On failure the last line is `reason: <code>`. Except for `github-failed`, nothing landed: the Ticket is untouched and the branch `issue-<n>` kept, and except for `refused` and `error` the worktree is removed. Route on the code:
-     - **`conflict`**: the message names the conflicting files. Dispatch `verkstad:ticket-light` with the conflict prompt from [conflict-prompt.md](conflict-prompt.md). When it reports done, check that the commits it names are on `issue-<n>` (`git log`), since the Gate only proves that the tests that exist pass, then land again. A conflict Resume does not count toward the one-Resume limit below; a second conflict on the same Ticket does.
+5. **Route each completion.** Write the implementing agent's report to `<log>/report-<n>.md`, then act on its `status`. Its `worktree:` line is the worktree the commands below take.
+   - **done**: `verkstad land <n> <worktree> <log>/report-<n>.md`. On success the Ticket is closed with the report and the base branch has moved; go to step 6. On failure the last line is `reason: <code>`. Except for `github-failed`, nothing landed: the Ticket is untouched and the branch `issue-<n>` kept, and except for `refused` and `error` the worktree is removed. Route on the code:
+     - **`conflict`**: the message names the conflicting files. Dispatch `verkstad:ticket-light` with the conflict prompt from [conflict-prompt.md](conflict-prompt.md), and write its report to `<log>/conflict-<n>.md`; `report-<n>.md` stays the implementer's, which Landing posts. When it reports done, check that the commits it names are on `issue-<n>` (`git log`) and that the branch still carries the Ticket's tests (`git diff --stat origin/<base>...issue-<n>`), since the Gate only proves that the tests that exist pass, then land again from its worktree. When it reports blocked, Park the Ticket with its report as the reason. Finishing a conflict is not the Ticket's Resume; a second conflict on the same Ticket counts as its Resume.
      - **`gate-failed`** or **`no-commits`**: Resume the Ticket with a new agent on the same Tier, one up if the report said `tier: too low`, with the failure output from `verkstad land` (the failing step's last lines and the Gate log's path) as the reason.
      - **`push-failed`**: the base kept moving through three Gate runs, or origin refused the push. Land again once; a second `push-failed` is not the Ticket's: tell the user, with the message, and leave the branch.
      - **`refused`**: nothing was touched; the message says why. Fix a wrong call and land again. Uncommitted changes in the worktree mean the agent did not finish: show the user `git -C <worktree> status` and ask.
@@ -62,7 +62,7 @@ The log directory is `.claude/verkstad/` in the main checkout: gitignored and ou
 
    **Resume.** Dispatch as in step 4, with the prompt's Resume paragraph. A partial or blocked agent leaves `issue-<n>` checked out in its worktree, and the new agent cannot switch to a branch checked out elsewhere: check the old worktree is clean (`git -C <worktree> status --porcelain`), then `git worktree remove -f -f <worktree>` (the finished agent's lock is stale) before dispatching. After a failed Landing the worktree is already gone.
 
-   A Ticket that has been Resumed once and fails again is Parked. **Park**: write the blocker or failure, quoted, to `.claude/verkstad/park-<n>.md`, then run `verkstad land --park <n> <worktree> .claude/verkstad/park-<n>.md` from the main checkout, with the worktree's path even when a failed Landing already removed it. It pushes `issue-<n>` to origin, removes the worktree, swaps `ready-for-agent` for `needs-info`, unassigns you and comments the reason with where the branch is; don't repeat any of it with `gh`. A Park ending in `reason: github-failed` pushed the branch but did not update the Ticket: do that by hand, as the message says.
+   A Ticket that has been Resumed once and fails again is Parked. **Park**: write the blocker or failure, quoted, to `<log>/park-<n>.md`, then run `verkstad land --park <n> <worktree> <log>/park-<n>.md` from the main checkout, with the worktree's path even when a failed Landing already removed it. It pushes `issue-<n>` to origin, removes the worktree, swaps `ready-for-agent` for `needs-info`, unassigns you and comments the reason with where the branch is; don't repeat any of it with `gh`. A Park ending in `reason: github-failed` pushed the branch but did not update the Ticket: do that by hand, as the message says. A Park ending in `refused` touched nothing: uncommitted changes in the worktree mean the agent left work behind, so show the user `git -C <worktree> status` and ask. Any other reason: tell the user, with the message, and leave the Ticket as it is.
 
    Anything waiting on a Parked Ticket stays waiting. Carry on with the rest. A repeated notification from an agent you already routed carries nothing new; ignore it.
 

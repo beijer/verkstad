@@ -9,7 +9,7 @@ The prompt a Tier agent gets for one Ticket. Replace:
 Keep these lines only when they apply, and drop them otherwise:
 
 - The Spec line, when the Ticket has a Spec (its parent issue): `{SPEC}` is its number.
-- The comments line, when a comment overrides the body: `{COMMENT}` says which comment wins, and its partner, if any.
+- The comments line, when a comment overrides the body: `{COMMENT}` says which comment wins.
 - The Resume paragraph, when re-dispatching a Ticket: `{RESUME_REASON}` is why it came back (the failure, the report, or the owner's answer).
 - `{OTHER_AGENT}`, when other Tickets are in flight: "Other agents are working concurrently in their own worktrees: #M (<files or areas>), … Stay out of those; if you cannot, say so in the report."
 
