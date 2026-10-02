@@ -50,10 +50,8 @@ interface Ref {
   number: number;
 }
 
-/** A link the text asks for. `parent` makes `child` a sub-issue of it; `blocker` blocks `issue`. */
-type Link =
-  | { kind: "sub-issue"; issue: number; parent: Ref }
-  | { kind: "blocked-by"; issue: number; blocker: Ref };
+/** A link an issue's text asks for: to be a sub-issue of `parent`, or to be blocked by `blocker`. */
+type Link = { kind: "sub-issue"; parent: Ref } | { kind: "blocked-by"; blocker: Ref };
 
 /** How an issue reference resolved: the issue's database id, or why it can't be linked. */
 type Resolution = { id: number } | { unresolved: string };
@@ -83,7 +81,7 @@ export function convertLinks(args: string[]): void {
 
   const counts = { subIssues: 0, blockedBy: 0, already: 0, skipped: 0 };
   for (const issue of open) {
-    for (const link of linksIn(issue)) {
+    for (const link of linksIn(issue, repo)) {
       const ref = link.kind === "sub-issue" ? link.parent : link.blocker;
       const line = `#${issue.number} ${link.kind === "sub-issue" ? "sub-issue of" : "blocked by"} ${refName(ref, repo)}`;
       const skip = (reason: string) => {
@@ -115,7 +113,7 @@ export function convertLinks(args: string[]): void {
         skip(resolution.unresolved);
         continue;
       }
-      if (!dryRun) add(repo, issue, link, resolution.id);
+      if (!dryRun) add(repo, issue, link, link.kind === "sub-issue" ? issue.databaseId : resolution.id);
       if (link.kind === "sub-issue") counts.subIssues++;
       else counts.blockedBy++;
       process.stdout.write(`${line}\n`);
@@ -140,27 +138,40 @@ function fetchOpen(owner: string, name: string): IssueNode[] {
 }
 
 /** The links an issue's text asks for: its parent first, then its blockers in the order named. */
-function linksIn(issue: IssueNode): Link[] {
-  const lines = issue.body.split(/\r?\n/);
+function linksIn(issue: IssueNode, repo: string): Link[] {
+  const lines = outsideCode(issue.body.split(/\r?\n/));
   const links: Link[] = [];
   const parentSection = section(lines, "Parent");
   const parent =
     parentSection !== null
       ? refsIn(parentSection.join("\n"))[0]
       : refsIn(lines.find((line) => /^\s*Part of\s+([\w.-]+\/[\w.-]+)?#\d+/i.test(line)) ?? "")[0];
-  if (parent) links.push({ kind: "sub-issue", issue: issue.number, parent });
+  if (parent) links.push({ kind: "sub-issue", parent: inRepo(parent, repo) ? { repo: null, number: parent.number } : parent });
 
   const seen = new Set<string>();
   for (const line of section(lines, "Blocked by") ?? []) {
     if (/^\s*(?:[-*+]\s+)?None\b/i.test(line)) continue;
-    for (const blocker of refsIn(line)) {
+    for (const ref of refsIn(line)) {
+      const blocker = inRepo(ref, repo) ? { repo: null, number: ref.number } : ref;
       const key = `${blocker.repo ?? ""}#${blocker.number}`;
       if (seen.has(key)) continue;
       seen.add(key);
-      links.push({ kind: "blocked-by", issue: issue.number, blocker });
+      links.push({ kind: "blocked-by", blocker });
     }
   }
   return links;
+}
+
+/** The lines with fenced code blocks blanked, so a `## ` or `#12` in code is neither a heading nor a reference. */
+function outsideCode(lines: string[]): string[] {
+  let fenced = false;
+  return lines.map((line) => {
+    if (/^\s*(```|~~~)/.test(line)) {
+      fenced = !fenced;
+      return "";
+    }
+    return fenced ? "" : line;
+  });
 }
 
 /** The lines under a `## <heading>` line, up to the next heading of level one or two; null without one. */
@@ -187,10 +198,11 @@ function refName(ref: Ref, repo: string): string {
   return inRepo(ref, repo) ? `#${ref.number}` : `${ref.repo}#${ref.number}`;
 }
 
+/** Adds the link; `id` is the database id the endpoint takes: the issue's own for a sub-issue, the blocker's for blocked_by. */
 function add(repo: string, issue: IssueNode, link: Link, id: number): void {
   const [endpoint, field, what] =
     link.kind === "sub-issue"
-      ? [`repos/${repo}/issues/${link.parent.number}/sub_issues`, `sub_issue_id=${issue.databaseId}`, `adding #${issue.number} as a sub-issue of #${link.parent.number}`]
+      ? [`repos/${repo}/issues/${link.parent.number}/sub_issues`, `sub_issue_id=${id}`, `adding #${issue.number} as a sub-issue of #${link.parent.number}`]
       : [`repos/${repo}/issues/${issue.number}/dependencies/blocked_by`, `issue_id=${id}`, `marking #${issue.number} blocked by #${link.blocker.number}`];
   try {
     gh(["api", endpoint, "-X", "POST", "-F", field]);

@@ -75,10 +75,19 @@ test("--dry-run prints the same plan and changes nothing", (t) => {
   const r = p.run("convert-links", "--dry-run");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^#2 sub-issue of #1\n#2 blocked by #3\n/);
-  assert.match(
+  assert.equal(
     r.stdout,
-    /\n#5 blocked by #4\nWould add 3 sub-issue links and 4 blocked_by links; 0 already there, 0 skipped\. Nothing changed \(--dry-run\)\.\n$/,
+    [
+      "#2 sub-issue of #1",
+      "#2 blocked by #3",
+      "#2 blocked by #4",
+      "#3 sub-issue of #1",
+      "#5 sub-issue of #1",
+      "#5 blocked by #3",
+      "#5 blocked by #4",
+      "Would add 3 sub-issue links and 4 blocked_by links; 0 already there, 0 skipped. Nothing changed (--dry-run).",
+      "",
+    ].join("\n"),
   );
   assert.deepEqual(p.state(), before);
   for (const argv of p.calls()) {
@@ -136,6 +145,42 @@ test("a reference it can't resolve is reported and skipped, and the rest still c
   const state = p.state();
   assert.equal(state.issues.find((i) => i.number === 11)!.parent, 1, "an existing parent is never moved");
   assert.deepEqual(state.issues.find((i) => i.number === 10)!.blockedBy, [11]);
+});
+
+test("a blocker named twice, once with this repo's name, is linked once, and code blocks name nothing", (t) => {
+  const p = project(t, {
+    repo: "beijer/ray",
+    issues: [
+      { number: 1, title: "Spec" },
+      { number: 2, title: "Blocker" },
+      { number: 3, title: "Not a blocker" },
+      {
+        number: 4,
+        body: [
+          "## What to build",
+          "",
+          "```md",
+          "## Blocked by",
+          "",
+          "- #3",
+          "```",
+          "",
+          "## Blocked by",
+          "",
+          "- #2",
+          "- beijer/ray#2",
+          "- Beijer/Ray#2",
+          "",
+        ].join("\n"),
+      },
+    ],
+  });
+
+  const r = p.run("convert-links");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout, "#4 blocked by #2\nAdded 0 sub-issue links and 1 blocked_by link; 0 already there, 0 skipped.\n");
+  assert.deepEqual(p.state().issues.find((i) => i.number === 4)!.blockedBy, [2]);
 });
 
 test("closed Tickets are left as they are", (t) => {
