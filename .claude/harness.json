@@ -13,6 +13,10 @@
       {
         "name": "plugin",
         "command": "command -v claude >/dev/null || exit 0; claude plugin validate ."
+      },
+      {
+        "name": "borrowed",
+        "command": "scripts/check-borrowed.sh"
       }
     ]
   },

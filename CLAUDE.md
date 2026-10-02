@@ -11,7 +11,8 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 - `src/cli.ts` dispatches to one module per subcommand (`src/frontier.ts`, …). `src/gh.ts` is the only way to GitHub.
 - `test/*.test.ts`: run by `node --test`. `test/project.ts` builds a throwaway Project; `test/stub/` is the stub `gh`.
 - `skills/<name>/SKILL.md`, `agents/<name>.md`.
-- `docs/`: the formats and the Contract (`docs/contract.md`).
+- `docs/`: the Contract (`docs/contract.md`) and, in `docs/formats/`, the formats a Project's files and issues are written in.
+- `scripts/`: verkstad's own Gate checks that are not tests, such as `check-borrowed.sh`.
 
 ## The CLI
 
@@ -20,6 +21,12 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 - Ask gh for JSON (`--json`, `gh api`) and parse it in TypeScript, never with `--jq`; the stub refuses `--jq`. Read GitHub through native relations (sub-issues, `blocked_by`), never by parsing issue text (ADR 0006); the one exception is `convert-links`, whose job is to turn that text into relations once.
 - Output is short and human-readable by default; `--json` where a Ticket asks for it. A failure throws `Failure` (src/fail.ts): the CLI prints `verkstad <subcommand>: <what failed>` and exits non-zero, 2 for usage errors. `land`'s failures print a reason code.
 - Logs, Verdicts and Evidence go in the log directory, `<main checkout>/.claude/verkstad/`: gitignored and outside every worktree. Find the main checkout from `git rev-parse --path-format=absolute --git-common-dir`.
+
+## Skills and agents
+
+- A skill, agent or prompt calls another skill by its verkstad name (`verkstad:tdd`), never another plugin's. Only a Borrowed skill names the skill it borrows (ADR 0002); the Gate's `borrowed` step (`scripts/check-borrowed.sh`) fails on any other mention in `skills/`, `agents/` or `docs/` outside `docs/adr/`.
+- A Borrowed skill is `skills/<name>/SKILL.md`, at most 30 lines: a description saying when to use it under its verkstad name, the line ``This is a Borrowed skill: follow `<plugin>:<skill>`.``, how to reach that skill, and any verkstad rule that overrides it. When the borrowed skill is user-only, so is the Borrowed one (`disable-model-invocation: true`), and it says to read the skill's SKILL.md instead of invoking it.
+- A skill that writes a Project's files or issues follows the formats in `docs/formats/` (ADR 0003).
 
 ## Tests
 
