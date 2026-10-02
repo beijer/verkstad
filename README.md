@@ -17,6 +17,8 @@ claude plugin marketplace add beijer/verkstad      # or: claude plugin marketpla
 claude plugin install verkstad@verkstad
 ```
 
+In a repo, `/verkstad:setup` makes it a Project: it writes the Contract and the agent docs, asking what it can't find out, creates the triage labels (`verkstad labels`) and runs the Gate and the Frontier once to prove them. Run it again on a Project to check it; it changes nothing it finds correct.
+
 Inside Claude Code the plugin puts `verkstad` on the PATH. Elsewhere, run `bin/verkstad` from the checkout:
 
 ```sh
