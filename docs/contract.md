@@ -126,8 +126,8 @@ It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0.
 
 That is the `push` Landing mode. In the `pull-request` mode steps 1 to 3 are the same, and then:
 
-4. It force-pushes `HEAD` to `issue-<n>` on `origin`, over whatever an earlier Park or Landing put there. It does not touch `<baseBranch>`, so it never retries.
-5. It opens a pull request from `issue-<n>` onto `<baseBranch>`, titled as the Ticket, whose body is `Closes #<n>.`, a blank line, the report, a blank line and how far the Ticket was proven, as in the closing comment. When a pull request from `issue-<n>` is already open, from an earlier Landing of the Ticket, it replaces that one's body instead; the push has already updated its commits.
+4. It force-pushes `HEAD` to `issue-<n>` on `origin`, over whatever an earlier Park or Landing put there. It does not touch `<baseBranch>`, so a base that moves meanwhile does not matter and it never rebases again.
+5. It opens a pull request from `issue-<n>` onto `<baseBranch>`, titled as the Ticket, whose body is `Closes #<n>.`, a blank line, the report, a blank line and how far the Ticket was proven, as in the closing comment. When a pull request from `issue-<n>` onto `<baseBranch>` is already open, from an earlier Landing of the Ticket, it replaces that one's body instead; the push has already updated its commits.
 6. It removes the worktree and the local branch (the pull request's branch is on `origin`, and a leftover local `issue-<n>` would tell the next Run that the Ticket stopped mid-way) and prunes the log directory. It leaves the main checkout alone, since the base has not moved.
 
 The Ticket stays open, and assigned, until the owner merges the pull request, which closes it; `verkstad frontier` lists it as in progress meanwhile, so no Run dispatches it again, and the Tickets it blocks wait for the merge. It prints `Opened <url> onto <baseBranch> for #<n> (issue-<n> at <sha>); #<n> closes when it merges.`, or `Updated <url> …` for a pull request that was open, and exits 0.

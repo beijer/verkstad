@@ -252,7 +252,7 @@ function landTicket(args: Args): void {
 
   const lock = takeLock(ticket);
   try {
-    if (mode === "pull-request") openPullRequest(ticket, base, report);
+    if (mode === "pull-request") landAsPullRequest(ticket, base, report);
     else pushToBase(ticket, base, report);
   } finally {
     closeSync(lock);
@@ -301,16 +301,16 @@ function pushToBase(ticket: Ticket, base: string, report: string): void {
  * goes with the worktree: the pull request's branch is on origin, and a leftover issue-<n> branch would
  * tell the next Run the Ticket stopped mid-way.
  */
-function openPullRequest(ticket: Ticket, base: string, report: string): void {
+function landAsPullRequest(ticket: Ticket, base: string, report: string): void {
   const check = rebaseGateCheck(ticket, base);
   const push = tryGit(ticket.root, ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${ticket.branch}`]);
   if (push.status !== 0) throw didNotLand(ticket, "push-failed", `pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}`);
   const sha = git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim();
   const body = `Closes #${ticket.n}.\n\n${report}\n\n${describeVerification(check)}`;
-  let done = "";
+  let published: Published | null = null;
   let failed: Failure | null = null;
   try {
-    done = publishPullRequest(ticket, base, body);
+    published = publishPullRequest(ticket, base, body);
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
     failed = error;
@@ -318,28 +318,38 @@ function openPullRequest(ticket: Ticket, base: string, report: string): void {
   const notes = removeWorktreeAndBranch(ticket);
   const dir = logDirectory(ticket.main);
   const pruned = describePruned(dir, pruneLogDirectory(dir));
-  if (failed) {
+  if (failed || !published) {
     process.stdout.write(notes + pruned);
     throw new LandingFailure(
       "github-failed",
-      `#${ticket.n} is on origin as ${ticket.branch} at ${sha}, but opening or updating its pull request failed: ${failed.message}\n` +
-        `Open it by hand from ${ticket.branch} onto ${base}, with "Closes #${ticket.n}.", the report and the Verdict as its body.`,
+      `#${ticket.n} is on origin as ${ticket.branch} at ${sha}, but opening or updating its pull request failed: ${failed?.message}\n` +
+        `Finish by hand: open a pull request from ${ticket.branch} onto ${base}, or update the open one, ` +
+        `with "Closes #${ticket.n}.", the report and the Verdict as its body.`,
     );
   }
-  process.stdout.write(`${done} onto ${base} for #${ticket.n} (${ticket.branch} at ${sha}); #${ticket.n} closes when it merges.\n${notes}${pruned}`);
+  const { verb, url } = published;
+  process.stdout.write(`${verb} ${url} onto ${base} for #${ticket.n} (${ticket.branch} at ${sha}); #${ticket.n} closes when it merges.\n${notes}${pruned}`);
 }
 
-/** Opens the Ticket's pull request, titled as the Ticket, or replaces the open one's body; says which, with its URL. */
-function publishPullRequest(ticket: Ticket, base: string, body: string): string {
-  const listing = ["pr", "list", "--head", ticket.branch, "--state", "open", "--json", "number,url"];
+/** The Ticket's pull request, and whether this Landing opened it or updated the open one. */
+interface Published {
+  verb: "Opened" | "Updated";
+  url: string;
+}
+
+/** Opens the Ticket's pull request onto the base, titled as the Ticket, or replaces the open one's body. */
+function publishPullRequest(ticket: Ticket, base: string, body: string): Published {
+  const listing = ["pr", "list", "--head", ticket.branch, "--base", base, "--state", "open", "--json", "number,url"];
   const open = ghJson<Array<{ number: number; url: string }>>(listing);
   if (open.length > 0) {
     gh(["pr", "edit", String(open[0].number), "--body", body]);
-    return `Updated ${open[0].url}`;
+    return { verb: "Updated", url: open[0].url };
   }
   const { title } = ghJson<{ title: string }>(["api", `repos/{owner}/{repo}/issues/${ticket.n}`]);
-  const url = gh(["pr", "create", "--base", base, "--head", ticket.branch, "--title", title, "--body", body]).trim().split("\n").at(-1);
-  return `Opened ${url}`;
+  const created = gh(["pr", "create", "--base", base, "--head", ticket.branch, "--title", title, "--body", body]);
+  const url = created.trim().split("\n").at(-1);
+  if (!url) throw new Failure("gh pr create printed no pull request URL");
+  return { verb: "Opened", url };
 }
 
 /**

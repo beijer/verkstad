@@ -657,7 +657,7 @@ test("Landing refuses a Contract whose surfaces are malformed, touching nothing"
 const PR_MODE = { landing: "pull-request" };
 
 /** The `gh pr list` call a pull-request Landing makes to find the Ticket's open pull request. */
-const LIST_PRS = ["pr", "list", "--head", "issue-7", "--state", "open", "--json", "number,url"];
+const LIST_PRS = ["pr", "list", "--head", "issue-7", "--base", "main", "--state", "open", "--json", "number,url"];
 
 test("in pull-request mode a clean branch is rebased, gated in full, pushed as issue-<n> and opened as a pull request that closes the Ticket on merge; the base is unchanged and the Ticket stays open", (t) => {
   const p = project(t, {
@@ -715,6 +715,7 @@ test("in pull-request mode a Ticket whose pull request is open gets its branch f
     pullRequests: [
       { number: 12, title: "Show the job's time", body: "Closes #7.\n\nThe first report.", state: "open", head: "issue-7", base: "main" },
       { number: 10, title: "An older try", body: "", state: "closed", head: "issue-7", base: "main" },
+      { number: 11, title: "A backport", body: "Onto release.", state: "open", head: "issue-7", base: "release" },
     ],
     contract: contract([{ name: "build", command: "true" }], { ...PR_MODE, surfaces: UI }),
     files: { "src/ui/panel.ts": "panel\n" },
@@ -734,7 +735,10 @@ test("in pull-request mode a Ticket whose pull request is open gets its branch f
   assert.notEqual(originHead(p, "issue-7"), earlier, "origin's issue-7 is replaced");
   assert.equal(p.git("--git-dir", p.origin, "rev-parse", "issue-7~1"), base);
   const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "issue-7");
-  assert.match(r.stdout, new RegExp(`^Updated https://github\\.com/owner/project/pull/12 onto main for #7 \\(issue-7 at ${sha}\\); #7 closes when it merges\\.$`, "m"));
+  assert.equal(
+    r.stdout.split("\n").slice(2).join("\n"),
+    `Updated https://github.com/owner/project/pull/12 onto main for #7 (issue-7 at ${sha}); #7 closes when it merges.\n`,
+  );
   const evidence = join(p.dir, ".claude", "verkstad", "evidence-7");
   const body =
     `Closes #7.\n\n${REPORT}\n` +
@@ -747,6 +751,7 @@ test("in pull-request mode a Ticket whose pull request is open gets its branch f
     [
       [12, "open", body],
       [10, "closed", ""],
+      [11, "open", "Onto release."],
     ],
   );
   assert.equal(issueOf(p, 7).state, "open");
@@ -861,7 +866,7 @@ test("in pull-request mode, when opening the pull request fails after the push, 
   assert.equal(
     r.stderr,
     `verkstad land: #7 is on origin as issue-7 at ${sha}, but opening or updating its pull request failed: gh pr create failed: HTTP 502: Bad Gateway\n` +
-      'Open it by hand from issue-7 onto main, with "Closes #7.", the report and the Verdict as its body.\n' +
+      'Finish by hand: open a pull request from issue-7 onto main, or update the open one, with "Closes #7.", the report and the Verdict as its body.\n' +
       "reason: github-failed\n",
   );
   assert.equal(originHead(p), base);

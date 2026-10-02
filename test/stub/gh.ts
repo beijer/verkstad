@@ -90,15 +90,18 @@ const commands: Record<string, Command> = {
     state.labels.push({ name, description: flags.get("--description")?.[0] ?? "", color });
     return { stderr: `✓ Label "${name}" created in ${state.repo}\n` };
   },
-  // Pull requests whose head branch is --head, in the --state asked for (open by default), newest first.
+  // The open pull requests from --head onto --base, newest first.
   "pr list": (args, state) => {
-    const { positionals, flags } = parse(args, { value: ["--head", "--state", "--json"] });
+    const { positionals, flags } = parse(args, { value: ["--head", "--base", "--state", "--json"] });
     if (positionals.length) throw new Error(`unexpected arguments ${JSON.stringify(positionals)}`);
-    const head = flags.get("--head")?.[0];
-    const wanted = flags.get("--state")?.[0] ?? "open";
-    if (!["open", "closed", "merged", "all"].includes(wanted)) throw new Error(`invalid --state ${wanted}`);
+    const [head, base, wanted] = ["--head", "--base", "--state"].map((flag) => {
+      const value = flags.get(flag)?.[0];
+      if (value === undefined) throw new Error(`${flag} is required`);
+      return value;
+    });
+    if (wanted !== "open") throw new Error(`only --state open is supported, not ${wanted}`);
     const matching = state.pullRequests
-      .filter((pr) => (head === undefined || pr.head === head) && (wanted === "all" || pr.state === wanted))
+      .filter((pr) => pr.head === head && pr.base === base && pr.state === "open")
       .sort((a, b) => b.number - a.number);
     return json(matching.map((pr) => pick(listedPullRequest(state, pr), flags.get("--json"))));
   },
@@ -120,19 +123,17 @@ const commands: Record<string, Command> = {
     state.pullRequests.push({ number, title, body, state: "open", head, base });
     return { stdout: `${pullRequestUrl(state, number)}\n` };
   },
-  // Replaces a pull request's body and, when given, its title.
+  // Replaces a pull request's body.
   "pr edit": (args, state) => {
-    const { positionals, flags } = parse(args, { value: ["--body", "--title"] });
+    const { positionals, flags } = parse(args, { value: ["--body"] });
     if (positionals.length !== 1 || !/^\d+$/.test(positionals[0])) {
       throw new Error(`expected one pull request number, got ${JSON.stringify(positionals)}`);
     }
     const pr = state.pullRequests.find((p) => p.number === Number(positionals[0]));
     if (!pr) throw new Error(`no pull requests found for ${positionals[0]}`);
     const body = flags.get("--body")?.[0];
-    const title = flags.get("--title")?.[0];
-    if (body === undefined && title === undefined) throw new Error("nothing to edit");
-    if (body !== undefined) pr.body = body;
-    if (title !== undefined) pr.title = title;
+    if (body === undefined) throw new Error("only --body is supported");
+    pr.body = body;
     return { stdout: `${pullRequestUrl(state, pr.number)}\n` };
   },
 };
