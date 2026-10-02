@@ -47,35 +47,114 @@ const commands: Record<string, Command> = {
 const graphql: Record<string, GraphqlOperation> = {
   // Issues, filtered as the query asks (`states: OPEN`, `labels: [$label]`), with
   // their labels, assignees, sub-issue count and blockers.
-  Frontier: (v, state, query) => {
-    checkRepo(state, v);
-    const onlyOpen = /states:\s*OPEN\b/.test(query);
-    const onlyLabel = /labels:\s*\[\$label\]/.test(query);
-    const matching = state.issues
-      .filter((i) => (!onlyOpen || i.state === "open") && (!onlyLabel || i.labels.includes(String(v.label))))
-      .sort((a, b) => a.number - b.number);
-    const { nodes, pageInfo } = page(matching, v, state);
-    return {
-      repository: {
-        issues: {
-          pageInfo,
-          nodes: nodes.map((issue) => ({
-            number: issue.number,
-            title: issue.title,
-            labels: { nodes: issue.labels.map((name) => ({ name })) },
-            assignees: { nodes: issue.assignees.map((login) => ({ login })) },
-            subIssues: { totalCount: subIssues(state, issue.number).length },
-            blockedBy: { totalCount: issue.blockedBy.length, nodes: issue.blockedBy.map((n) => issueRef(state, n)) },
-          })),
-        },
-      },
-    };
-  },
+  Frontier: (v, state, query) => issues(v, state, query),
+  // Open issues with their bodies and the native links they have: parent and blockers.
+  OpenIssueLinks: (v, state, query) => issues(v, state, query),
 };
+
+/** A page of the repo's issues, filtered as the query asks, each with every field an operation reads. */
+function issues(v: Variables, state: StubState, query: string) {
+  checkRepo(state, v);
+  const onlyOpen = /states:\s*OPEN\b/.test(query);
+  const onlyLabel = /labels:\s*\[\$label\]/.test(query);
+  const matching = state.issues
+    .filter((i) => (!onlyOpen || i.state === "open") && (!onlyLabel || i.labels.includes(String(v.label))))
+    .sort((a, b) => a.number - b.number);
+  const { nodes, pageInfo } = page(matching, v, state);
+  return {
+    repository: {
+      issues: {
+        pageInfo,
+        nodes: nodes.map((issue) => ({
+          number: issue.number,
+          databaseId: issue.id,
+          title: issue.title,
+          body: issue.body,
+          labels: { nodes: issue.labels.map((name) => ({ name })) },
+          assignees: { nodes: issue.assignees.map((login) => ({ login })) },
+          parent: issue.parent === null ? null : { number: issue.parent },
+          subIssues: { totalCount: subIssues(state, issue.number).length },
+          blockedBy: { totalCount: issue.blockedBy.length, nodes: issue.blockedBy.map((n) => issueRef(state, n)) },
+        })),
+      },
+    },
+  };
+}
 
 // --- gh api <endpoint>: REST routes -----------------------------------------
 
-const rest: RestRoute[] = [];
+const rest: RestRoute[] = [
+  // An issue, or a pull request's issue (which carries `pull_request`).
+  {
+    method: "GET",
+    path: /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/,
+    handle: ([, number], _fields, state) => restIssue(state, Number(number)),
+  },
+  // Adds the issue whose database id is `sub_issue_id` as a sub-issue; an issue has one parent at most.
+  {
+    method: "POST",
+    path: /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/sub_issues$/,
+    handle: ([, number], fields, state) => {
+      const parent = issueOr404(state, Number(number));
+      const child = byId(state, fields.sub_issue_id);
+      if (child.parent !== null) throw new Error(`Sub issue may only have one parent (#${child.number} has #${child.parent})`);
+      if (child.number === parent.number) throw new Error("An issue cannot be its own sub-issue");
+      child.parent = parent.number;
+      return restIssue(state, parent.number);
+    },
+  },
+  // Marks the issue as blocked by the issue whose database id is `issue_id`.
+  {
+    method: "POST",
+    path: /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/dependencies\/blocked_by$/,
+    handle: ([, number], fields, state) => {
+      const issue = issueOr404(state, Number(number));
+      const blocker = byId(state, fields.issue_id);
+      if (issue.blockedBy.includes(blocker.number)) throw new Error(`#${issue.number} is already blocked by #${blocker.number}`);
+      if (blocker.number === issue.number) throw new Error("An issue cannot block itself");
+      issue.blockedBy.push(blocker.number);
+      return restIssue(state, issue.number);
+    },
+  },
+];
+
+/** What GitHub answers with a 4xx other than 422, e.g. 404 for an issue that doesn't exist. */
+class HttpError extends Error {
+  status: number;
+
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
+
+function issueOr404(state: StubState, number: number): StubIssue {
+  const issue = findIssue(state, number);
+  if (!issue) throw new HttpError(404, "Not Found");
+  return issue;
+}
+
+/** The issue a REST body names by database id; GitHub wants an integer there, as `-F` sends it. */
+function byId(state: StubState, id: unknown): StubIssue {
+  if (typeof id !== "number") throw new Error(`the issue id must be an integer, not ${JSON.stringify(id)}`);
+  const issue = state.issues.find((i) => i.id === id);
+  if (!issue) throw new HttpError(404, "Not Found");
+  return issue;
+}
+
+function restIssue(state: StubState, number: number): Record<string, unknown> {
+  const issue = findIssue(state, number);
+  if (issue) return { id: issue.id, number, title: issue.title, state: issue.state };
+  const pr = state.pullRequests.find((p) => p.number === number);
+  if (!pr) throw new HttpError(404, "Not Found");
+  return {
+    id: pr.id ?? 2_000_000 + number,
+    number,
+    title: pr.title,
+    state: pr.state === "open" ? "open" : "closed",
+    pull_request: { url: `https://api.github.com/repos/${state.repo}/pulls/${number}` },
+  };
+}
 
 // --- the rest is plumbing ---------------------------------------------------
 
@@ -106,12 +185,16 @@ function api(args: string[], state: StubState): Reply {
   }
   const method = (flags.get("-X") ?? flags.get("--method") ?? [Object.keys(fields).length ? "POST" : "GET"])[0];
   const path = (endpoint ?? "").replace(/^\//, "").replace("{owner}/{repo}", state.repo);
+  if (path.startsWith("repos/") && !path.startsWith(`repos/${state.repo}/`)) {
+    return { stderr: "gh: Not Found (HTTP 404)\n", code: 1 };
+  }
   for (const route of rest) {
     const match = route.method === method ? path.match(route.path) : null;
     if (match) {
       try {
         return json(route.handle(match, fields, state));
       } catch (error) {
+        if (error instanceof HttpError) return { stderr: `gh: ${error.message} (HTTP ${error.status})\n`, code: 1 };
         return fail(`HTTP 422: ${(error as Error).message}`);
       }
     }

@@ -8,6 +8,8 @@ export interface StubComment {
 
 export interface StubIssue {
   number: number;
+  /** The database id, which REST calls such as adding a sub-issue take instead of the number. */
+  id: number;
   title: string;
   body: string;
   state: "open" | "closed";
@@ -23,6 +25,8 @@ export interface StubIssue {
 
 export interface StubPullRequest {
   number: number;
+  /** The database id of the pull request's issue; defaults to 2000000 + number. */
+  id?: number;
   title: string;
   body: string;
   state: "open" | "closed" | "merged";

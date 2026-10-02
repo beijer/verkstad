@@ -65,6 +65,7 @@ export const defaultContract = {
 
 export function issue(seed: Partial<StubIssue> & { number: number }): StubIssue {
   return {
+    id: 1_000_000 + seed.number,
     title: `Issue ${seed.number}`,
     body: "",
     state: "open",

@@ -23,6 +23,13 @@ verkstad frontier          # the Tickets ready now, in progress and waiting
 verkstad frontier --json   # the same, as data
 ```
 
+A Project whose issues name their Spec and blockers in text (`## Parent`, `## Blocked by`) converts them once to native links, which is what `verkstad frontier` reads:
+
+```sh
+verkstad convert-links --dry-run   # what it would link, and what it skips and why
+verkstad convert-links             # add the links; a second run adds nothing
+```
+
 ## Develop
 
 Node 24, no build step: `npm ci`, then `npm run typecheck` and `npm test`. [CLAUDE.md](CLAUDE.md) has the conventions; [docs/contract.md](docs/contract.md) describes the Contract a Project gives verkstad.

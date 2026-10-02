@@ -1,5 +1,6 @@
 // The verkstad command line: one module per subcommand, dispatched here.
 
+import { convertLinks } from "./convert-links.ts";
 import { Failure } from "./fail.ts";
 import { frontier } from "./frontier.ts";
 
@@ -15,10 +16,15 @@ const subcommands: Record<string, Subcommand> = {
     summary: "Lists the Tickets that are ready, in progress and waiting, and what each waits on",
     run: frontier,
   },
+  "convert-links": {
+    usage: "verkstad convert-links [--dry-run]",
+    summary: "Turns the parent and blockers open issues name in their text into native sub-issue and blocked_by links",
+    run: convertLinks,
+  },
 };
 
 function usage(): string {
-  const lines = Object.values(subcommands).map((s) => `  ${s.usage.padEnd(28)} ${s.summary}`);
+  const lines = Object.values(subcommands).map((s) => `  ${s.usage.padEnd(36)} ${s.summary}`);
   return ["usage: verkstad <subcommand> [options]", "", ...lines, ""].join("\n");
 }
 

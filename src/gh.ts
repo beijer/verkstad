@@ -10,16 +10,30 @@ function describe(args: string[]): string {
 }
 
 export function gh(args: string[]): string {
-  const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
-  if (r.error) throw new Failure(`could not run gh: ${r.error.message}`);
-  if (r.status !== 0) {
-    throw new Failure(`${describe(args)} failed: ${r.stderr.trim() || `exit ${r.status}`}`);
-  }
+  const r = run(args);
+  if (!r.ok) throw new Failure(`${describe(args)} failed: ${r.stderr}`);
   return r.stdout;
 }
 
 export function ghJson<T>(args: string[]): T {
-  const out = gh(args);
+  return parse<T>(args, gh(args));
+}
+
+/** Like ghJson, but null when GitHub answers that what was asked for is not there (HTTP 404 or 410). */
+export function ghJsonUnlessMissing<T>(args: string[]): T | null {
+  const r = run(args);
+  if (r.ok) return parse<T>(args, r.stdout);
+  if (/\(HTTP (404|410)\)/.test(r.stderr)) return null;
+  throw new Failure(`${describe(args)} failed: ${r.stderr}`);
+}
+
+function run(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+  if (r.error) throw new Failure(`could not run gh: ${r.error.message}`);
+  return { ok: r.status === 0, stdout: r.stdout, stderr: r.stderr.trim() || `exit ${r.status}` };
+}
+
+function parse<T>(args: string[], out: string): T {
   try {
     return JSON.parse(out) as T;
   } catch {
