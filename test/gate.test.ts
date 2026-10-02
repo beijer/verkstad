@@ -159,6 +159,20 @@ test("the Gate refuses to log into a log directory git would track", (t) => {
   assert.equal(existsSync(join(p.dir, "built")), false);
 });
 
+test("a branch that adds the log directory to .gitignore can run the Gate before it lands", (t) => {
+  const p = project(t, {
+    contract: contract([{ name: "build", command: "echo built" }]),
+    files: { ".gitignore": "node_modules/\n" },
+  });
+  const wt = worktree(p, "issue-15");
+  writeFileSync(join(wt, ".gitignore"), "node_modules/\n.claude/verkstad/\n");
+
+  const r = p.runIn(wt, "gate");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^ok {2}build\nGate passed\. Log: .*\/project\/\.claude\/verkstad\/gate-issue-15-/);
+});
+
 test("a step with unlessExists is skipped while that path exists in the worktree", (t) => {
   const p = project(t, {
     contract: contract([

@@ -93,10 +93,14 @@ function plan(root: string, contract: Contract, quick: boolean): Planned[] {
   });
 }
 
-/** Fails unless git ignores the log directory, so that no log is ever committed. */
-function checkIgnored(cwd: string, dir: string): void {
+/**
+ * Fails unless git ignores the log directory, so that no log is ever committed: in the main checkout, or
+ * in the worktree whose branch adds it to .gitignore and has not landed yet.
+ */
+function checkIgnored(root: string, dir: string): void {
   mkdirSync(dir, { recursive: true });
-  if (tryGit(mainCheckout(cwd), ["check-ignore", "-q", ".claude/verkstad/"]).status !== 0) {
+  const ignored = (cwd: string) => tryGit(cwd, ["check-ignore", "-q", ".claude/verkstad/"]).status === 0;
+  if (!ignored(root) && !ignored(mainCheckout(root))) {
     throw new Failure(`the log directory ${dir}/ is not gitignored; add .claude/verkstad/ to the Project's .gitignore`);
   }
 }
