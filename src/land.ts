@@ -1,10 +1,17 @@
 // `verkstad land <n> <worktree> <report-file>`: lands a finished Ticket's
 // branch, issue-<n>, on the base branch. Under a lock, so that one Landing runs
 // at a time per main checkout, it rebases the branch onto origin's base branch,
-// runs the full Gate in the worktree, checks the Ticket's Verdict and pushes,
-// rebasing again when the base moved meanwhile. Then it closes the Ticket with
-// the report and the Verdict, removes the worktree and the branch,
-// fast-forwards the main checkout and prunes the log directory.
+// runs the full Gate in the worktree and checks the Ticket's Verdict. Then, by
+// the Contract's Landing mode:
+//   - push (the default): it pushes to the base branch, rebasing again when the
+//     base moved meanwhile, closes the Ticket with the report and the Verdict,
+//     and fast-forwards the main checkout;
+//   - pull-request: it force-pushes issue-<n> to origin and opens a pull request
+//     onto the base branch (or updates the open one) whose body closes the
+//     Ticket on merge and carries the report and the Verdict. The Ticket stays
+//     open, and assigned, until the owner merges it.
+// Either way it removes the worktree and the local branch and prunes the log
+// directory.
 //
 // `verkstad land --park <n> <worktree> <reason-file>`: Parks the Ticket. Its
 // branch goes to origin, its worktree (if a failed Landing left one) is
@@ -20,10 +27,10 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { readContract, readLandingMode, readSurfaces } from "./contract.ts";
+import { type LandingMode, readContract, readLandingMode, readSurfaces } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { runGate } from "./gate.ts";
-import { gh } from "./gh.ts";
+import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
 import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
@@ -163,33 +170,40 @@ interface Landed {
   check: VerdictCheck;
 }
 
-/** Rebases, gates, checks the Verdict and pushes until the push lands or fails. */
+/** Fetches the base, rebases the branch onto it, runs the full Gate and checks the Verdict; a failure throws. */
+function rebaseGateCheck(ticket: Ticket, base: string): VerdictCheck {
+  const upstream = `origin/${base}`;
+  fetch(ticket, base);
+  const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
+  if (rebase.status !== 0) {
+    const unmerged = tryGit(ticket.root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
+    tryGit(ticket.root, ["rebase", "--abort"]);
+    const how = unmerged.length ? `conflicts in ${unmerged.join(", ")}.` : `failed: ${rebase.stderr.trim()}`;
+    throw didNotLand(ticket, "conflict", `rebasing ${ticket.branch} onto ${upstream} ${how}`, true);
+  }
+  if (git(ticket.root, ["rev-list", "--count", `${upstream}..HEAD`]).trim() === "0") {
+    throw didNotLand(ticket, "no-commits", `${ticket.branch} has no commits that are not on ${upstream}.`);
+  }
+  try {
+    runGate(ticket.root, false);
+  } catch (error) {
+    if (!(error instanceof Failure)) throw error;
+    throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
+  }
+  const check = checkVerdict(ticket.root, ticket.n, upstream);
+  if (check.failure) {
+    // The worktree stays: it is clean and rebased, and the Verifier Walks it next.
+    const { reason, message } = check.failure;
+    throw new LandingFailure(reason, `#${ticket.n} did not land: ${message}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
+  }
+  return check;
+}
+
+/** Rebases, gates, checks the Verdict and pushes to the base branch until the push lands or fails. */
 function rebaseGatePush(ticket: Ticket, base: string): Landed {
   const upstream = `origin/${base}`;
   for (let attempt = 1; ; attempt++) {
-    fetch(ticket, base);
-    const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
-    if (rebase.status !== 0) {
-      const unmerged = tryGit(ticket.root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
-      tryGit(ticket.root, ["rebase", "--abort"]);
-      const how = unmerged.length ? `conflicts in ${unmerged.join(", ")}.` : `failed: ${rebase.stderr.trim()}`;
-      throw didNotLand(ticket, "conflict", `rebasing ${ticket.branch} onto ${upstream} ${how}`, true);
-    }
-    if (git(ticket.root, ["rev-list", "--count", `${upstream}..HEAD`]).trim() === "0") {
-      throw didNotLand(ticket, "no-commits", `${ticket.branch} has no commits that are not on ${upstream}.`);
-    }
-    try {
-      runGate(ticket.root, false);
-    } catch (error) {
-      if (!(error instanceof Failure)) throw error;
-      throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
-    }
-    const check = checkVerdict(ticket.root, ticket.n, upstream);
-    if (check.failure) {
-      // The worktree stays: it is clean and rebased, and the Verifier Walks it next.
-      const { reason, message } = check.failure;
-      throw new LandingFailure(reason, `#${ticket.n} did not land: ${message}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
-    }
+    const check = rebaseGateCheck(ticket, base);
     const push = tryGit(ticket.root, ["push", "--quiet", "origin", `HEAD:refs/heads/${base}`]);
     if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), check };
     fetch(ticket, base);
@@ -224,11 +238,11 @@ function landTicket(args: Args): void {
   const ticket = checkTicket(args);
   const report = readFile(args.file, "report");
   let base: string;
+  let mode: LandingMode;
   try {
     base = readContract(ticket.root).baseBranch;
     readSurfaces(ticket.root);
-    const mode = readLandingMode(ticket.root);
-    if (mode !== "push") throw new Failure(`the Landing mode ${mode} is not supported yet; set landing to "push"`);
+    mode = readLandingMode(ticket.root);
   } catch (error) {
     if (error instanceof Failure) throw refused(error.message);
     throw error;
@@ -238,36 +252,94 @@ function landTicket(args: Args): void {
 
   const lock = takeLock(ticket);
   try {
-    const { sha, check } = rebaseGatePush(ticket, base);
-    let closing: Failure | null = null;
-    try {
-      const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeVerification(check)}`;
-      gh(["issue", "close", String(ticket.n), "--comment", comment]);
-    } catch (error) {
-      if (!(error instanceof Failure)) throw error;
-      closing = error;
-    }
-    const notes =
-      removeWorktree(ticket.main, ticket.root) +
-      (tryGit(ticket.main, ["branch", "--delete", "--force", ticket.branch]).status === 0
-        ? ""
-        : `Could not delete the branch ${ticket.branch}.\n`) +
-      deleteParkedBranch(ticket) +
-      fastForwardMain(ticket.main, base);
-    const dir = logDirectory(ticket.main);
-    const pruned = describePruned(dir, pruneLogDirectory(dir));
-    if (closing) {
-      process.stdout.write(notes + pruned);
-      throw new LandingFailure(
-        "github-failed",
-        `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\n` +
-          "Close it by hand, with the report and the Verdict as the comment.",
-      );
-    }
-    process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);
+    if (mode === "pull-request") openPullRequest(ticket, base, report);
+    else pushToBase(ticket, base, report);
   } finally {
     closeSync(lock);
   }
+}
+
+/** Removes the worktree and the local branch once the branch is on origin; says what it could not do. */
+function removeWorktreeAndBranch(ticket: Ticket): string {
+  return (
+    removeWorktree(ticket.main, ticket.root) +
+    (tryGit(ticket.main, ["branch", "--delete", "--force", ticket.branch]).status === 0
+      ? ""
+      : `Could not delete the branch ${ticket.branch}.\n`)
+  );
+}
+
+/** Landing mode push: lands the branch on the base branch and closes the Ticket. */
+function pushToBase(ticket: Ticket, base: string, report: string): void {
+  const { sha, check } = rebaseGatePush(ticket, base);
+  let closing: Failure | null = null;
+  try {
+    const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeVerification(check)}`;
+    gh(["issue", "close", String(ticket.n), "--comment", comment]);
+  } catch (error) {
+    if (!(error instanceof Failure)) throw error;
+    closing = error;
+  }
+  const notes = removeWorktreeAndBranch(ticket) + deleteParkedBranch(ticket) + fastForwardMain(ticket.main, base);
+  const dir = logDirectory(ticket.main);
+  const pruned = describePruned(dir, pruneLogDirectory(dir));
+  if (closing) {
+    process.stdout.write(notes + pruned);
+    throw new LandingFailure(
+      "github-failed",
+      `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\n` +
+        "Close it by hand, with the report and the Verdict as the comment.",
+    );
+  }
+  process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);
+}
+
+/**
+ * Landing mode pull-request: force-pushes the rebased branch to origin, over what an earlier Park or
+ * Landing put there, and opens a pull request onto the base branch, or updates the one already open.
+ * Its body closes the Ticket on merge; until then the Ticket stays open and assigned. The local branch
+ * goes with the worktree: the pull request's branch is on origin, and a leftover issue-<n> branch would
+ * tell the next Run the Ticket stopped mid-way.
+ */
+function openPullRequest(ticket: Ticket, base: string, report: string): void {
+  const check = rebaseGateCheck(ticket, base);
+  const push = tryGit(ticket.root, ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${ticket.branch}`]);
+  if (push.status !== 0) throw didNotLand(ticket, "push-failed", `pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}`);
+  const sha = git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim();
+  const body = `Closes #${ticket.n}.\n\n${report}\n\n${describeVerification(check)}`;
+  let done = "";
+  let failed: Failure | null = null;
+  try {
+    done = publishPullRequest(ticket, base, body);
+  } catch (error) {
+    if (!(error instanceof Failure)) throw error;
+    failed = error;
+  }
+  const notes = removeWorktreeAndBranch(ticket);
+  const dir = logDirectory(ticket.main);
+  const pruned = describePruned(dir, pruneLogDirectory(dir));
+  if (failed) {
+    process.stdout.write(notes + pruned);
+    throw new LandingFailure(
+      "github-failed",
+      `#${ticket.n} is on origin as ${ticket.branch} at ${sha}, but opening or updating its pull request failed: ${failed.message}\n` +
+        `Open it by hand from ${ticket.branch} onto ${base}, with "Closes #${ticket.n}.", the report and the Verdict as its body.`,
+    );
+  }
+  process.stdout.write(`${done} onto ${base} for #${ticket.n} (${ticket.branch} at ${sha}); #${ticket.n} closes when it merges.\n${notes}${pruned}`);
+}
+
+/** Opens the Ticket's pull request, titled as the Ticket, or replaces the open one's body; says which, with its URL. */
+function publishPullRequest(ticket: Ticket, base: string, body: string): string {
+  const listing = ["pr", "list", "--head", ticket.branch, "--state", "open", "--json", "number,url"];
+  const open = ghJson<Array<{ number: number; url: string }>>(listing);
+  if (open.length > 0) {
+    gh(["pr", "edit", String(open[0].number), "--body", body]);
+    return `Updated ${open[0].url}`;
+  }
+  const { title } = ghJson<{ title: string }>(["api", `repos/{owner}/{repo}/issues/${ticket.n}`]);
+  const url = gh(["pr", "create", "--base", base, "--head", ticket.branch, "--title", title, "--body", body]).trim().split("\n").at(-1);
+  return `Opened ${url}`;
 }
 
 /**

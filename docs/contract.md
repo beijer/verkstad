@@ -74,7 +74,7 @@ An object, required: the Gate that `verkstad gate` runs.
 
 ### `landing`
 
-A string, optional: the Landing mode, how `verkstad land` puts a Ticket on the base branch. `"push"`, the default, pushes the rebased branch straight to `baseBranch`. `"pull-request"` (opening a pull request that closes the Ticket on merge) is not supported yet: `land` refuses it. Any other value fails naming the field. `gate` does not read it. What Landing does is under [Landing](#landing-1) below.
+A string, optional: the Landing mode, how `verkstad land` puts a Ticket on the base branch. `"push"`, the default, pushes the rebased branch straight to `baseBranch` and closes the Ticket. `"pull-request"`, for a Project whose base branch is protected or reviewed, pushes the rebased branch to `origin` as `issue-<n>` and opens a pull request onto `baseBranch` that closes the Ticket when the owner merges it. Any other value fails naming the field. `gate` does not read it. What Landing does is under [Landing](#landing-1) below.
 
 ### `surfaces`
 
@@ -122,7 +122,17 @@ Verification state: live-verified. Surfaces: ui. Evidence: `/home/me/code/app/.c
 
 Without one, which only a Ticket touching no Surface lands with, it is `Verification state: test-verified. Surfaces: none.`: its tests, run by the Gate, are what proved it. Only a `live-verified` Verdict makes a Ticket more than `test-verified`: a Ticket touching no Surface lands whatever its Verdict says, and closes `test-verified`, with `The Verifier's Verdict for this patch was <state>.`, its Evidence and its criteria after the Surfaces.
 
-It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Every failure prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error` and a failed Verdict check, whose worktree the Verifier Walks next.
+It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0.
+
+That is the `push` Landing mode. In the `pull-request` mode steps 1 to 3 are the same, and then:
+
+4. It force-pushes `HEAD` to `issue-<n>` on `origin`, over whatever an earlier Park or Landing put there. It does not touch `<baseBranch>`, so it never retries.
+5. It opens a pull request from `issue-<n>` onto `<baseBranch>`, titled as the Ticket, whose body is `Closes #<n>.`, a blank line, the report, a blank line and how far the Ticket was proven, as in the closing comment. When a pull request from `issue-<n>` is already open, from an earlier Landing of the Ticket, it replaces that one's body instead; the push has already updated its commits.
+6. It removes the worktree and the local branch (the pull request's branch is on `origin`, and a leftover local `issue-<n>` would tell the next Run that the Ticket stopped mid-way) and prunes the log directory. It leaves the main checkout alone, since the base has not moved.
+
+The Ticket stays open, and assigned, until the owner merges the pull request, which closes it; `verkstad frontier` lists it as in progress meanwhile, so no Run dispatches it again, and the Tickets it blocks wait for the merge. It prints `Opened <url> onto <baseBranch> for #<n> (issue-<n> at <sha>); #<n> closes when it merges.`, or `Updated <url> …` for a pull request that was open, and exits 0.
+
+Every failure, in either mode, prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and no pull request, and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error` and a failed Verdict check, whose worktree the Verifier Walks next.
 
 | Reason | What failed | The branch |
 | --- | --- | --- |
@@ -133,8 +143,8 @@ It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Eve
 | `verdict-missing` | The branch touches a Surface, and the Ticket has no Verdict, or its Verdict file is malformed. The Verifier Walks it. | Kept, rebased, in its worktree. |
 | `verdict-void` | The branch touches a Surface, and its Verdict was given for another patch: a conflict resolution or a new commit changed it. Whatever the Verdict's state, the Verifier Walks it again. | Kept, rebased, in its worktree. |
 | `verdict-not-live` | The branch touches a Surface, and its Verdict for this patch is `test-verified`, `blocked` or `failed`; the message names it. The orchestrator routes on the state (a Fix round, or Park). | Kept, rebased, in its worktree. |
-| `push-failed` | `origin` refused the push, or the base moved during each of the 3 Gate runs. | Kept, rebased. |
-| `github-failed` | The branch landed (or, with `--park`, was pushed) and the worktree is removed, but updating the Ticket failed: finish it by hand. | Landed and deleted (with `--park`, kept). |
+| `push-failed` | `origin` refused the push, or the base moved during each of the 3 Gate runs (`push` mode). | Kept, rebased. |
+| `github-failed` | The branch landed (or, with `--park` or in `pull-request` mode, was pushed) and the worktree is removed, but updating the Ticket, or opening or updating its pull request, failed: finish it by hand. | Landed and deleted (in `pull-request` mode, on `origin` and deleted locally; with `--park`, kept). |
 | `error` | Anything else: git, gh or flock could not run, or the fetch failed. | Wherever the Landing stopped; the worktree is not removed. |
 
 The orchestrator routes an unknown reason to the owner.

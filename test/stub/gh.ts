@@ -14,7 +14,7 @@
 
 import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { findIssue, subIssues, type StubIssue, type StubState } from "./state.ts";
+import { findIssue, subIssues, type StubIssue, type StubPullRequest, type StubState } from "./state.ts";
 
 interface Reply {
   stdout?: string;
@@ -90,7 +90,69 @@ const commands: Record<string, Command> = {
     state.labels.push({ name, description: flags.get("--description")?.[0] ?? "", color });
     return { stderr: `✓ Label "${name}" created in ${state.repo}\n` };
   },
+  // Pull requests whose head branch is --head, in the --state asked for (open by default), newest first.
+  "pr list": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--head", "--state", "--json"] });
+    if (positionals.length) throw new Error(`unexpected arguments ${JSON.stringify(positionals)}`);
+    const head = flags.get("--head")?.[0];
+    const wanted = flags.get("--state")?.[0] ?? "open";
+    if (!["open", "closed", "merged", "all"].includes(wanted)) throw new Error(`invalid --state ${wanted}`);
+    const matching = state.pullRequests
+      .filter((pr) => (head === undefined || pr.head === head) && (wanted === "all" || pr.state === wanted))
+      .sort((a, b) => b.number - a.number);
+    return json(matching.map((pr) => pick(listedPullRequest(state, pr), flags.get("--json"))));
+  },
+  // Opens a pull request from --head onto --base; GitHub refuses a second open one for the same pair.
+  "pr create": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--base", "--head", "--title", "--body"] });
+    if (positionals.length) throw new Error(`unexpected arguments ${JSON.stringify(positionals)}`);
+    const [base, head, title, body] = ["--base", "--head", "--title", "--body"].map((flag) => {
+      const value = flags.get(flag)?.[0];
+      if (value === undefined) throw new Error(`${flag} is required: without it gh would prompt`);
+      return value;
+    });
+    const open = state.pullRequests.find((pr) => pr.state === "open" && pr.head === head && pr.base === base);
+    if (open) {
+      return fail(`a pull request for branch "${head}" into branch "${base}" already exists:\n${pullRequestUrl(state, open.number)}`);
+    }
+    // Issues and pull requests share one sequence of numbers.
+    const number = Math.max(0, ...state.issues.map((i) => i.number), ...state.pullRequests.map((pr) => pr.number)) + 1;
+    state.pullRequests.push({ number, title, body, state: "open", head, base });
+    return { stdout: `${pullRequestUrl(state, number)}\n` };
+  },
+  // Replaces a pull request's body and, when given, its title.
+  "pr edit": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--body", "--title"] });
+    if (positionals.length !== 1 || !/^\d+$/.test(positionals[0])) {
+      throw new Error(`expected one pull request number, got ${JSON.stringify(positionals)}`);
+    }
+    const pr = state.pullRequests.find((p) => p.number === Number(positionals[0]));
+    if (!pr) throw new Error(`no pull requests found for ${positionals[0]}`);
+    const body = flags.get("--body")?.[0];
+    const title = flags.get("--title")?.[0];
+    if (body === undefined && title === undefined) throw new Error("nothing to edit");
+    if (body !== undefined) pr.body = body;
+    if (title !== undefined) pr.title = title;
+    return { stdout: `${pullRequestUrl(state, pr.number)}\n` };
+  },
 };
+
+function pullRequestUrl(state: StubState, number: number): string {
+  return `https://github.com/${state.repo}/pull/${number}`;
+}
+
+/** A pull request with the fields `gh pr list --json` can select, named as gh names them. */
+function listedPullRequest(state: StubState, pr: StubPullRequest): Record<string, unknown> {
+  return {
+    number: pr.number,
+    url: pullRequestUrl(state, pr.number),
+    title: pr.title,
+    body: pr.body,
+    state: pr.state.toUpperCase(),
+    headRefName: pr.head,
+    baseRefName: pr.base,
+  };
+}
 
 /** The one issue a subcommand names by number. */
 function issueArg(state: StubState, positionals: string[]): StubIssue {

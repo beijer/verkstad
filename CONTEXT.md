@@ -83,7 +83,7 @@ The Project's checks a change must pass before it lands: CI without the release 
 _Avoid_: CI, checks, test suite
 
 **Landing**:
-Putting a finished Ticket's branch on the base branch: rebase, Gate, Verdict check, then a push or a pull request depending on the Project's Landing mode, and closing the Ticket with its report and Verdict.
+Putting a finished Ticket's branch on the base branch: rebase, Gate, Verdict check, then, depending on the Project's Landing mode, a push that closes the Ticket with its report and Verdict, or a pull request that carries them and closes the Ticket when the owner merges it.
 _Avoid_: merge, ship, deploy
 
 **Fix round**:

@@ -96,7 +96,7 @@ function assertNothingLanded(p: Project, wt: string, base: string, branchHead: s
   assert.equal(issueOf(p, 7).state, "open");
 }
 
-test("a clean branch lands: rebased onto the latest base, gated in full, pushed, the Ticket closed with the report, worktree and branch gone", (t) => {
+test("with no Landing mode in the Contract, a clean branch lands: rebased onto the latest base, gated in full, pushed, the Ticket closed with the report, worktree and branch gone", (t) => {
   const p = project(t, {
     issues: [claimed(7)],
     contract: contract([
@@ -355,21 +355,16 @@ test("Landing refuses the main checkout, a worktree on another branch and one wi
   assert.deepEqual(p.calls(), []);
 });
 
-test("Landing refuses a Landing mode it does not know, and pull-request until it is supported", (t) => {
-  for (const [landing, why] of [
-    ["merge", ".claude/harness.json: landing must be \"push\" or \"pull-request\""],
-    ["pull-request", "the Landing mode pull-request is not supported yet; set landing to \"push\""],
-  ]) {
-    const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }], { landing }) });
-    const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+test("Landing refuses a Landing mode it does not know, touching nothing", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }], { landing: "merge" }) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
 
-    const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
-    assert.equal(r.code, 2);
-    assert.equal(r.stderr, `verkstad land: refused: ${why}\nreason: refused\n`);
-    assert.equal(existsSync(wt), true);
-    assert.deepEqual(p.calls(), []);
-  }
+  assert.equal(r.code, 2);
+  assert.equal(r.stderr, 'verkstad land: refused: .claude/harness.json: landing must be "push" or "pull-request"\nreason: refused\n');
+  assert.equal(existsSync(wt), true);
+  assert.deepEqual(p.calls(), []);
 });
 
 test("when closing the Ticket fails after the push, the Landing still cleans up and exits with github-failed", (t) => {
@@ -657,6 +652,223 @@ test("Landing refuses a Contract whose surfaces are malformed, touching nothing"
   assert.equal(existsSync(join(p.dir, "..", "gate-ran")), false);
   assert.equal(existsSync(wt), true);
   assert.deepEqual(p.calls(), []);
+});
+
+const PR_MODE = { landing: "pull-request" };
+
+/** The `gh pr list` call a pull-request Landing makes to find the Ticket's open pull request. */
+const LIST_PRS = ["pr", "list", "--head", "issue-7", "--state", "open", "--json", "number,url"];
+
+test("in pull-request mode a clean branch is rebased, gated in full, pushed as issue-<n> and opened as a pull request that closes the Ticket on merge; the base is unchanged and the Ticket stays open", (t) => {
+  const p = project(t, {
+    issues: [{ ...claimed(7), title: "Show the job's time" }],
+    contract: contract(
+      [
+        { name: "build", command: "true" },
+        { name: "test", command: "test -e feature.txt && test -e meanwhile.txt" },
+      ],
+      PR_MODE,
+    ),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+  const base = originHead(p);
+  const mainBefore = p.git("rev-parse", "main");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(originHead(p), base, "origin's main is unchanged");
+  assert.equal(p.git("--git-dir", p.origin, "log", "--format=%s", "issue-7", "-2"), "Adds feature.txt. Refs #7\nLanded meanwhile");
+  assert.equal(p.git("--git-dir", p.origin, "rev-parse", "issue-7~1"), base, "origin's issue-7 is the branch rebased onto the base");
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "issue-7");
+  const lines = r.stdout.split("\n");
+  assert.deepEqual(lines.slice(0, 2), ["ok  build", "ok  test"]);
+  assert.match(lines[2], /^Gate passed\. Log: /);
+  assert.equal(
+    lines.slice(3).join("\n"),
+    `Opened https://github.com/owner/project/pull/8 onto main for #7 (issue-7 at ${sha}); #7 closes when it merges.\n`,
+  );
+  const body = `Closes #7.\n\n${REPORT}\nVerification state: test-verified. Surfaces: none.\n`;
+  assert.deepEqual(p.calls(), [
+    LIST_PRS,
+    ["api", "repos/{owner}/{repo}/issues/7"],
+    ["pr", "create", "--base", "main", "--head", "issue-7", "--title", "Show the job's time", "--body", body],
+  ]);
+  assert.deepEqual(p.state().pullRequests, [
+    { number: 8, title: "Show the job's time", body, state: "open", head: "issue-7", base: "main" },
+  ]);
+  const issue = issueOf(p, 7);
+  assert.equal(issue.state, "open");
+  assert.deepEqual(issue.assignees, ["owner"], "the Ticket stays assigned, so no Run dispatches it again");
+  assert.deepEqual(issue.labels, ["ready-for-agent"]);
+  assert.deepEqual(issue.comments, []);
+  assert.equal(existsSync(wt), false, "the worktree is removed");
+  assert.deepEqual(localBranches(p), [], "the local branch is deleted; the pull request's is on origin");
+  assert.equal(p.git("rev-parse", "main"), mainBefore, "the main checkout is left where it was");
+});
+
+test("in pull-request mode a Ticket whose pull request is open gets its branch force-pushed and the pull request's body replaced, with the Verdict", (t) => {
+  const p = project(t, {
+    issues: [{ ...claimed(7), title: "Show the job's time" }],
+    pullRequests: [
+      { number: 12, title: "Show the job's time", body: "Closes #7.\n\nThe first report.", state: "open", head: "issue-7", base: "main" },
+      { number: 10, title: "An older try", body: "", state: "closed", head: "issue-7", base: "main" },
+    ],
+    contract: contract([{ name: "build", command: "true" }], { ...PR_MODE, surfaces: UI }),
+    files: { "src/ui/panel.ts": "panel\n" },
+  });
+  const wt = ticket(p, 7, { "src/ui/panel.ts": "panel, with the job's time\n" });
+  // An earlier Landing pushed issue-7 and opened #12; the base moved since, so the rebased branch is not a fast-forward of it.
+  p.git("-C", wt, "push", "--quiet", "origin", "issue-7");
+  const earlier = originHead(p, "issue-7");
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+  recordVerdict(p, 7, wt, "live-verified");
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(originHead(p), base);
+  assert.notEqual(originHead(p, "issue-7"), earlier, "origin's issue-7 is replaced");
+  assert.equal(p.git("--git-dir", p.origin, "rev-parse", "issue-7~1"), base);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "issue-7");
+  assert.match(r.stdout, new RegExp(`^Updated https://github\\.com/owner/project/pull/12 onto main for #7 \\(issue-7 at ${sha}\\); #7 closes when it merges\\.$`, "m"));
+  const evidence = join(p.dir, ".claude", "verkstad", "evidence-7");
+  const body =
+    `Closes #7.\n\n${REPORT}\n` +
+    `Verification state: live-verified. Surfaces: ui. Evidence: \`${evidence}\`.\n\n` +
+    "- The panel shows the job's time: Opened the panel: it read 3 min 12 s.\n" +
+    "- Export saves an SVG: Clicked Export; out.svg opened with both layers.\n";
+  assert.deepEqual(p.calls(), [LIST_PRS, ["pr", "edit", "12", "--body", body]]);
+  assert.deepEqual(
+    p.state().pullRequests.map((pr) => [pr.number, pr.state, pr.body]),
+    [
+      [12, "open", body],
+      [10, "closed", ""],
+    ],
+  );
+  assert.equal(issueOf(p, 7).state, "open");
+  assert.equal(existsSync(wt), false);
+  assert.deepEqual(localBranches(p), []);
+});
+
+test("in pull-request mode a conflict, a red Gate and a missing Verdict fail as in push mode: same reason, nothing pushed, no pull request", (t) => {
+  const scenarios: Array<{
+    name: string;
+    gate: Step[];
+    surfaces?: object[];
+    files?: Record<string, string>;
+    branch: Record<string, string>;
+    elsewhere?: [string, string];
+    stderr: (p: Project) => RegExp;
+    reason: string;
+    worktreeKept: boolean;
+  }> = [
+    {
+      name: "conflict",
+      gate: [{ name: "build", command: "true" }],
+      files: { "src/a.txt": "a\n" },
+      branch: { "src/a.txt": "a from the Ticket\n" },
+      elsewhere: ["src/a.txt", "a from main\n"],
+      stderr: () =>
+        /^verkstad land: #7 did not land: rebasing issue-7 onto origin\/main conflicts in src\/a\.txt\.\nBranch issue-7 is kept as it was; its worktree is removed\.\nreason: conflict\n$/,
+      reason: "conflict",
+      worktreeKept: false,
+    },
+    {
+      name: "red Gate",
+      gate: [{ name: "unit tests", command: "echo 'expected 2, got 3'; exit 3" }],
+      branch: { "feature.txt": "a feature\n" },
+      stderr: () =>
+        /^verkstad land: #7 did not land: the Gate failed: unit tests failed \(exit 3\)\. The end of its output:\nexpected 2, got 3\nFull log: .*\nBranch issue-7 is kept; its worktree is removed\.\nreason: gate-failed\n$/,
+      reason: "gate-failed",
+      worktreeKept: false,
+    },
+    {
+      name: "missing Verdict",
+      gate: [{ name: "build", command: "true" }],
+      surfaces: UI,
+      branch: { "src/ui/panel.ts": "panel\n" },
+      stderr: (p) =>
+        new RegExp(
+          `^verkstad land: #7 did not land: #7 touches the Surface ui, and has no Verdict: there is no ${join(p.dir, ".claude", "verkstad", "verdict-7.json").replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.\n` +
+            "Branch issue-7 is kept, rebased, in its worktree\\.\nreason: verdict-missing\n$",
+        ),
+      reason: "verdict-missing",
+      worktreeKept: true,
+    },
+  ];
+  for (const s of scenarios) {
+    const p = project(t, {
+      issues: [claimed(7)],
+      contract: contract(s.gate, { ...PR_MODE, ...(s.surfaces ? { surfaces: s.surfaces } : {}) }),
+      files: s.files,
+    });
+    const wt = ticket(p, 7, s.branch);
+    if (s.elsewhere) landElsewhere(p, ...s.elsewhere, "Changes it on main");
+    const base = originHead(p);
+
+    const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+    assert.equal(r.code, 1, s.name);
+    assert.match(r.stderr, s.stderr(p), s.name);
+    assert.equal(reason(r.stderr), `reason: ${s.reason}`);
+    assert.equal(originHead(p), base, `${s.name}: origin's main is unchanged`);
+    assert.equal(originHas(p, "issue-7"), false, `${s.name}: nothing is pushed`);
+    assert.equal(existsSync(wt), s.worktreeKept, `${s.name}: the worktree is ${s.worktreeKept ? "kept" : "removed"}`);
+    assert.deepEqual(localBranches(p), ["issue-7"], `${s.name}: the branch is kept`);
+    assert.deepEqual(p.calls(), [], `${s.name}: no pull request, no issue touched`);
+    assert.deepEqual(p.state().pullRequests, []);
+    assert.equal(issueOf(p, 7).state, "open");
+  }
+});
+
+test("in pull-request mode origin refusing the branch fails with push-failed; branch kept, no pull request", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }], PR_MODE) });
+  const hook = join(p.origin, "hooks", "pre-receive");
+  writeFileSync(hook, "#!/bin/sh\necho 'issue branches are protected' >&2\nexit 1\n", { mode: 0o755 });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /^verkstad land: #7 did not land: pushing issue-7 to origin failed: .*issue branches are protected/m);
+  assert.match(r.stderr, /^Branch issue-7 is kept; its worktree is removed\.\nreason: push-failed\n$/m);
+  assert.equal(reason(r.stderr), "reason: push-failed");
+  assert.equal(originHead(p), base);
+  assert.equal(originHas(p, "issue-7"), false);
+  assert.equal(existsSync(wt), false);
+  assert.deepEqual(localBranches(p), ["issue-7"]);
+  assert.deepEqual(p.calls(), []);
+});
+
+test("in pull-request mode, when opening the pull request fails after the push, the Landing still cleans up and exits with github-failed", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "build", command: "true" }], PR_MODE),
+    failures: [{ command: "pr create", stderr: "HTTP 502: Bad Gateway" }],
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "issue-7");
+  assert.equal(
+    r.stderr,
+    `verkstad land: #7 is on origin as issue-7 at ${sha}, but opening or updating its pull request failed: gh pr create failed: HTTP 502: Bad Gateway\n` +
+      'Open it by hand from issue-7 onto main, with "Closes #7.", the report and the Verdict as its body.\n' +
+      "reason: github-failed\n",
+  );
+  assert.equal(originHead(p), base);
+  assert.equal(existsSync(wt), false);
+  assert.deepEqual(localBranches(p), []);
+  assert.deepEqual(p.state().pullRequests, []);
+  assert.equal(issueOf(p, 7).state, "open");
 });
 
 /** Puts an entry in the log directory, last modified `daysAgo` days ago. */
