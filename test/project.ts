@@ -14,7 +14,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { StubFailure, StubIssue, StubPullRequest, StubState } from "./stub/state.ts";
+import type { StubFailure, StubIssue, StubLabel, StubPullRequest, StubState } from "./stub/state.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const verkstad = join(root, "bin", "verkstad");
@@ -25,6 +25,7 @@ export interface Seed {
   repo?: string;
   issues?: Array<Partial<StubIssue> & { number: number }>;
   pullRequests?: StubPullRequest[];
+  labels?: StubLabel[];
   pageSize?: number;
   failures?: StubFailure[];
   /** The Project's `.claude/harness.json`, or null for a Project without one. */
@@ -95,6 +96,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
     viewer: "owner",
     issues: (seed.issues ?? []).map(issue),
     pullRequests: seed.pullRequests ?? [],
+    labels: seed.labels ?? [],
     ...(seed.pageSize ? { pageSize: seed.pageSize } : {}),
     ...(seed.failures ? { failures: seed.failures } : {}),
   };

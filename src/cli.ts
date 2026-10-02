@@ -4,6 +4,7 @@ import { convertLinks } from "./convert-links.ts";
 import { Failure } from "./fail.ts";
 import { frontier } from "./frontier.ts";
 import { gate } from "./gate.ts";
+import { labels } from "./labels.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
 import { surfaces } from "./surfaces.ts";
@@ -35,6 +36,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad land [--park] <n> <worktree> <file>",
     summary: "Lands Ticket #n's branch with the report in <file>; --park Parks it with the reason in <file>",
     run: land,
+  },
+  labels: {
+    usage: "verkstad labels [--dry-run]",
+    summary: "Creates the five triage labels on GitHub, skipping those the repo has",
+    run: labels,
   },
   prune: {
     usage: "verkstad prune",

@@ -34,6 +34,13 @@ export interface StubPullRequest {
   base: string;
 }
 
+export interface StubLabel {
+  name: string;
+  description: string;
+  /** Six hex digits, no `#`. */
+  color: string;
+}
+
 export interface StubState {
   /** owner/name, what `gh repo view` reports for the Project. */
   repo: string;
@@ -41,6 +48,8 @@ export interface StubState {
   viewer: string;
   issues: StubIssue[];
   pullRequests: StubPullRequest[];
+  /** The repo's labels, in the order they were created. */
+  labels: StubLabel[];
   /** Largest page a paginated GraphQL connection returns, so tests can force several pages. */
   pageSize?: number;
   /** Calls that fail as GitHub would: the first whose `command` prefixes the argv (e.g. "api graphql") wins. */

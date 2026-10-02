@@ -71,6 +71,25 @@ const commands: Record<string, Command> = {
     issue.comments.push({ author: state.viewer, body: body[0] });
     return { stdout: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-1\n` };
   },
+  "label list": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--json", "--limit"] });
+    if (positionals.length) throw new Error(`unexpected arguments ${JSON.stringify(positionals)}`);
+    const limit = Number(flags.get("--limit")?.[0] ?? 30);
+    return json(state.labels.slice(0, limit).map((label) => pick({ ...label }, flags.get("--json"))));
+  },
+  // Creates a label; GitHub's label names are unique regardless of case.
+  "label create": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--description", "--color"] });
+    if (positionals.length !== 1) throw new Error(`expected one label name, got ${JSON.stringify(positionals)}`);
+    const [name] = positionals;
+    const color = flags.get("--color")?.[0];
+    if (!color || !/^[0-9a-f]{6}$/i.test(color)) throw new Error(`--color must be six hex digits, not ${JSON.stringify(color)}`);
+    if (state.labels.some((l) => l.name.toLowerCase() === name.toLowerCase())) {
+      return { stderr: `label with name "${name}" already exists; use \`--force\` to update its color and description\n`, code: 1 };
+    }
+    state.labels.push({ name, description: flags.get("--description")?.[0] ?? "", color });
+    return { stderr: `✓ Label "${name}" created in ${state.repo}\n` };
+  },
 };
 
 /** The one issue a subcommand names by number. */
