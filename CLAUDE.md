@@ -16,7 +16,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 
 ## The CLI
 
-- TypeScript run by Node's type stripping: no build step, and no runtime dependencies beyond node, git and gh. devDependencies are only typescript and @types/node.
+- TypeScript run by Node's type stripping: no build step, and no runtime dependencies beyond node, git, gh and flock(1) (util-linux, for the Landing lock; Linux only). devDependencies are only typescript and @types/node.
 - Erasable syntax only: no enums, namespaces or parameter properties. Relative imports end in `.ts`. `npm run typecheck` enforces both.
 - Ask gh for JSON (`--json`, `gh api`) and parse it in TypeScript, never with `--jq`; the stub refuses `--jq`. Read GitHub through native relations (sub-issues, `blocked_by`), never by parsing issue text (ADR 0006); the one exception is `convert-links`, whose job is to turn that text into relations once.
 - Output is short and human-readable by default; `--json` where a Ticket asks for it. A failure throws `Failure` (src/fail.ts): the CLI prints `verkstad <subcommand>: <what failed>` and exits non-zero, 2 for usage errors. `land`'s failures print a reason code.
