@@ -8,7 +8,7 @@
 //   - the rest are the Frontier: ready.
 
 import { Failure } from "./fail.ts";
-import { currentRepo, graphql } from "./gh.ts";
+import { allIssues, currentRepo } from "./gh.ts";
 
 const READY_LABEL = "ready-for-agent";
 /** A blocker with one of these labels waits on the owner, not on an agent; the view marks it. */
@@ -49,12 +49,6 @@ interface IssueNode {
   };
 }
 
-interface FrontierPage {
-  repository: {
-    issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: IssueNode[] };
-  } | null;
-}
-
 interface Blocker {
   number: number;
   title: string;
@@ -88,18 +82,7 @@ export function frontier(args: string[]): void {
 }
 
 function fetchLabelled(label: string): IssueNode[] {
-  const { owner, name } = currentRepo();
-  const nodes: IssueNode[] = [];
-  let after: string | null = null;
-  do {
-    const page: FrontierPage = graphql<FrontierPage>(QUERY, { owner, name, label, first: 100, after });
-    if (!page.repository) throw new Failure(`GitHub has no repository ${owner}/${name}`);
-    nodes.push(...page.repository.issues.nodes);
-    const { hasNextPage, endCursor } = page.repository.issues.pageInfo;
-    if (hasNextPage && !endCursor) throw new Failure("GitHub said there are more issues but gave no cursor to them");
-    after = hasNextPage ? endCursor : null;
-  } while (after);
-  return nodes;
+  return allIssues<IssueNode>(QUERY, { ...currentRepo(), label });
 }
 
 function classify(nodes: IssueNode[]): Listing {

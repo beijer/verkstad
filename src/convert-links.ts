@@ -17,7 +17,7 @@
 // is reported and skipped, never guessed at or moved.
 
 import { Failure } from "./fail.ts";
-import { currentRepo, gh, ghJsonUnlessMissing, graphql } from "./gh.ts";
+import { allIssues, currentRepo, gh, ghJsonUnlessMissing } from "./gh.ts";
 
 const USAGE = "verkstad convert-links [--dry-run]";
 
@@ -42,12 +42,6 @@ interface IssueNode {
   body: string;
   parent: { number: number } | null;
   blockedBy: { totalCount: number; nodes: Array<{ number: number }> };
-}
-
-interface Page {
-  repository: {
-    issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: IssueNode[] };
-  } | null;
 }
 
 /** An issue reference in text: `#12`, or `owner/repo#12` when it names its repo. */
@@ -136,16 +130,7 @@ export function convertLinks(args: string[]): void {
 }
 
 function fetchOpen(owner: string, name: string): IssueNode[] {
-  const nodes: IssueNode[] = [];
-  let after: string | null = null;
-  do {
-    const page: Page = graphql<Page>(QUERY, { owner, name, first: 100, after });
-    if (!page.repository) throw new Failure(`GitHub has no repository ${owner}/${name}`);
-    nodes.push(...page.repository.issues.nodes);
-    const { hasNextPage, endCursor } = page.repository.issues.pageInfo;
-    if (hasNextPage && !endCursor) throw new Failure("GitHub said there are more issues but gave no cursor to them");
-    after = hasNextPage ? endCursor : null;
-  } while (after);
+  const nodes = allIssues<IssueNode>(QUERY, { owner, name });
   for (const node of nodes) {
     if (node.blockedBy.totalCount > node.blockedBy.nodes.length) {
       throw new Failure(`#${node.number} has ${node.blockedBy.totalCount} blockers, more than one query reads`);

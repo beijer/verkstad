@@ -61,3 +61,25 @@ export function graphql<T>(query: string, variables: Record<string, string | num
   }
   return reply.data;
 }
+
+/** A query whose `repository.issues` is a paginated connection taking `$first` and `$after`. */
+interface IssuesPage<N> {
+  repository: {
+    issues: { pageInfo: { hasNextPage: boolean; endCursor: string | null }; nodes: N[] };
+  } | null;
+}
+
+/** Every node of a query's `repository.issues`, page after page. `variables` carry owner and name. */
+export function allIssues<N>(query: string, variables: { owner: string; name: string } & Record<string, string>): N[] {
+  const nodes: N[] = [];
+  let after: string | null = null;
+  do {
+    const page: IssuesPage<N> = graphql<IssuesPage<N>>(query, { ...variables, first: 100, after });
+    if (!page.repository) throw new Failure(`GitHub has no repository ${variables.owner}/${variables.name}`);
+    nodes.push(...page.repository.issues.nodes);
+    const { hasNextPage, endCursor } = page.repository.issues.pageInfo;
+    if (hasNextPage && !endCursor) throw new Failure("GitHub said there are more issues but gave no cursor to them");
+    after = hasNextPage ? endCursor : null;
+  } while (after);
+  return nodes;
+}
