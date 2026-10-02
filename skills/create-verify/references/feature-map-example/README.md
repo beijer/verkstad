@@ -15,4 +15,4 @@ One file per feature a user of Ledger meets. Find the feature here, then follow 
 
 - Find things by what a user reads: a button's text, a field's label, a heading. `scripts/ledger look` prints them.
 - Wait for what a step changes (`scripts/ledger see <text>`) before the next step reads it.
-- Prove a stored change from a second view (reload the page, or open the report), not only from the form that made it.
+- A change that is stored counts as seen once it shows after `scripts/ledger reload`, not when the form that made it says so.
