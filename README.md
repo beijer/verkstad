@@ -31,6 +31,8 @@ verkstad convert-links --dry-run   # what it would link, and what it skips and w
 verkstad convert-links             # add the links; a second run adds nothing
 ```
 
+In a Project, a Run works the Frontier: in Claude Code, from the Project's main checkout, `/verkstad:orchestrate` shows its plan once, then dispatches the ready Tickets to the Tier agents (`ticket-light`, `ticket-standard`, `ticket-hard`), two at a time, and lands each with `verkstad land` as it finishes.
+
 ## Develop
 
 Node 24, no build step: `npm ci`, then `npm run typecheck` and `npm test`. [CLAUDE.md](CLAUDE.md) has the conventions; [docs/contract.md](docs/contract.md) describes the Contract a Project gives verkstad.
