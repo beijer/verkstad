@@ -1,0 +1,528 @@
+// `verkstad run-log [--session <id>] [--log-dir <dir>]`: a short digest of a Run for verkstad:reflect,
+// so that it reads a Run's transcripts through what they say, never whole.
+//
+// Claude Code keeps one JSONL transcript per session in `<config>/projects/<cwd>/<session>.jsonl`, where
+// `<config>` is $CLAUDE_CONFIG_DIR or ~/.claude and `<cwd>` is the directory the session ran in with every
+// character but letters and digits made `-`; each subagent's transcript, and a `.meta.json` saying its type,
+// description and parent, sits in `<session>/subagents/`. The Run is the last session, run in the Project's
+// main checkout or one of its worktrees, that invoked verkstad:orchestrate, or the session `--session` names.
+// Its time window, from the invocation to its last entry, picks the log directory's files that belong to it.
+
+import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { basename, join } from "node:path";
+import { isObject } from "./contract.ts";
+import { Failure } from "./fail.ts";
+import { logDirectory, mainCheckout } from "./git.ts";
+
+const USAGE = "usage: verkstad run-log [--session <id>] [--log-dir <dir>]";
+const SKILL = "verkstad:orchestrate";
+const COMMAND = `<command-name>/${SKILL}</command-name>`;
+/** How long after the Run's last entry a file it wrote may still have been written. */
+const SLACK_MS = 60_000;
+const EXAMPLES_PER_KIND = 2;
+const KINDS_SHOWN = 12;
+
+type Json = Record<string, unknown>;
+
+/** One parsed line of a transcript, with its line number. */
+interface Entry {
+  line: number;
+  json: Json;
+}
+
+interface ToolError {
+  /** `<file>:<line>` of the tool result. */
+  where: string;
+  agent: string;
+  command: string;
+  kind: string;
+  denied: boolean;
+}
+
+/** What one transcript (the orchestrator's or an agent's) says, within the Run's window. */
+interface Transcript {
+  file: string;
+  first: number;
+  last: number;
+  turns: number;
+  peakContext: number;
+  ownerPrompts: Array<{ at: number; text: string }>;
+  errors: ToolError[];
+  gateRuns: number;
+  gateFailures: number;
+  dispatches: number[];
+  dispatchCount: number;
+  landings: number;
+  landingFailures: Array<{ ticket: number; reason: string; where: string }>;
+  parks: number[];
+  notifications: Array<{ taskId: string; status: string }>;
+  firstPrompt: string;
+  /** The agent's report: what it handed back, or else its last text. */
+  finalReport: string;
+}
+
+const str = (v: unknown): string => (typeof v === "string" ? v : "");
+const num = (v: unknown): number => (typeof v === "number" ? v : 0);
+const obj = (v: unknown): Json => (isObject(v) ? v : {});
+const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
+
+function readEntries(path: string): Entry[] {
+  const entries: Entry[] = [];
+  readFileSync(path, "utf8")
+    .split("\n")
+    .forEach((text, i) => {
+      if (!text.trim()) return;
+      try {
+        const json: unknown = JSON.parse(text);
+        if (isObject(json)) entries.push({ line: i + 1, json });
+      } catch {
+        // A session still being written can end in a partial line.
+      }
+    });
+  return entries;
+}
+
+const time = (e: Entry): number => Date.parse(str(e.json.timestamp)) || 0;
+
+/** A message's text: its string content, or its text blocks joined. */
+function messageText(json: Json): string {
+  const content = obj(json.message).content;
+  if (typeof content === "string") return content;
+  return arr(content)
+    .map(obj)
+    .filter((b) => b.type === "text")
+    .map((b) => str(b.text))
+    .join("\n");
+}
+
+function blocks(json: Json): Json[] {
+  return arr(obj(json.message).content).map(obj);
+}
+
+function resultText(block: Json): string {
+  const content = block.content;
+  if (typeof content === "string") return content;
+  return arr(content)
+    .map(obj)
+    .map((b) => str(b.text))
+    .join("\n");
+}
+
+/** When this entry invoked verkstad:orchestrate: as the owner's slash command, or through the Skill tool. */
+function invokes(json: Json): string | undefined {
+  if (json.isSidechain === true) return undefined;
+  if (json.type === "user" && messageText(json).includes(COMMAND)) return `/${SKILL}`;
+  if (json.type === "assistant" && blocks(json).some((b) => b.type === "tool_use" && b.name === "Skill" && obj(b.input).skill === SKILL)) {
+    return `Skill ${SKILL}`;
+  }
+  return undefined;
+}
+
+function isOwnerPrompt(json: Json): boolean {
+  if (json.type !== "user" || json.isSidechain === true || json.isMeta === true) return false;
+  const kind = str(obj(json.origin).kind);
+  if (kind && kind !== "human") return false;
+  if (blocks(json).some((b) => b.type === "tool_result")) return false;
+  const text = messageText(json).trim();
+  return text !== "" && !/^<(task-notification|command-|local-command|system-reminder)/.test(text);
+}
+
+function ticketIn(...texts: string[]): number | undefined {
+  for (const text of texts) {
+    const m = /#(\d+)/.exec(text);
+    if (m) return Number(m[1]);
+  }
+  return undefined;
+}
+
+/** The command a tool call ran, for an example: a Bash command's first line, or what else it was given. */
+function describeCall(name: string, input: Json): string {
+  const raw = str(input.command) || str(input.file_path) || str(input.pattern) || str(input.description) || JSON.stringify(input);
+  const first = raw.split("\n")[0].trim();
+  return clip(name === "Bash" || !name ? first : `${name} ${first}`, 100);
+}
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+/** The program a shell command ran: the first word of its first part that is not a `cd` or an assignment. */
+function program(command: string): string {
+  for (const part of command.split("\n")[0].split(/&&|\|\||;|\|/)) {
+    const words = part.trim().split(/\s+/).filter((w) => !/^[A-Za-z_][A-Za-z0-9_]*=/.test(w));
+    if (words.length && words[0] !== "cd") return words[0];
+  }
+  return "?";
+}
+
+/** What kind of error a tool result is, the same for every occurrence: paths, ids and numbers taken out. */
+function errorKind(text: string, command: string): string {
+  const lines = text.replace(/<\/?tool_use_error>/g, "").split("\n").map((l) => l.trim()).filter(Boolean);
+  const named = lines.slice(0, 40).find((l) => /^verkstad [a-z-]+: |^(error|fatal): /i.test(l));
+  let line = named ?? lines[0] ?? "";
+  if (!named && /^Exit code \d+$/.test(line)) line = `exit N from ${program(command)}`;
+  line = line
+    .replace(/\/[^\s,'"`)]+/g, "<path>")
+    .replace(/\b[0-9a-f]{8,}\b/g, "<id>")
+    .replace(/\d+/g, "N");
+  return clip(line, 120);
+}
+
+const GATE = /\bverkstad gate\b|\bgate\.sh\b/;
+const LAND = /\b(?:verkstad land|land\.sh)\s+(--park\s+)?(\d+)/;
+const DENIAL = /permission[^\n]*denied|denied by|doesn't want to proceed|rejected by the user/i;
+
+function readTranscript(path: string, agent: string, from: number): Transcript {
+  const file = basename(path);
+  const t: Transcript = {
+    file,
+    first: Infinity,
+    last: 0,
+    turns: 0,
+    peakContext: 0,
+    ownerPrompts: [],
+    errors: [],
+    gateRuns: 0,
+    gateFailures: 0,
+    dispatches: [],
+    dispatchCount: 0,
+    landings: 0,
+    landingFailures: [],
+    parks: [],
+    notifications: [],
+    firstPrompt: "",
+    finalReport: "",
+  };
+  const calls = new Map<string, { name: string; input: Json }>();
+  const messages = new Set<string>();
+  let handback = "";
+  let lastText = "";
+  for (const e of readEntries(path)) {
+    const at = time(e);
+    if (at && at < from) continue;
+    const json = e.json;
+    if (at) {
+      t.first = Math.min(t.first, at);
+      t.last = Math.max(t.last, at);
+    }
+    if (json.type === "assistant") {
+      const message = obj(json.message);
+      const id = str(message.id) || `line-${e.line}`;
+      messages.add(id);
+      const u = obj(message.usage);
+      t.peakContext = Math.max(t.peakContext, num(u.input_tokens) + num(u.cache_read_input_tokens) + num(u.cache_creation_input_tokens));
+      for (const b of blocks(json)) {
+        if (b.type === "text" && str(b.text).trim()) lastText = str(b.text);
+        if (b.type !== "tool_use") continue;
+        const name = str(b.name);
+        const input = obj(b.input);
+        calls.set(str(b.id), { name, input });
+        if (name === "SubagentHandback") handback = str(input.message);
+        if (name === "Agent" || name === "Task") {
+          t.dispatchCount++;
+          const n = ticketIn(str(input.description), str(input.prompt));
+          if (n !== undefined) t.dispatches.push(n);
+        }
+        if (name === "Bash" && GATE.test(str(input.command))) t.gateRuns++;
+      }
+      continue;
+    }
+    if (json.type !== "user") continue;
+    if (!t.firstPrompt) t.firstPrompt = messageText(json);
+    if (isOwnerPrompt(json)) t.ownerPrompts.push({ at, text: messageText(json).trim() });
+    const text = messageText(json);
+    if (str(obj(json.origin).kind) === "task-notification" || text.startsWith("<task-notification>")) {
+      const status = /<status>([^<]+)<\/status>/.exec(text)?.[1] ?? "";
+      for (const m of text.matchAll(/<task-id>([^<]+)<\/task-id>/g)) t.notifications.push({ taskId: m[1], status });
+    }
+    for (const b of blocks(json)) {
+      if (b.type !== "tool_result") continue;
+      const call = calls.get(str(b.tool_use_id)) ?? { name: "", input: {} };
+      const output = resultText(b);
+      const command = str(call.input.command);
+      const where = `${file}:${e.line}`;
+      if (call.name === "Bash" && GATE.test(command) && (b.is_error === true || /\bgate\b[^\n]*\bfailed\b/i.test(output))) t.gateFailures++;
+      const land = call.name === "Bash" ? LAND.exec(command) : null;
+      if (land) {
+        const ticket = Number(land[2]);
+        if (land[1]) t.parks.push(ticket);
+        else {
+          t.landings++;
+          const reason = /^reason: ([a-z-]+)\s*$/m.exec(output)?.[1];
+          if (reason) t.landingFailures.push({ ticket, reason, where });
+        }
+      }
+      if (b.is_error !== true) continue;
+      t.errors.push({
+        where,
+        agent,
+        command: describeCall(call.name, call.input),
+        kind: errorKind(output, command),
+        denied: DENIAL.test(output.slice(0, 400)),
+      });
+    }
+  }
+  t.turns = messages.size;
+  t.finalReport = handback || lastText;
+  if (t.first === Infinity) t.first = 0;
+  return t;
+}
+
+/** Claude Code's name for the project directory of sessions run in `dir`. */
+function encode(dir: string): string {
+  return dir.replace(/[^A-Za-z0-9]/g, "-");
+}
+
+function projectsDir(): string {
+  return join(process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude"), "projects");
+}
+
+/** The directories holding the sessions run in the main checkout `main` or in one of its worktrees. */
+function sessionDirs(main: string): string[] {
+  const root = projectsDir();
+  if (!existsSync(root)) return [];
+  const own = encode(main);
+  const worktrees = encode(join(main, ".claude", "worktrees")) + "-";
+  return readdirSync(root)
+    .filter((name) => name === own || name.startsWith(worktrees))
+    .sort((a, b) => (a === own ? -1 : b === own ? 1 : a < b ? -1 : 1))
+    .map((name) => join(root, name));
+}
+
+function sessionsIn(dirs: string[]): Array<{ id: string; path: string }> {
+  return dirs.flatMap((dir) =>
+    readdirSync(dir)
+      .filter((f) => f.endsWith(".jsonl"))
+      .map((f) => ({ id: f.slice(0, -".jsonl".length), path: join(dir, f) })),
+  );
+}
+
+interface Run {
+  id: string;
+  path: string;
+  /** How the Run was found: the invocation, or `--session`. */
+  how: string;
+  start: number;
+}
+
+function findRun(main: string, session: string | undefined): Run {
+  const dirs = sessionDirs(main);
+  const sessions = sessionsIn(dirs);
+  const where = dirs[0] ?? join(projectsDir(), encode(main));
+  if (session !== undefined) {
+    const exact = sessions.filter((s) => s.id === session);
+    const matches = exact.length ? exact : sessions.filter((s) => s.id.startsWith(session));
+    if (!matches.length) throw new Failure(`no session ${session} in ${where}`);
+    if (matches.length > 1) {
+      throw new Failure(`--session ${session} matches more than one session: ${matches.map((s) => s.id).sort().join(", ")}`);
+    }
+    const [s] = matches;
+    const start = readEntries(s.path).map(time).find((t) => t > 0) ?? 0;
+    return { ...s, how: "named by --session", start };
+  }
+  let found: Run | undefined;
+  for (const s of sessions) {
+    if (!readFileSync(s.path, "utf8").includes(SKILL)) continue;
+    for (const e of readEntries(s.path)) {
+      const how = invokes(e.json);
+      if (how && (!found || time(e) > found.start)) found = { ...s, how: `invoked as ${how}`, start: time(e) };
+    }
+  }
+  if (!found) throw new Failure(`no Run found: no session in ${where} invoked ${SKILL}; name one with --session <id>`);
+  return found;
+}
+
+interface Agent {
+  id: string;
+  type: string;
+  description: string;
+  parent: string;
+  transcript: Transcript;
+}
+
+function readAgents(dir: string, from: number): Agent[] {
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir)
+    .filter((f) => f.startsWith("agent-") && f.endsWith(".jsonl"))
+    .map((f) => {
+      const id = f.slice("agent-".length, -".jsonl".length);
+      const metaPath = join(dir, `agent-${id}.meta.json`);
+      let meta: Json = {};
+      try {
+        meta = obj(JSON.parse(readFileSync(metaPath, "utf8")));
+      } catch {
+        // An agent without its meta file is still listed, by what its transcript says.
+      }
+      return {
+        id,
+        type: str(meta.agentType) || "?",
+        description: str(meta.description),
+        parent: str(meta.parentAgentId),
+        transcript: readTranscript(join(dir, f), id, from),
+      };
+    })
+    .filter((a) => a.transcript.last > 0)
+    .sort((a, b) => a.transcript.first - b.transcript.first || (a.id < b.id ? -1 : 1));
+}
+
+function utc(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+}
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
+
+function errorsPart(errors: ToolError[]): string {
+  const denied = errors.filter((e) => e.denied).length;
+  return errors.length ? `${plural(errors.length, "error")}${denied ? ` (${denied} denied)` : ""}` : "";
+}
+
+/** What an agent's report says it came to: an implementer's `status:` and `tier:`, or a Verifier's `verdict:`. */
+function statusAndTier(report: string): string {
+  const field = (name: string, value: string) => new RegExp(`^[*_\\s]*${name}[*_\\s]*:[*_\\s]*(${value})`, "im").exec(report)?.[1];
+  const status = field("status", "[a-z]+");
+  const tier = field("tier", "ok|too low");
+  if (status || tier) return `status ${status ?? "-"}, tier ${tier ?? "-"}`;
+  const verdict = field("verdict", "[a-z-]+(?: recorded)?");
+  return verdict ? `verdict ${verdict}` : "";
+}
+
+function agentLine(a: Agent, stopped: Map<string, string>): string {
+  const t = a.transcript;
+  const ticket = ticketIn(a.description, t.firstPrompt);
+  const parts = [
+    plural(t.turns, "turn"),
+    `context ${Math.round(t.peakContext / 1000)}k`,
+    t.gateRuns ? `gate ${t.gateRuns}${t.gateFailures ? ` (${t.gateFailures} failed)` : ""}` : "",
+    errorsPart(t.errors),
+    a.parent ? `under ${a.parent}` : "",
+    stopped.has(a.id) ? stopped.get(a.id)! : "",
+  ].filter(Boolean);
+  const fields = [a.id, a.type, ticket === undefined ? "-" : `#${ticket}`, parts.join(", "), statusAndTier(t.finalReport), `"${a.description}"`];
+  return `  ${fields.filter(Boolean).join("  ")}`;
+}
+
+function errorKinds(errors: ToolError[]): string[] {
+  const kinds = new Map<string, ToolError[]>();
+  for (const e of errors) kinds.set(e.kind, [...(kinds.get(e.kind) ?? []), e]);
+  const sorted = [...kinds.entries()].sort(([a, ea], [b, eb]) => eb.length - ea.length || (a < b ? -1 : 1));
+  const lines = sorted.slice(0, KINDS_SHOWN).flatMap(([kind, es]) => {
+    const agents = new Set(es.map((e) => e.agent)).size;
+    const head = es.length > 1 ? `  ${es.length}x in ${plural(agents, "agent")}: ${kind}` : `  1x: ${kind}`;
+    return [head, ...es.slice(0, EXAMPLES_PER_KIND).map((e) => `    ${e.where}  ${e.command}`)];
+  });
+  if (sorted.length > KINDS_SHOWN) lines.push(`  and ${plural(sorted.length - KINDS_SHOWN, "kind")} more, seen once or twice`);
+  return lines;
+}
+
+function firstLine(text: string): string {
+  return clip(text.split("\n").map((l) => l.trim()).find(Boolean) ?? "", 120);
+}
+
+/** The log directory's entries written during the Run, each with what it says in a line or two. */
+function logLines(dir: string, from: number, to: number): string[] {
+  if (!existsSync(dir)) return ["Log directory, written during the Run (0 entries)"];
+  const names = readdirSync(dir)
+    .filter((name) => {
+      const mtime = statSync(join(dir, name)).mtimeMs;
+      return mtime >= from && mtime <= to + SLACK_MS;
+    })
+    .sort((a, b) => a.localeCompare(b, "en", { numeric: true }));
+  const read = (name: string) => readFileSync(join(dir, name), "utf8");
+  const lines: string[] = [];
+  const of = (re: RegExp) => names.filter((n) => re.test(n));
+  for (const name of of(/^(report|conflict|verifier)-\d+\.md$/)) lines.push(`  ${name}  ${statusAndTier(read(name)) || firstLine(read(name))}`);
+  for (const name of of(/^park-\d+\.md$/)) lines.push(`  ${name}  ${firstLine(read(name))}`);
+  for (const name of of(/^verdict-\d+\.json$/)) {
+    let verdict: Json = {};
+    try {
+      verdict = obj(JSON.parse(read(name)));
+    } catch {
+      lines.push(`  ${name}  malformed`);
+      continue;
+    }
+    const state = str(verdict.state) || "?";
+    lines.push(`  ${name}  ${state}`);
+    if (state === "live-verified") continue;
+    for (const c of arr(verdict.criteria).map(obj)) lines.push(`    ${clip(`${str(c.criterion)}: ${str(c.seen).replace(/\s+/g, " ")}`, 160)}`);
+  }
+  const gates = of(/^gate-.*\.log$/).length;
+  if (gates) lines.push(`  gate logs: ${gates}`);
+  const evidence = of(/^evidence-\d+$/).length;
+  if (evidence) lines.push(`  evidence directories: ${evidence}`);
+  const shown = /^((report|conflict|verifier|park)-\d+\.md|verdict-\d+\.json|gate-.*\.log|evidence-\d+)$/;
+  const others = new Map<string, number>();
+  for (const name of names.filter((n) => !shown.test(n))) {
+    const stem = name.replace(/[-.].*$/, "");
+    others.set(stem, (others.get(stem) ?? 0) + 1);
+  }
+  for (const [stem, n] of others) lines.push(`  ${stem}-*: ${n}`);
+  const head = `Log directory, written during the Run (${plural(names.length, "entry", "entries")})`;
+  return [names.length ? `${head}:` : head, ...lines];
+}
+
+export function runLog(args: string[]): void {
+  let session: string | undefined;
+  let logDir: string | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const value = args[i + 1];
+    if ((args[i] === "--session" || args[i] === "--log-dir") && value !== undefined && !value.startsWith("--")) {
+      if (args[i] === "--session") session = value;
+      else logDir = value;
+      i++;
+      continue;
+    }
+    throw new Failure(`unknown argument '${args[i]}'; ${USAGE}`, 2);
+  }
+
+  const cwd = process.cwd();
+  const main = mainCheckout(cwd);
+  const run = findRun(main, session);
+  const dir = logDir ?? logDirectory(cwd);
+  const orchestrator = readTranscript(run.path, "orchestrator", run.start);
+  const agentsDir = join(run.path.slice(0, -".jsonl".length), "subagents");
+  const agents = readAgents(agentsDir, run.start);
+  const end = Math.max(orchestrator.last, ...agents.map((a) => a.transcript.last));
+
+  const out: string[] = [
+    `Run ${run.id}, ${run.how}, from ${utc(run.start)} to ${utc(end)} UTC`,
+    `  Transcript: ${run.path}`,
+    `  Agents' transcripts: ${agentsDir}/`,
+    `  Log directory: ${dir}`,
+    "",
+  ];
+
+  const prompts = orchestrator.ownerPrompts.filter((p) => p.at > run.start || !p.at);
+  out.push(`Owner prompts (${prompts.length})${prompts.length ? ":" : ""}`);
+  for (const p of prompts) out.push(`  ${utc(p.at)}  ${clip(p.text.replace(/\s+/g, " "), 200)}`);
+  out.push("");
+
+  out.push(["Orchestrator: " + plural(orchestrator.turns, "turn"), errorsPart(orchestrator.errors)].filter(Boolean).join(", "));
+  if (orchestrator.dispatchCount) {
+    const counts = new Map<number, number>();
+    for (const n of orchestrator.dispatches) counts.set(n, (counts.get(n) ?? 0) + 1);
+    const again = [...counts].filter(([, c]) => c > 1).map(([n, c]) => `#${n} (${c})`);
+    out.push(`  Dispatched: ${plural(orchestrator.dispatchCount, "agent")}${again.length ? `; more than once: ${again.join(", ")}` : ""}`);
+  }
+  if (orchestrator.landings || orchestrator.parks.length) {
+    const failed = orchestrator.landingFailures.map((f) => `#${f.ticket} ${f.reason} (${f.where})`);
+    out.push(
+      `  Landings: ${orchestrator.landings}` +
+        (failed.length ? `; failed: ${failed.join(", ")}` : "") +
+        (orchestrator.parks.length ? `; Parked: ${orchestrator.parks.map((n) => `#${n}`).join(", ")}` : ""),
+    );
+  }
+  out.push("");
+
+  const stopped = new Map<string, string>();
+  for (const n of orchestrator.notifications) if (n.status && n.status !== "completed") stopped.set(n.taskId, n.status);
+  out.push(`Agents (${agents.length})${agents.length ? ":" : ""}`);
+  for (const a of agents) out.push(agentLine(a, stopped));
+  out.push("");
+
+  const errors = [...orchestrator.errors, ...agents.flatMap((a) => a.transcript.errors)];
+  if (errors.length) out.push(`Tool errors (${errors.length}), by kind:`, ...errorKinds(errors), "");
+
+  out.push(...logLines(dir, run.start, end));
+  process.stdout.write(out.join("\n") + "\n");
+}

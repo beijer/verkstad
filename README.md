@@ -35,6 +35,8 @@ verkstad convert-links             # add the links; a second run adds nothing
 
 In a Project, a Run works the Frontier: in Claude Code, from the Project's main checkout, `/verkstad:orchestrate` shows its plan once, then dispatches the ready Tickets to the Tier agents (`ticket-light`, `ticket-standard`, `ticket-hard`), two at a time. When a Ticket's change touches one of the Project's Surfaces, the `verifier` agent, which never sees the implementer's report, Walks its acceptance criteria with the Project's Verify skill and records a Verdict; each Ticket lands with `verkstad land` once it is done and, where its diff touches a Surface, `live-verified`.
 
+After a Run, `/verkstad:reflect` reads it (its transcripts through `verkstad run-log`, its Gate logs, reports and Verdicts) and proposes changes to the loop, each with its evidence; it applies only those you approve.
+
 ## Develop
 
 Node 24, no build step: `npm ci`, then `npm run typecheck` and `npm test`. [CLAUDE.md](CLAUDE.md) has the conventions; [docs/contract.md](docs/contract.md) describes the Contract a Project gives verkstad.
