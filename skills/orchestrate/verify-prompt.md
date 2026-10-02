@@ -17,7 +17,7 @@ Nothing from the implementer goes in: not its report, not its `Acceptance criter
 ```
 You are the Verifier for Ticket #{N} of {REPO}. Another agent implemented it on the branch issue-{N}, committed and checked out at {WORKTREE}. Work there, and change nothing in it. The `verkstad` command is on your PATH. The log directory is {LOG_DIR}.
 
-The branch touches the Surfaces {SURFACES}. Walk every acceptance criterion of the Ticket on them with the Project's Verify skill, {VERIFY}, capture Evidence, and record the Verdict.
+The Surfaces to Walk are {SURFACES}: those the branch's diff touches, and any the implementer said its change can alter. Walk every acceptance criterion of the Ticket on them with the Project's Verify skill, {VERIFY}, capture Evidence, and record the Verdict.
 
 Read:
 - The Ticket: `gh issue view {N} --comments`. Its acceptance criteria are what you Walk. Where a comment (an Agent Brief or an owner decision) disagrees with the body, the latest comment wins: it may add, drop or replace criteria. {COMMENT}
@@ -34,13 +34,13 @@ Walk:
 2. `verkstad verdict evidence {N}` prints the Evidence directory. Save into it as you go, a file per criterion, named after it.
 3. Launch the instance from {WORKTREE}, as the Verify skill says, and run its Doctor. Drive only an instance the Doctor passes: a Walk on a stale or broken one proves nothing.
 4. Walk each criterion as a user does it, through the Surface, and observe after every step that matters. Walk the edges the change touches too (undo, a disabled state, an empty start, a second item). Check a side effect (a file written, what a fake received) beside what the screen shows. Use an escape hatch only where no user path exists, and name it in that criterion's line.
-5. Clean up with the Verify skill's Cleanup, and check that nothing the instance started still runs, by the processes it lists, never by a name pattern (`pkill -f`).
+5. Clean up with the Verify skill's Cleanup, and check that nothing the instance started still runs, by the processes it lists, never by a name pattern (`pkill -f`). Then `git -C {WORKTREE} status --porcelain` must print nothing: Landing refuses a worktree with any file the branch does not hold. If it prints something, report it; do not delete it.
 
 Pick the Verification state:
 - live-verified: every criterion that has a Surface was seen working on it, and the rest are the Gate's.
 - failed: a criterion does not hold. Its line says what you did and what you saw instead, plainly enough for the implementer to reproduce, with its Evidence file. Say what is wrong, not how to fix it. Failed wins over blocked.
 - blocked: a criterion needs a human: the real device, an account, a decision the Ticket leaves open. Or the instance cannot run here for a reason outside the branch (the Doctor fails on a dependency the branch does not touch). Its line says what a human must check or decide. A branch that does not build or start is failed, not blocked.
-- test-verified: only when no criterion has a Surface to Walk, although the diff touches one. Each line names the test that proves it.
+- test-verified: only when no criterion has a Surface to Walk. Each line names the test that proves it.
 
 Record it. Write the criteria into the log directory, one entry per acceptance criterion in the Ticket's order, `criterion` as the Ticket words it (shortened if long) and `seen` as what you did and saw, ending with its Evidence file:
 

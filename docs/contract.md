@@ -31,7 +31,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 | `gate` | `gate`, `land` | The Gate's named steps. |
 | `landing` | `land` | The Landing mode: `push` (the default) or `pull-request`. |
 | `surfaces` | `surfaces`, `verdict`, `land` | The Surfaces, each a name and the path globs whose changes can alter it. `[]` for a Project with none. |
-| `verify` | the orchestrator, for the Verifier | The name of the Project's Verify skill. |
+| `verify` | the agents: the Verifier, through the orchestrator, and the implementer | The name of the Project's Verify skill. |
 
 ### `baseBranch`
 
