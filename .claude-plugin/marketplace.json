@@ -1,0 +1,15 @@
+{
+  "name": "verkstad",
+  "owner": {
+    "name": "Johan Beijer"
+  },
+  "description": "verkstad, as its own marketplace: add this repo (or a local checkout of it) and install the verkstad plugin.",
+  "plugins": [
+    {
+      "name": "verkstad",
+      "source": "./",
+      "description": "A solo developer's agent loop from Spec to verified Landing.",
+      "category": "development"
+    }
+  ]
+}

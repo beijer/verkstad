@@ -1,0 +1,7 @@
+#!/bin/sh
+# The verkstad CLI: runs src/cli.ts with Node's type stripping, from wherever
+# this script is linked or copied to on the PATH.
+set -e
+self=$(readlink -f "$0" 2>/dev/null || realpath "$0")
+root=$(dirname "$(dirname "$self")")
+exec node --no-warnings "$root/src/cli.ts" "$@"

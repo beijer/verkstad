@@ -1,0 +1,57 @@
+// The fake GitHub the stub `gh` keeps in a JSON file in each test's temp dir.
+// Tests seed it through test/project.ts and read it back after running the CLI.
+
+export interface StubComment {
+  author: string;
+  body: string;
+}
+
+export interface StubIssue {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed";
+  labels: string[];
+  /** Logins. */
+  assignees: string[];
+  comments: StubComment[];
+  /** The issue this one is a native sub-issue of. Its sub-issues are the issues naming it here. */
+  parent: number | null;
+  /** Native `blocked_by` dependencies: the issues blocking this one. */
+  blockedBy: number[];
+}
+
+export interface StubPullRequest {
+  number: number;
+  title: string;
+  body: string;
+  state: "open" | "closed" | "merged";
+  head: string;
+  base: string;
+}
+
+export interface StubState {
+  /** owner/name, what `gh repo view` reports for the Project. */
+  repo: string;
+  issues: StubIssue[];
+  pullRequests: StubPullRequest[];
+  /** Largest page a paginated GraphQL connection returns, so tests can force several pages. */
+  pageSize?: number;
+  /** Calls that fail as GitHub would: the first whose `command` prefixes the argv (e.g. "api graphql") wins. */
+  failures?: StubFailure[];
+}
+
+export interface StubFailure {
+  command: string;
+  stderr: string;
+  code?: number;
+}
+
+/** The sub-issues of `parent`, in number order. */
+export function subIssues(state: StubState, parent: number): StubIssue[] {
+  return state.issues.filter((issue) => issue.parent === parent).sort((a, b) => a.number - b.number);
+}
+
+export function findIssue(state: StubState, number: number): StubIssue | undefined {
+  return state.issues.find((issue) => issue.number === number);
+}

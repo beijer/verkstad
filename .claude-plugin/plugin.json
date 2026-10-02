@@ -1,0 +1,9 @@
+{
+  "name": "verkstad",
+  "description": "A solo developer's agent loop from Spec to verified Landing: the Frontier, Tickets implemented by agents in their own worktrees, a Gate, an independent Verifier and Landing.",
+  "author": {
+    "name": "Johan Beijer"
+  },
+  "repository": "https://github.com/beijer/verkstad",
+  "keywords": ["agents", "orchestration", "tdd", "verification", "github-issues"]
+}
