@@ -40,7 +40,49 @@ const commands: Record<string, Command> = {
     return json(pick({ nameWithOwner: state.repo, name: state.repo.split("/")[1] }, flags.get("--json")));
   },
   api: (args, state) => api(args, state),
+  // Closes an open issue, commenting first when given --comment.
+  "issue close": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--comment", "-c"] });
+    const issue = issueArg(state, positionals);
+    if (issue.state === "closed") return { stderr: `! Issue ${state.repo}#${issue.number} is already closed\n` };
+    const comment = flags.get("--comment") ?? flags.get("-c");
+    if (comment) issue.comments.push({ author: state.viewer, body: comment[0] });
+    issue.state = "closed";
+    return { stderr: `✓ Closed issue ${state.repo}#${issue.number}\n` };
+  },
+  // Adds and removes labels and assignees; `@me` is the viewer.
+  "issue edit": (args, state) => {
+    const { positionals, flags } = parse(args, {
+      value: ["--add-label", "--remove-label", "--add-assignee", "--remove-assignee"],
+    });
+    const issue = issueArg(state, positionals);
+    const values = (flag: string) =>
+      (flags.get(flag) ?? []).flatMap((v) => v.split(",")).map((v) => (v === "@me" ? state.viewer : v));
+    const labels = issue.labels.filter((l) => !values("--remove-label").includes(l));
+    issue.labels = [...new Set([...labels, ...values("--add-label")])];
+    const assignees = issue.assignees.filter((a) => !values("--remove-assignee").includes(a));
+    issue.assignees = [...new Set([...assignees, ...values("--add-assignee")])];
+    return { stdout: `https://github.com/${state.repo}/issues/${issue.number}\n` };
+  },
+  "issue comment": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--body", "-b"] });
+    const issue = issueArg(state, positionals);
+    const body = flags.get("--body") ?? flags.get("-b");
+    if (!body) throw new Error("only --body is supported");
+    issue.comments.push({ author: state.viewer, body: body[0] });
+    return { stdout: `https://github.com/${state.repo}/issues/${issue.number}#issuecomment-1\n` };
+  },
 };
+
+/** The one issue a subcommand names by number. */
+function issueArg(state: StubState, positionals: string[]): StubIssue {
+  if (positionals.length !== 1 || !/^\d+$/.test(positionals[0])) {
+    throw new Error(`expected one issue number, got ${JSON.stringify(positionals)}`);
+  }
+  const issue = findIssue(state, Number(positionals[0]));
+  if (!issue) throw new Error(`Could not resolve to an issue or pull request with the number of ${positionals[0]}.`);
+  return issue;
+}
 
 // --- gh api graphql: operations by name -------------------------------------
 

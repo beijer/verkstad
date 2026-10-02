@@ -31,9 +31,14 @@ export function worktreeRoot(cwd: string): string {
   return r.stdout.trim();
 }
 
+/** The git directory every worktree of the Project shares: the main checkout's `.git`. */
+export function commonDir(cwd: string): string {
+  return git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim();
+}
+
 /** The Project's main checkout, found from any of its worktrees. */
 export function mainCheckout(cwd: string): string {
-  return dirname(git(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]).trim());
+  return dirname(commonDir(cwd));
 }
 
 /** The log directory, `<main checkout>/.claude/verkstad/`: gitignored and outside every worktree. */

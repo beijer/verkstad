@@ -29,7 +29,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 | --- | --- | --- |
 | `baseBranch` | `gate --quick`, `land` | The branch Tickets land on. |
 | `gate` | `gate`, `land` | The Gate's named steps. |
-| `landing` | `land` | The Landing mode: `push` or `pull-request`. |
+| `landing` | `land` | The Landing mode: `push` (the default) or `pull-request`. |
 | `surfaces` | `surfaces`, `verdict check` | The Surfaces, each a name and the path globs whose changes can alter it. `[]` for a Project with none. |
 | `verify` | the Verifier | The name of the Project's Verify skill. |
 
@@ -74,7 +74,7 @@ An object, required: the Gate that `verkstad gate` runs.
 
 ### `landing`
 
-<!-- Documented by the Ticket that adds `verkstad land`. -->
+A string, optional: the Landing mode, how `verkstad land` puts a Ticket on the base branch. `"push"`, the default, pushes the rebased branch straight to `baseBranch`. `"pull-request"` (opening a pull request that closes the Ticket on merge) is not supported yet: `land` refuses it. Any other value fails naming the field. `gate` does not read it. What Landing does is under [Landing](#landing-1) below.
 
 ### `surfaces`
 
@@ -85,3 +85,30 @@ An object, required: the Gate that `verkstad gate` runs.
 <!-- Documented by the Ticket that adds the Verifier. -->
 
 verkstad's own `.claude/harness.json` is an example Contract for a Project with no Surfaces.
+
+## Landing
+
+`verkstad land <n> <worktree> <report-file>` lands Ticket `#<n>`, whose branch `issue-<n>` is checked out in `<worktree>`, with the implementer's report in `<report-file>`. It refuses, touching nothing, when the worktree is the main checkout, is on another branch, has uncommitted changes (untracked files included), or the report file is missing or empty, or the worktree's Contract is malformed. Otherwise:
+
+1. It takes the main checkout's Landing lock (`<git common dir>/verkstad-land.lock`, held with flock(1)), so one Landing runs at a time per main checkout; a second says it is waiting and runs when the first is done. The kernel releases the lock when a Landing exits, however it exits, so a lock is never stale.
+2. It fetches `origin/<baseBranch>`, rebases the branch onto it and runs the full Gate in the worktree (never `--quick`), printing the Gate's lines.
+3. It pushes `HEAD` to `<baseBranch>` on `origin`. When the push is rejected because the base moved meanwhile, it says so and goes back to 2; after 3 attempts it gives up.
+4. It closes the Ticket with the comment `Landed on <baseBranch> in <sha>.`, a blank line and the report; removes the worktree, the branch, and the branch on `origin` if an earlier Park pushed it; fast-forwards the main checkout when it is on a clean `<baseBranch>` (and says so when it is not); and prunes the log directory.
+
+It prints `Landed #<n> on <baseBranch> in <sha> and closed it.` and exits 0. Every failure prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A failed Landing touches no issue, and, but for `refused` and `error`, it removes the worktree and keeps the branch, so that a Resume can switch to it.
+
+| Reason | What failed | The branch |
+| --- | --- | --- |
+| `refused` | The call: arguments, worktree, report or Contract, as above. | Untouched, worktree too. |
+| `no-commits` | After the rebase the branch has nothing that is not on `origin/<baseBranch>`. | Kept. |
+| `conflict` | The rebase conflicted; the message names the conflicting files. | Kept as it was before the rebase. |
+| `gate-failed` | The full Gate; the message has the failing step's last lines and the Gate log's path. | Kept, rebased. |
+| `push-failed` | `origin` refused the push, or the base moved during each of the 3 Gate runs. | Kept, rebased. |
+| `github-failed` | The branch landed (or, with `--park`, was pushed) and the worktree is removed, but updating the Ticket failed: finish it by hand. | Landed and deleted (with `--park`, kept). |
+| `error` | Anything else: git, gh or flock could not run, or the fetch failed. | Wherever the Landing stopped; the worktree is not removed. |
+
+A later check adds its own reason (a missing or void Verdict) to this list; the orchestrator routes an unknown reason to the owner.
+
+`verkstad land --park <n> <worktree> <reason-file>` Parks Ticket `#<n>`, with the same refusals. It force-pushes `issue-<n>` to `origin`, removes the worktree and keeps the branch, then labels the Ticket `needs-info` instead of `ready-for-agent`, unassigns `@me`, and comments with the reason file's text and where the branch is. It takes no lock and runs no Gate.
+
+`verkstad prune` deletes each entry of the log directory older than 30 days, a directory being as old as the newest file in it, and lists what it deleted. Landing runs it after each Landing.

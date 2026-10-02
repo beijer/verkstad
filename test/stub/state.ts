@@ -37,6 +37,8 @@ export interface StubPullRequest {
 export interface StubState {
   /** owner/name, what `gh repo view` reports for the Project. */
   repo: string;
+  /** The login gh is signed in as, which `@me` names. */
+  viewer: string;
   issues: StubIssue[];
   pullRequests: StubPullRequest[];
   /** Largest page a paginated GraphQL connection returns, so tests can force several pages. */

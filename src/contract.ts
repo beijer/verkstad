@@ -1,6 +1,7 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
-// checked here. Only the fields the CLI reads so far are checked (baseBranch and
-// gate); a malformed one fails naming the field (docs/contract.md describes them all).
+// checked here. Only the fields the CLI reads so far are checked (baseBranch,
+// gate and landing), each by its reader; a malformed one fails naming the field
+// (docs/contract.md describes them all).
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -111,8 +112,27 @@ function parseGate(value: unknown): Gate {
   return { env, steps };
 }
 
+/** How Landing puts a Ticket on the base branch. */
+export type LandingMode = "push" | "pull-request";
+
 /** Reads and checks the Contract at the root of a checkout or worktree. */
 export function readContract(root: string): Contract {
+  const value = readJson(root);
+  return {
+    baseBranch: nonEmptyString(value.baseBranch, "baseBranch"),
+    gate: parseGate(value.gate),
+  };
+}
+
+/** The Contract's `landing`, `push` when it has none. Only `land` reads it, so only `land` checks it. */
+export function readLandingMode(root: string): LandingMode {
+  const { landing } = readJson(root);
+  if (landing === undefined) return "push";
+  if (landing !== "push" && landing !== "pull-request") throw malformed(`landing must be "push" or "pull-request"`);
+  return landing;
+}
+
+function readJson(root: string): JsonObject {
   const path = join(root, CONTRACT_PATH);
   if (!existsSync(path)) throw new Failure(`no Contract: ${path} does not exist`);
   let value: unknown;
@@ -122,8 +142,5 @@ export function readContract(root: string): Contract {
     throw new Failure(`${CONTRACT_PATH} is not valid JSON: ${(error as Error).message}`);
   }
   if (!isObject(value)) throw malformed("the Contract must be a JSON object");
-  return {
-    baseBranch: nonEmptyString(value.baseBranch, "baseBranch"),
-    gate: parseGate(value.gate),
-  };
+  return value;
 }

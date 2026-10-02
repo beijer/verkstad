@@ -4,6 +4,8 @@ import { convertLinks } from "./convert-links.ts";
 import { Failure } from "./fail.ts";
 import { frontier } from "./frontier.ts";
 import { gate } from "./gate.ts";
+import { land } from "./land.ts";
+import { prune } from "./prune.ts";
 
 interface Subcommand {
   usage: string;
@@ -27,10 +29,20 @@ const subcommands: Record<string, Subcommand> = {
     summary: "Runs the Contract's Gate steps, printing only failures and the full log's path",
     run: gate,
   },
+  land: {
+    usage: "verkstad land [--park] <n> <worktree> <file>",
+    summary: "Lands Ticket #n's branch with the report in <file>; --park Parks it with the reason in <file>",
+    run: land,
+  },
+  prune: {
+    usage: "verkstad prune",
+    summary: "Deletes what the log directory holds once it is older than 30 days",
+    run: prune,
+  },
 };
 
 function usage(): string {
-  const lines = Object.values(subcommands).map((s) => `  ${s.usage.padEnd(36)} ${s.summary}`);
+  const lines = Object.values(subcommands).map((s) => `  ${s.usage.padEnd(46)} ${s.summary}`);
   return ["usage: verkstad <subcommand> [options]", "", ...lines, ""].join("\n");
 }
 

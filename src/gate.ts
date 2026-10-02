@@ -133,7 +133,14 @@ function lastLines(text: string, count: number): string[] {
 
 export function gate(args: string[]): void {
   const { quick } = parseArgs(args);
-  const root = worktreeRoot(process.cwd());
+  runGate(worktreeRoot(process.cwd()), quick);
+}
+
+/**
+ * Runs the Gate in the worktree at `root`, printing a line per step and the pass line, and returns the
+ * full log's path. A failing step throws a Failure naming the step, with its last lines and the log's path.
+ */
+export function runGate(root: string, quick: boolean): string {
   const contract = readContract(root);
   const planned = plan(root, contract, quick);
   const dir = logDirectory(root);
@@ -173,4 +180,5 @@ export function gate(args: string[]): void {
     closeSync(log.fd);
   }
   process.stdout.write(`${quick ? "Quick gate passed" : "Gate passed"}. Log: ${log.path}\n`);
+  return log.path;
 }

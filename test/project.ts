@@ -8,7 +8,7 @@
 //   p.calls();  // every gh argv the CLI ran
 //   p.state();  // the stub's GitHub after the run
 
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -50,6 +50,8 @@ export interface Project {
   run(...args: string[]): Result;
   /** Runs `bin/verkstad` in another directory (a worktree, say). */
   runIn(cwd: string, ...args: string[]): Result;
+  /** Starts `bin/verkstad` in `cwd` without waiting for it, so that several can run at once. */
+  start(cwd: string, ...args: string[]): Promise<Result>;
   /** Runs git in the main checkout (or `-C` elsewhere) and returns its trimmed stdout. */
   git(...args: string[]): string;
   /** The stub's GitHub now. */
@@ -90,6 +92,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
 
   const state: StubState = {
     repo: seed.repo ?? "owner/project",
+    viewer: "owner",
     issues: (seed.issues ?? []).map(issue),
     pullRequests: seed.pullRequests ?? [],
     ...(seed.pageSize ? { pageSize: seed.pageSize } : {}),
@@ -140,12 +143,24 @@ export function project(t: TestContext, seed: Seed = {}): Project {
     return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
   };
 
+  const start = (cwd: string, ...args: string[]): Promise<Result> =>
+    new Promise((done, failed) => {
+      const child = spawn(verkstad, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
+      child.stderr.setEncoding("utf8").on("data", (chunk: string) => (stderr += chunk));
+      child.on("error", failed);
+      child.on("close", (code) => done({ code: code ?? -1, stdout, stderr }));
+    });
+
   return {
     dir,
     origin,
     env,
     run: (...args) => runIn(dir, ...args),
     runIn,
+    start,
     git,
     state: () => JSON.parse(readFileSync(join(stubDir, "state.json"), "utf8")) as StubState,
     calls: () =>
