@@ -31,7 +31,9 @@ export function start(args: string[]): void {
   if (realpathSync(root) === realpathSync(mainCheckout(root))) throw new Failure(`${root} is the main checkout, not a worktree`);
   if (git(root, ["status", "--porcelain"]).trim() !== "") throw new Failure(`${root} has uncommitted changes`);
   const branch = `issue-${n}`;
-  const exists = tryGit(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
+  const local = tryGit(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0;
+  // A Resume may find the branch only on origin, where a Park pushed it; switching to it then creates it locally.
+  const exists = local || (resume && tryGit(root, ["ls-remote", "--exit-code", "--heads", "origin", branch]).status === 0);
   if (exists && !resume) throw new Failure(`${branch} already exists; run \`verkstad start ${n} --resume\` to continue it`);
   if (!exists && resume) throw new Failure(`${branch} does not exist; run \`verkstad start ${n}\` to create it`);
   const base = readBaseBranch(root);

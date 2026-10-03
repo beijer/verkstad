@@ -97,6 +97,25 @@ test("start --resume switches to the existing issue-<n>, rebases it onto the lat
   assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
 });
 
+test("start --resume takes issue-<n> from origin when only a Park left it there", (t) => {
+  const p = project(t);
+  const head = earlierBranch(p, 7, { "ticket.txt": "from the Ticket\n" });
+  p.git("push", "--quiet", "origin", "issue-7");
+  p.git("branch", "--quiet", "-D", "issue-7");
+  const latest = landElsewhere(p, "landed.txt", "landed\n", "Another Ticket landed");
+  const wt = agentWorktree(p);
+
+  const r = p.runIn(wt, "start", "7", "--resume");
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(r.stdout, `On issue-7, rebased onto origin/main (${short(p, latest)}). Deleted branch worktree-agent-a.\n`);
+  assert.equal(p.git("-C", wt, "branch", "--show-current"), "issue-7");
+  assert.equal(p.git("-C", wt, "rev-parse", "HEAD~1"), latest);
+  assert.notEqual(p.git("-C", wt, "rev-parse", "HEAD"), head, "the Ticket's commit is rebased");
+  assert.equal(p.git("-C", wt, "log", "-1", "--format=%s"), "Ticket work. Refs #7");
+});
+
 test("start --resume stops on a rebase conflict naming the conflicting files, the rebase left for the agent to resolve", (t) => {
   const p = project(t, { files: { "a.txt": "a\n", "b.txt": "b\n", "c.txt": "c\n" } });
   earlierBranch(p, 7, { "a.txt": "a from the Ticket\n", "b.txt": "b from the Ticket\n", "c.txt": "c from the Ticket\n" });
@@ -176,10 +195,18 @@ test("start refuses an existing issue-<n> without --resume, and a missing one wi
 test("start without a Ticket number, or with an unknown option, prints its usage and exits 2", (t) => {
   const p = project(t);
   const wt = agentWorktree(p);
-  for (const args of [[], ["seven"], ["7", "--force"], ["7", "8"]]) {
+  const usage = "usage: verkstad start <n> [--resume]\n";
+  const cases: Array<[string[], string]> = [
+    [[], `verkstad start: needs one Ticket number; ${usage}`],
+    [["seven"], `verkstad start: needs one Ticket number; ${usage}`],
+    [["7", "8"], `verkstad start: needs one Ticket number; ${usage}`],
+    [["7", "--force"], `verkstad start: unknown option '--force'; ${usage}`],
+  ];
+  for (const [args, stderr] of cases) {
     const r = p.runIn(wt, "start", ...args);
     assert.equal(r.code, 2, `start ${args.join(" ")}`);
-    assert.match(r.stderr, /^verkstad start: .*usage: verkstad start <n> \[--resume\]\n$/);
+    assert.equal(r.stdout, "");
+    assert.equal(r.stderr, stderr);
   }
   assert.equal(p.git("-C", wt, "branch", "--show-current"), "worktree-agent-a");
 });
