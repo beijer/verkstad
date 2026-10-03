@@ -317,6 +317,46 @@ test("run-log ends the Run where its session invoked verkstad:reflect, and marks
   assert.ok(r.stdout.endsWith("Log directory, written during the Run (1 entry):\n  report-3.md  status partial, tier too low\n"), r.stdout);
 });
 
+const REFUSED =
+  "This agent is isolated in the worktree /p/.claude/worktrees/agent-a1, but this command names git in a form too complex to verify that it stays inside the worktree. Refusing to run it. Split it into plain, separate commands.";
+
+test("run-log counts neither a Gate run nor a failure for a command the worktree guard refused, and neither a Landing", (t) => {
+  const p = project(t);
+  writeSession(
+    p,
+    "refused",
+    [
+      call(699, "m0", "s1", "Skill", { skill: "verkstad:orchestrate" }),
+      call(700, "m1", "o1", "Agent", { description: "Ticket #4 guard", prompt: "You are implementing Ticket #4" }),
+      call(701, "m2", "o2", "Bash", { command: "verkstad land 4 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-4.md" }),
+      result(702, "o2", REFUSED, true),
+    ],
+    [
+      {
+        id: "a1",
+        meta: { agentType: "ticket-light", description: "Ticket #4 guard" },
+        entries: [
+          prompt(700, "You are implementing Ticket #4"),
+          call(701, "m1", "t1", "Bash", { command: "cat <<E | sh\nverkstad gate --quick\nE" }, 9_000),
+          result(702, "t1", REFUSED, true),
+          call(703, "m2", "t2", "Bash", { command: "verkstad gate --quick" }),
+          result(704, "t2", "Quick gate passed."),
+          call(705, "m3", "t3", "Bash", { command: "verkstad gate" }),
+          result(706, "t3", "Gate passed."),
+        ],
+      },
+    ],
+  );
+
+  const r = p.run("run-log");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes("context 9k, gate 2, 1 error"), r.stdout);
+  assert.ok(!r.stdout.includes("failed)"), r.stdout);
+  assert.ok(!r.stdout.includes("Landings:"), r.stdout);
+  assert.ok(r.stdout.includes("Tool errors (2)"), r.stdout);
+});
+
 test("run-log --log-dir reads the Run's files from another directory", (t) => {
   const p = project(t);
   seedRun(p);
