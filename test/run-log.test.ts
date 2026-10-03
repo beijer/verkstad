@@ -357,6 +357,38 @@ test("run-log counts neither a Gate run nor a failure for a command the worktree
   assert.ok(r.stdout.includes("Tool errors (2)"), r.stdout);
 });
 
+test("run-log counts neither a Gate run nor a Landing for a command the permission system denied", (t) => {
+  const p = project(t);
+  writeSession(
+    p,
+    "denied",
+    [
+      call(699, "m0", "s1", "Skill", { skill: "verkstad:orchestrate" }),
+      call(700, "m1", "o1", "Agent", { description: "Ticket #4 deny", prompt: "You are implementing Ticket #4" }),
+    ],
+    [
+      {
+        id: "a1",
+        meta: { agentType: "ticket-light", description: "Ticket #4 deny" },
+        entries: [
+          prompt(700, "You are implementing Ticket #4"),
+          call(701, "m1", "t1", "Bash", { command: "verkstad gate --quick" }, 9_000),
+          result(702, "t1", DENIED, true),
+          call(703, "m2", "t2", "Bash", { command: "verkstad land 4 /p/w /p/r.md" }),
+          result(704, "t2", DENIED, true),
+        ],
+      },
+    ],
+  );
+
+  const r = p.run("run-log");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(r.stdout.includes("context 9k, 2 errors (2 denied)"), r.stdout);
+  assert.ok(!r.stdout.includes("failed)"), r.stdout);
+  assert.ok(!r.stdout.includes("Landings:"), r.stdout);
+});
+
 test("run-log --log-dir reads the Run's files from another directory", (t) => {
   const p = project(t);
   seedRun(p);

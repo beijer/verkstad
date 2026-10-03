@@ -194,8 +194,8 @@ function errorKind(text: string, command: string): string {
 
 const DENIAL = /permission[^\n]*denied|denied by|doesn't want to proceed|rejected by the user/i;
 
-/** What a worktree-isolated agent is told when the guard refuses a command. */
-const GUARD_REFUSAL = /isolated in the worktree[^\n]*Refusing to run it/is;
+/** What Claude Code (not verkstad) tells a worktree-isolated agent when the guard refuses a command; the transcript marks it only as an error. */
+const GUARD_REFUSAL = /isolated in the worktree[^\n]*Refusing to run it/i;
 
 /** Reads what the transcript at `path` says between `from` and `until`. */
 function readTranscript(path: string, agent: string, from: number, until: number): Transcript {
@@ -269,8 +269,8 @@ function readTranscript(path: string, agent: string, from: number, until: number
       const output = resultText(b);
       const command = str(call.input.command);
       const where = `${file}:${e.line}`;
-      // A call the worktree guard refused never ran: it is a tool error, not a Gate run or a Landing.
-      const refused = b.is_error === true && GUARD_REFUSAL.test(output);
+      // A call the worktree guard or the permission system refused never ran: it is a tool error, not a Gate run or a Landing.
+      const refused = b.is_error === true && (GUARD_REFUSAL.test(output) || DENIAL.test(output.slice(0, 400)));
       if (call.name === "Bash" && refused && verkstadCall(command, "gate")) t.gateRuns--;
       if (call.name === "Bash" && !refused && verkstadCall(command, "gate") && (b.is_error === true || /\bgate\b[^\n]*\bfailed\b/i.test(output))) {
         t.gateFailures++;
