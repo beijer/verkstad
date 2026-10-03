@@ -29,7 +29,7 @@ Never read the implementer's report: not `{LOG_DIR}/report-{N}.md`, nor anything
 
 Fix round: this branch was Walked before, and its Verdict was failed. The implementer has since committed a fix. Walk every criterion again, not only these: {FINDINGS}
 
-Walk:
+Walk. You have a turn limit: record the Verdict as soon as every criterion has its line; edges beyond the criteria come after.
 1. Plan. For each acceptance criterion, in the Ticket's order: what a user does, and what they then see, on which Surface (the Verify skill's Drive section says what counts as seen). A criterion about the tests or the code itself (tests pass, a module is split) has no Surface: the Gate proves it at Landing, and its line says so.
 2. `verkstad verdict evidence {N}` prints the Evidence directory. Save into it as you go, a file per criterion, named after it.
 3. Launch the instance from {WORKTREE}, as the Verify skill says, and run its Doctor. Drive only an instance the Doctor passes: a Walk on a stale or broken one proves nothing.

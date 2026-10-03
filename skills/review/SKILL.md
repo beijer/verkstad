@@ -5,6 +5,6 @@ description: Review the changes since a fixed point against the repo's standards
 
 This is a Borrowed skill: follow `mattpocock-skills:code-review`.
 
-Invoke it with the Skill tool and follow it as written, passing the same fixed point. This skill only gives it a verkstad name, so that what calls `verkstad:review` keeps working when verkstad writes its own.
+Invoke it with the Skill tool and follow it as written, passing the same fixed point. Start its two reviews with `run_in_background: false`, in one message, so they run side by side and you get both results before you go on. A review started in the background returns after you have handed back, and its findings are lost. This skill only gives it a verkstad name, so that what calls `verkstad:review` keeps working when verkstad writes its own.
 
 If the Skill tool does not know it, the mattpocock-skills plugin is not installed: stop and say so.
