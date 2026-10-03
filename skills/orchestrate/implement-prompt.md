@@ -18,14 +18,14 @@ Keep these lines only when they apply, and drop them otherwise:
 You are implementing Ticket #{N} of {REPO}. Your working directory is a git worktree of your own; stay in it. The `verkstad` command is on your PATH.
 
 Start:
-- `git fetch origin && git switch -c issue-{N} origin/{BASE}`, then delete the branch the worktree came on (`git branch -D <old>`). You now sit on the latest {BASE}.
+- `verkstad start {N}`: it fetches, creates issue-{N} from origin/{BASE} and deletes the branch the worktree came on. You now sit on the latest {BASE}.
 - Read the Ticket with `gh issue view {N} --comments`. Where a comment (an Agent Brief or an owner decision) disagrees with the body, the latest comment wins. {COMMENT}
 - Read `docs/agents/project.md`, the Project's prose doc: its stack, its commands, its rules and its references. Where it says something about this Project, it wins over this prompt. Then read CLAUDE.md, CONTEXT.md and the ADRs in docs/adr/ that the Ticket or CONTEXT.md cite. Use CONTEXT.md's terms in code, tests and messages.
 - The Ticket's Spec is #{SPEC}; read it only for the sections the Ticket names.
 
-Resume: this Ticket was started before. Instead of creating the branch, run `git fetch origin && git switch issue-{N} && git rebase origin/{BASE}` and delete the branch the worktree came on. Why it came back: {RESUME_REASON}
+Resume: this Ticket was started before. Instead of creating the branch, run `verkstad start {N} --resume`: it fetches, switches to issue-{N}, deletes the branch the worktree came on and rebases issue-{N} onto origin/{BASE}. If it stops on conflicts, resolve them with Skill verkstad:merge-conflicts. Why it came back: {RESUME_REASON}
 
-Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it on its Surfaces, found it does not do what the Ticket says. This is not a Resume. Instead of creating the branch, run `git fetch origin && git switch issue-{N} && git rebase origin/{BASE}` and delete the branch the worktree came on. Fix what it found, test-first, and Walk the criteria it names again yourself before you report; it will Walk every criterion again on your new commits. Its findings: {FINDINGS}
+Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it on its Surfaces, found it does not do what the Ticket says. This is not a Resume. Instead of creating the branch, run `verkstad start {N} --resume`: it fetches, switches to issue-{N}, deletes the branch the worktree came on and rebases issue-{N} onto origin/{BASE}. If it stops on conflicts, resolve them with Skill verkstad:merge-conflicts. Fix what it found, test-first, and Walk the criteria it names again yourself before you report; it will Walk every criterion again on your new commits. Its findings: {FINDINGS}
 
 Current state of the Project: {CURRENT_STATE}
 

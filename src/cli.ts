@@ -8,6 +8,7 @@ import { labels } from "./labels.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
 import { runLog } from "./run-log.ts";
+import { start } from "./start.ts";
 import { surfaces } from "./surfaces.ts";
 import { verdict } from "./verdict.ts";
 
@@ -52,6 +53,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad run-log [--session <id>] [--log-dir <dir>]",
     summary: "Digests the last Run's transcripts and log files for verkstad:reflect",
     run: runLog,
+  },
+  start: {
+    usage: "verkstad start <n> [--resume]",
+    summary: "Puts this agent worktree on issue-<n>, made from or rebased onto origin's base branch, and deletes its own branch",
+    run: start,
   },
   surfaces: {
     usage: "verkstad surfaces <base> [--json]",

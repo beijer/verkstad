@@ -124,6 +124,11 @@ export function readContract(root: string): Contract {
   };
 }
 
+/** The Contract's `baseBranch`, for a command that needs nothing else from it. */
+export function readBaseBranch(root: string): string {
+  return nonEmptyString(readJson(root).baseBranch, "baseBranch");
+}
+
 /** The Contract's `landing`, `push` when it has none. Only `land` reads it, so only `land` checks it. */
 export function readLandingMode(root: string): LandingMode {
   const { landing } = readJson(root);

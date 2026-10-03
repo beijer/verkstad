@@ -11,6 +11,7 @@ Run from the Project's main checkout. Every Ticket starts from the latest base b
 | Command | Does |
 | --- | --- |
 | `verkstad frontier` | Lists the Tickets that are ready, in progress and waiting, and what each waits on (`--json` for the data) |
+| `verkstad start <n> [--resume]` | Run by the agents in their worktree: puts it on `issue-<n>`, made from `origin/<base>` or, with `--resume`, rebased onto it, and deletes the worktree's own branch |
 | `verkstad gate [--quick]` | Runs the Project's Gate; the agents run it, and Landing runs it in full |
 | `verkstad surfaces origin/<base>` | Run in a worktree: lists the Surfaces the branch's changes touch, one per line, nothing when none |
 | `verkstad verdict check <n> <worktree>` | Says whether the Ticket's Verdict lets its branch land; Landing runs the same check |
