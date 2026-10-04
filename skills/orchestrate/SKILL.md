@@ -50,7 +50,7 @@ The log directory, `<log>` below, is `.claude/verkstad/` in the main checkout, a
 
 4. **Dispatch.** Claim the Ticket, `gh issue edit <n> --add-assignee @me`, then launch `Agent` with `subagent_type` set to the Tier's agent type, `isolation: "worktree"` and `run_in_background: true`, its prompt built from [implement-prompt.md](implement-prompt.md). Done when the agent is launched.
 
-5. **Route each completion.** Write the implementing agent's report to `<log>/report-<n>.md`, then act on its `status`. Its `worktree:` line is the worktree the commands below take.
+5. **Route each completion.** Write the implementing agent's report to `<log>/report-<n>.md` with the Write tool. Run every command from the main checkout: reach a worktree with `git -C <worktree>` or a subshell `(cd <worktree> && …)`, never a bare `cd`, which leaves your shell inside it. Then act on its `status`. Its `worktree:` line is the worktree the commands below take.
    - **done**: Verify it, then land it, as below.
    - **partial** (ran out of turns or context): Resume one Tier up, with the report as the reason. There is no Tier above hard; Park it.
    - **blocked**: Park it. When the blocker is a decision question, put it in the final report with the agent's suggested option; when the user answers, Resume on the kept branch with the answer as the reason.

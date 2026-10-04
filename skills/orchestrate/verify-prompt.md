@@ -42,11 +42,8 @@ Pick the Verification state:
 - blocked: a criterion needs a human: the real device, an account, a decision the Ticket leaves open. Or the instance cannot run here for a reason outside the branch (the Doctor fails on a dependency the branch does not touch). Its line says what a human must check or decide. A branch that does not build or start is failed, not blocked.
 - test-verified: only when no criterion has a Surface to Walk. Each line names the test that proves it.
 
-Record it. Write the criteria into the log directory, one entry per acceptance criterion in the Ticket's order, `criterion` as the Ticket words it (shortened if long) and `seen` as what you did and saw, ending with its Evidence file:
+Record it. Write the criteria with the Write tool to {LOG_DIR}/criteria-{N}.json, one entry per acceptance criterion in the Ticket's order, `criterion` as the Ticket words it (shortened if long) and `seen` as what you did and saw, ending with its Evidence file, as `[{ "criterion": "…", "seen": "… (evidence: <file>)" }]`. Then run:
 
-    cat > {LOG_DIR}/criteria-{N}.json <<'EOF'
-    [{ "criterion": "…", "seen": "… (evidence: <file>)" }]
-    EOF
     verkstad verdict record {N} {WORKTREE} --state <state> --criteria {LOG_DIR}/criteria-{N}.json
 
 It prints the state and the patch-id. It refuses a worktree with uncommitted changes to tracked files: then something you ran changed the worktree. Do not clean it up; report it, with `git -C {WORKTREE} status --short`.
