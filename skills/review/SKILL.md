@@ -1,6 +1,6 @@
 ---
 name: review
-description: Review the changes since a fixed point against the repo's standards and against the issue they implement, in two parallel reviews. Use when a Ticket's branch is done and needs reviewing before it is reported (fixed point `git merge-base HEAD origin/<base branch>`), or when asked to review a branch or the changes since a commit.
+description: Review the changes since a fixed point against the repo's standards and against the issue they implement, in two parallel reviews. Use when a Ticket's branch is done and needs reviewing before it is reported (fixed point: the commit `git merge-base HEAD origin/<base branch>` prints, run on its own), or when asked to review a branch or the changes since a commit.
 ---
 
 This is a Borrowed skill: follow `mattpocock-skills:code-review`.
