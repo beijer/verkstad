@@ -1,0 +1,17 @@
+{
+  "description": "verkstad's hooks: in an agent worktree, a heredoc edit is refused with a message naming the Edit and Write tools",
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/verkstad hook pre-tool-use",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

@@ -12,7 +12,7 @@
       },
       {
         "name": "plugin",
-        "command": "command -v claude >/dev/null || exit 0; claude plugin validate ."
+        "command": "command -v claude >/dev/null || exit 0; claude plugin validate . && claude plugin validate .claude-plugin/plugin.json"
       },
       {
         "name": "borrowed",

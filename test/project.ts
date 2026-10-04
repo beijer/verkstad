@@ -51,6 +51,8 @@ export interface Project {
   run(...args: string[]): Result;
   /** Runs `bin/verkstad` in another directory (a worktree, say). */
   runIn(cwd: string, ...args: string[]): Result;
+  /** Runs `bin/verkstad` in `cwd` with `input` on its stdin, as Claude Code runs a hook. */
+  pipe(cwd: string, input: string, ...args: string[]): Result;
   /** Starts `bin/verkstad` in `cwd` without waiting for it, so that several can run at once. */
   start(cwd: string, ...args: string[]): Promise<Result>;
   /** Runs git in the main checkout (or `-C` elsewhere) and returns its trimmed stdout. */
@@ -140,10 +142,11 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   git("remote", "add", "origin", origin);
   git("push", "--quiet", "-u", "origin", "main");
 
-  const runIn = (cwd: string, ...args: string[]): Result => {
-    const r = spawnSync(verkstad, args, { cwd, env, encoding: "utf8" });
+  const pipe = (cwd: string, input: string, ...args: string[]): Result => {
+    const r = spawnSync(verkstad, args, { cwd, env, input, encoding: "utf8" });
     return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
   };
+  const runIn = (cwd: string, ...args: string[]): Result => pipe(cwd, "", ...args);
 
   const start = (cwd: string, ...args: string[]): Promise<Result> =>
     new Promise((done, failed) => {
@@ -162,6 +165,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
     env,
     run: (...args) => runIn(dir, ...args),
     runIn,
+    pipe,
     start,
     git,
     state: () => JSON.parse(readFileSync(join(stubDir, "state.json"), "utf8")) as StubState,

@@ -4,6 +4,7 @@ import { convertLinks } from "./convert-links.ts";
 import { Failure } from "./fail.ts";
 import { frontier } from "./frontier.ts";
 import { gate } from "./gate.ts";
+import { hook } from "./hook.ts";
 import { labels } from "./labels.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
@@ -34,6 +35,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad gate [--quick]",
     summary: "Runs the Contract's Gate steps, printing only failures and the full log's path",
     run: gate,
+  },
+  hook: {
+    usage: "verkstad hook pre-tool-use",
+    summary: "The plugin's PreToolUse hook: refuses a heredoc edit in an agent worktree, naming the Edit and Write tools",
+    run: hook,
   },
   land: {
     usage: "verkstad land [--park] <n> <worktree> <file>",
