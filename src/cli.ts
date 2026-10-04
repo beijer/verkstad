@@ -38,7 +38,7 @@ const subcommands: Record<string, Subcommand> = {
   },
   hook: {
     usage: "verkstad hook pre-tool-use",
-    summary: "The plugin's PreToolUse hook: refuses a heredoc edit in an agent worktree, naming the Edit and Write tools",
+    summary: "Refuses, as the plugin's PreToolUse hook, a heredoc edit in an agent worktree, naming the Edit and Write tools",
     run: hook,
   },
   land: {

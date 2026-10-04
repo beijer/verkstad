@@ -42,6 +42,17 @@ export function mainCheckout(cwd: string): string {
   return dirname(commonDir(cwd));
 }
 
+/**
+ * Whether `cwd` is in a linked worktree of its repo, as an agent's is, rather than its main checkout
+ * or a submodule's checkout: false outside git.
+ */
+export function inLinkedWorktree(cwd: string): boolean {
+  const r = tryGit(cwd, ["rev-parse", "--path-format=absolute", "--git-dir", "--git-common-dir"]);
+  if (r.status !== 0) return false;
+  const [gitDir, common] = r.stdout.trim().split("\n");
+  return gitDir !== common;
+}
+
 /** The log directory, `<main checkout>/.claude/verkstad/`: gitignored and outside every worktree. */
 export function logDirectory(cwd: string): string {
   return join(mainCheckout(cwd), ".claude", "verkstad");

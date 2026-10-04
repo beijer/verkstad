@@ -11,10 +11,10 @@
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, dirname } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { Failure } from "./fail.ts";
-import { tryGit } from "./git.ts";
+import { inLinkedWorktree } from "./git.ts";
 
 const USAGE = "usage: verkstad hook pre-tool-use";
 
@@ -23,56 +23,73 @@ const REASON =
   "not with a heredoc fed to python3 -, node - or cat >: Claude Code's worktree guard refuses such a command " +
   "when its text mentions git.";
 
-/** One simple command of a Bash command line: its words, and whether it reads a heredoc or writes a file. */
+/** One simple command of a Bash command line: its words, whether it reads a heredoc, and the files its stdout goes to. */
 interface Segment {
   words: string[];
   heredoc: boolean;
-  writes: boolean;
+  outputs: string[];
 }
 
 const SEPARATORS = ";&|()`";
 
+/** Words that run the command after them, so that it is the one to look at. */
+const PREFIXES = new Set(["env", "command", "exec", "nohup", "time", "then", "do", "else", "!", "{"]);
+
+/** Reads the quoted string (`'…'`, `"…"` or `$'…'`) that opens at `i`: its text, and the index after it. */
+function readQuoted(command: string, i: number): { text: string; end: number } {
+  const ansi = command[i] === "$";
+  if (ansi) i++;
+  const quote = command[i];
+  let text = "";
+  let j = i + 1;
+  while (j < command.length && command[j] !== quote) {
+    const escapes = ansi ? "'\\" : quote === '"' ? '$`"\\\n' : "";
+    if (command[j] === "\\" && escapes.includes(command[j + 1] ?? "")) j++;
+    text += command[j];
+    j++;
+  }
+  return { text, end: j + 1 };
+}
+
+/** The index of the newline that ends the line `i` is on, or the command's length. */
+function lineEnd(command: string, i: number): number {
+  const newline = command.indexOf("\n", i);
+  return newline < 0 ? command.length : newline;
+}
+
 /**
  * Splits a Bash command into its simple commands, the way the shell would closely enough to
  * tell what a heredoc is fed into: quotes and backslashes are removed from words, comments
- * dropped, and a heredoc's body skipped, so that text inside a body or a quoted string is
- * never read as shell.
+ * and arithmetic dropped, and a heredoc's body skipped, so that text inside a body or a quoted
+ * string is never read as shell.
  */
 function segments(command: string): Segment[] {
   const out: Segment[] = [];
-  let segment: Segment = { words: [], heredoc: false, writes: false };
+  let segment: Segment = { words: [], heredoc: false, outputs: [] };
   let word = "";
   let inWord = false;
+  // What the next word is the target of: a redirect of stdout, or another one.
+  let redirect: "stdout" | "other" | null = null;
   const pending: Array<{ delimiter: string; strip: boolean }> = [];
 
   const endWord = () => {
-    if (inWord) segment.words.push(word);
+    if (inWord && redirect === "stdout") segment.outputs.push(word);
+    else if (inWord && redirect === null) segment.words.push(word);
+    if (inWord) redirect = null;
     word = "";
     inWord = false;
   };
   const endSegment = () => {
     endWord();
+    redirect = null;
     if (segment.words.length || segment.heredoc) out.push(segment);
-    segment = { words: [], heredoc: false, writes: false };
-  };
-  /** Reads a quoted string starting at `i`, appending its text to the word, and returns the index after it. */
-  const quoted = (i: number): number => {
-    const quote = command[i];
-    let j = i + 1;
-    while (j < command.length && command[j] !== quote) {
-      if (quote === '"' && command[j] === "\\" && '$`"\\\n'.includes(command[j + 1] ?? "")) j++;
-      word += command[j];
-      j++;
-    }
-    inWord = true;
-    return j + 1;
+    segment = { words: [], heredoc: false, outputs: [] };
   };
   /** Skips the bodies of the heredocs the line just ended opened, returning the index after the last. */
   const skipBodies = (i: number): number => {
     for (const { delimiter, strip } of pending) {
       while (i < command.length) {
-        const newline = command.indexOf("\n", i);
-        const end = newline < 0 ? command.length : newline;
+        const end = lineEnd(command, i);
         const line = command.slice(i, end);
         i = end + 1;
         if ((strip ? line.replace(/^\t+/, "") : line) === delimiter) break;
@@ -85,8 +102,15 @@ function segments(command: string): Segment[] {
   let i = 0;
   while (i < command.length) {
     const c = command[i];
-    if (c === "'" || c === '"') {
-      i = quoted(i);
+    if (c === "'" || c === '"' || command.startsWith("$'", i)) {
+      const { text, end } = readQuoted(command, i);
+      word += text;
+      inWord = true;
+      i = end;
+    } else if (command.startsWith("$((", i) || (!inWord && command.startsWith("((", i))) {
+      const close = command.indexOf("))", i);
+      i = close < 0 ? command.length : close + 2;
+      inWord = true;
     } else if (c === "\\") {
       if (command[i + 1] !== "\n") {
         word += command[i + 1] ?? "";
@@ -94,8 +118,7 @@ function segments(command: string): Segment[] {
       }
       i += 2;
     } else if (c === "#" && !inWord) {
-      const newline = command.indexOf("\n", i);
-      i = newline < 0 ? command.length : newline;
+      i = lineEnd(command, i);
     } else if (c === "\n") {
       endSegment();
       i = skipBodies(i + 1);
@@ -104,6 +127,7 @@ function segments(command: string): Segment[] {
       i++;
     } else if (command.startsWith("<<<", i)) {
       endWord();
+      redirect = "other";
       i += 3;
     } else if (command.startsWith("<<", i)) {
       endWord();
@@ -111,15 +135,23 @@ function segments(command: string): Segment[] {
       const strip = command[i] === "-";
       if (strip) i++;
       while (command[i] === " " || command[i] === "\t") i++;
+      let delimiter = "";
       while (i < command.length && !` \t\n<>${SEPARATORS}`.includes(command[i])) {
-        if (command[i] === "'" || command[i] === '"') i = quoted(i);
-        else if (command[i] === "\\") i++;
-        else word += command[i++];
+        if (command[i] === "'" || command[i] === '"') {
+          const { text, end } = readQuoted(command, i);
+          delimiter += text;
+          i = end;
+        } else {
+          if (command[i] === "\\") i++;
+          delimiter += command[i++] ?? "";
+        }
       }
-      pending.push({ delimiter: word, strip });
-      word = "";
-      inWord = false;
+      pending.push({ delimiter, strip });
       segment.heredoc = true;
+    } else if (command.startsWith("&>", i)) {
+      endWord();
+      i += command.startsWith("&>>", i) ? 3 : 2;
+      redirect = "stdout";
     } else if (c === ">") {
       const fd = inWord && /^[0-9]+$/.test(word) ? word : "";
       if (fd) {
@@ -128,10 +160,13 @@ function segments(command: string): Segment[] {
       } else endWord();
       i++;
       if (command[i] === ">" || command[i] === "|") i++;
+      const duplicates = command[i] === "&" && /[0-9-]/.test(command[i + 1] ?? "");
       if (command[i] === "&") i++;
-      else if (fd === "" || fd === "1") segment.writes = true;
+      if (duplicates) while (/[0-9-]/.test(command[i] ?? "")) i++;
+      else redirect = fd === "" || fd === "1" ? "stdout" : "other";
     } else if (c === "<") {
       endWord();
+      redirect = "other";
       i++;
     } else if (SEPARATORS.includes(c)) {
       endSegment();
@@ -150,21 +185,12 @@ function segments(command: string): Segment[] {
 function heredocEdit(segment: Segment): boolean {
   if (!segment.heredoc) return false;
   const words = [...segment.words];
-  while (words.length && /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0])) words.shift();
+  while (words.length && (PREFIXES.has(words[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) words.shift();
   const [command, ...args] = words;
   if (command === undefined) return false;
   const name = basename(command);
   if (name === "python3" || name === "node") return args.includes("-");
-  return name === "cat" && segment.writes;
-}
-
-/** Whether `cwd` is in a worktree of a git repo other than its main checkout. */
-function inAgentWorktree(cwd: string): boolean {
-  if (!existsSync(cwd)) return false;
-  const top = tryGit(cwd, ["rev-parse", "--show-toplevel"]);
-  const common = tryGit(cwd, ["rev-parse", "--path-format=absolute", "--git-common-dir"]);
-  if (top.status !== 0 || common.status !== 0) return false;
-  return realpathSync(top.stdout.trim()) !== realpathSync(dirname(common.stdout.trim()));
+  return name === "cat" && segment.outputs.some((file) => file !== "/dev/null");
 }
 
 interface ToolEvent {
@@ -185,13 +211,14 @@ function readEvent(): ToolEvent {
 }
 
 export function hook(args: string[]): void {
-  if (args.length !== 1 || args[0] !== "pre-tool-use") throw new Failure(`needs the hook event; ${USAGE}`, 2);
+  if (args.length === 0) throw new Failure(`needs the hook event; ${USAGE}`, 2);
+  if (args.length !== 1 || args[0] !== "pre-tool-use") throw new Failure(`no hook for '${args.join(" ")}'; ${USAGE}`, 2);
   const event = readEvent();
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
   if (!segments(command).some(heredocEdit)) return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
-  if (!inAgentWorktree(cwd)) return;
+  if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
   const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: REASON };
   process.stdout.write(JSON.stringify({ hookSpecificOutput: decision }) + "\n");
 }

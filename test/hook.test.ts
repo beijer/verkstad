@@ -63,6 +63,12 @@ const otherHeredocEdits = [
   'cat <<"EOF" >> notes.md\nmore\nEOF',
   "cd src && python3 - a.ts <<EOF\nprint(1)\nEOF",
   "cat >test/a.test.ts <<-EOF\n\tgit status\n\tEOF\nnpm test",
+  "echo $((1<<2))\ncat > f <<EOF\nx\nEOF",
+  "cat <<EOF &> f\nx\nEOF",
+  "env A=1 python3 - <<EOF\nx\nEOF",
+  "if true; then cat > f <<EOF\nx\nEOF\nfi",
+  "echo $'it\\'s'; cat > f <<EOF\nx\nEOF",
+  "cat <<EOF >&f\nx\nEOF",
 ];
 
 test("in an agent worktree, the hook refuses a heredoc fed to node - or cat >, wherever it sits in the command", (t) => {
@@ -90,6 +96,16 @@ test("in the main checkout, the hook lets a heredoc fed to python3 -, node - or 
   }
 });
 
+test("in a submodule's checkout, which is no worktree, the hook lets a heredoc edit through", (t) => {
+  const p = project(t);
+  p.git("-c", "protocol.file.allow=always", "submodule", "add", "--quiet", p.origin, "sub");
+  const sub = realpathSync(join(p.dir, "sub"));
+
+  const r = p.pipe(sub, bashEvent(sub, pythonEdit), "hook", "pre-tool-use");
+
+  assert.deepEqual(r, { code: 0, stdout: "", stderr: "" });
+});
+
 test("outside a git checkout, the hook lets a heredoc edit through", (t) => {
   const p = project(t);
   const outside = realpathSync(join(p.dir, ".."));
@@ -115,6 +131,8 @@ test("in an agent worktree, the hook lets a Bash command without such a heredoc 
     "wc -l <<<\"python3 - <<EOF\"",
     "gh issue create --title T --body-file - <<'EOF'\npython3 - <<'X'\ncat > f <<'Y'\nEOF",
     "cat <<EOF 2>/dev/null\nhi\nEOF",
+    "cat <<EOF > /dev/null\nhi\nEOF",
+    "cat <<EOF >&2\nhi\nEOF",
   ];
 
   for (const command of commands) {
@@ -168,10 +186,16 @@ test("the plugin's hooks/hooks.json runs the hook on every Bash call, so that Cl
   assert.equal(r.stdout, refusal);
 });
 
-test("hook without its event is a usage error", (t) => {
+test("hook without its event, or with another, is a usage error", (t) => {
   const p = project(t);
 
-  const r = p.pipe(p.dir, bashEvent(p.dir, pythonEdit), "hook");
+  const none = p.pipe(p.dir, bashEvent(p.dir, pythonEdit), "hook");
+  const other = p.pipe(p.dir, bashEvent(p.dir, pythonEdit), "hook", "post-tool-use");
 
-  assert.deepEqual(r, { code: 2, stdout: "", stderr: "verkstad hook: needs the hook event; usage: verkstad hook pre-tool-use\n" });
+  assert.deepEqual(none, { code: 2, stdout: "", stderr: "verkstad hook: needs the hook event; usage: verkstad hook pre-tool-use\n" });
+  assert.deepEqual(other, {
+    code: 2,
+    stdout: "",
+    stderr: "verkstad hook: no hook for 'post-tool-use'; usage: verkstad hook pre-tool-use\n",
+  });
 });
