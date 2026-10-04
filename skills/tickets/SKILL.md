@@ -14,3 +14,4 @@ If it prints nothing, the mattpocock-skills plugin is not installed: stop and sa
 
 - The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`; where the skill says to run a setup skill for them, read those instead.
 - Write and publish each Ticket as verkstad's [Ticket format](../../docs/formats/ticket.md) says: a native sub-issue of its Spec, its blockers as native `blocked_by` links, no file paths or line numbers.
+- Each issue you show the owner is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`.

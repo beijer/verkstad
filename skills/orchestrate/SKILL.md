@@ -21,6 +21,8 @@ Run from the Project's main checkout. Every Ticket starts from the latest base b
 
 The log directory, `<log>` below, is `.claude/verkstad/` in the main checkout, as an absolute path: gitignored and outside every worktree, so Landing never removes it. Reports, Park reasons and the Verifier's Verdicts and Evidence go there, beside the Gate's logs.
 
+Every Ticket and Spec you show the user, in a table or in a sentence, is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`, which makes it a link the user can open; a bare `#<n>` is not.
+
 ## Steps
 
 1. **Read the Project and check the base.** Read the Contract: `.claude/harness.json`, whose `baseBranch` is `<base>` below, and `docs/agents/project.md`, the prose doc, whose Tier examples, shared files and rules steps 3 and 5 apply. A Project without both is not set up for verkstad: stop and say so. A Project whose `surfaces` are not empty names its Verify skill in `verify`, `<verify>` below; when it does not, stop and say so (`verkstad:create-verify` writes one). The main checkout must be on `<base>`, clean and level with `origin/<base>` (`git fetch`, `git status`), and its `.gitignore` must cover `.claude/verkstad/` and `.claude/worktrees/`, where the agents' worktrees go; if it does not, stop and tell the user. List `git worktree list` and `git branch --list 'issue-*'`: a leftover `issue-<n>` branch means an earlier Run stopped mid-Ticket; Resume that Ticket (step 5) rather than starting it fresh. Run `verkstad prune`. Done when the base is clean and current.

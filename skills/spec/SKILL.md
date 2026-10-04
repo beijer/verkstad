@@ -14,3 +14,4 @@ If it prints nothing, the mattpocock-skills plugin is not installed: stop and sa
 
 - The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`; where the skill says to run a setup skill for them, read those instead.
 - Publish the Spec without the `ready-for-agent` label. A Spec is never implemented directly; its Tickets, written next with `verkstad:tickets`, carry that label as its sub-issues.
+- Each issue you show the owner is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`.

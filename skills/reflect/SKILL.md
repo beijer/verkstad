@@ -92,4 +92,4 @@ Show the list, then ask about each proposal with AskUserQuestion (up to four per
 
 ## 6. Report
 
-A short list: each applied change (file, one line), each Ticket filed (number, title), each skipped proposal, and the commits per repo.
+A short list: each applied change (file, one line), each Ticket filed (written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`, and its title), each skipped proposal, and the commits per repo.
