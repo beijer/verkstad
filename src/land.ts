@@ -22,7 +22,9 @@
 // its push touches no issue and keeps the branch. After a refusal or an error
 // the worktree stays, and after a Verdict check fails too, since the Verifier
 // Walks it next; after any other failure it is removed, so that a Resume can
-// switch to the branch.
+// switch to the branch. A branch with no recorded review (src/review.ts) fails
+// first, with review-missing, before the lock and the rebase: nothing changes,
+// the worktree included.
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -33,6 +35,7 @@ import { runGate } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
+import { deleteReview, missingReview } from "./review.ts";
 import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
 
 const USAGE = "usage: verkstad land <n> <worktree> <report-file> | verkstad land --park <n> <worktree> <reason-file>";
@@ -42,6 +45,7 @@ const ATTEMPTS = 3;
 /** Why a Landing failed, as its last line says; docs/contract.md describes each. */
 type Reason =
   | "refused"
+  | "review-missing"
   | "no-commits"
   | "conflict"
   | "gate-failed"
@@ -247,6 +251,14 @@ function landTicket(args: Args): void {
     if (error instanceof Failure) throw refused(error.message);
     throw error;
   }
+  const noReview = missingReview(logDirectory(ticket.main), ticket.branch);
+  if (noReview !== null) {
+    throw new LandingFailure(
+      "review-missing",
+      `#${ticket.n} did not land: no review of ${ticket.branch} is recorded: ${noReview}. ` +
+        `Running verkstad:review on the branch records one.\nBranch ${ticket.branch} is kept as it was, in its worktree.`,
+    );
+  }
   // gh finds the Project's repo from the directory it runs in, and the worktree is about to go.
   process.chdir(ticket.main);
 
@@ -259,8 +271,12 @@ function landTicket(args: Args): void {
   }
 }
 
-/** Removes the worktree and the local branch once the branch is on origin; says what it could not do. */
+/**
+ * Removes the worktree, the local branch and its review record once the branch is on origin, so that a new
+ * issue-<n> needs a review of its own; says what it could not do.
+ */
 function removeWorktreeAndBranch(ticket: Ticket): string {
+  deleteReview(logDirectory(ticket.main), ticket.branch);
   return (
     removeWorktree(ticket.main, ticket.root) +
     (tryGit(ticket.main, ["branch", "--delete", "--force", ticket.branch]).status === 0

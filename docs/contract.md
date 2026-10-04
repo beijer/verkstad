@@ -9,7 +9,9 @@ Neither repeats the other. A fact a script acts on goes in `harness.json`; every
 
 ## The log directory
 
-`<main checkout>/.claude/verkstad/` holds what the CLI keeps: Gate logs, Verify logs, reports, Verdicts and Evidence ([docs/verdict.md](verdict.md) describes a Verdict's file and its Evidence directory). It is gitignored (a Project adds `.claude/verkstad/` to its `.gitignore`, and `.claude/worktrees/`, where a Run's agents get their worktrees) and lies outside every worktree, so Landing, which removes a worktree, never removes what it holds. The CLI finds the main checkout from any worktree with `git rev-parse --path-format=absolute --git-common-dir`.
+`<main checkout>/.claude/verkstad/` holds what the CLI keeps: Gate logs, Verify logs, reports, review records, Verdicts and Evidence ([docs/verdict.md](verdict.md) describes a Verdict's file and its Evidence directory). It is gitignored (a Project adds `.claude/verkstad/` to its `.gitignore`, and `.claude/worktrees/`, where a Run's agents get their worktrees) and lies outside every worktree, so removing a worktree never removes what it holds.
+
+`verkstad review record`, which `verkstad:review` runs once its reviews are back, records that the branch of the worktree it runs in was reviewed: `review-<branch>.json` (a `/` in the branch written `%2F`) holds `branch`, `commit` (the full SHA HEAD was on) and `recordedAt` (ISO 8601). A second review of the branch replaces it. It fails on a detached HEAD. The CLI finds the main checkout from any worktree with `git rev-parse --path-format=absolute --git-common-dir`.
 
 ## What GitHub holds
 
@@ -108,13 +110,13 @@ verkstad's own `.claude/harness.json` is an example Contract for a Project with 
 
 ## Landing
 
-`verkstad land <n> <worktree> <report-file>` lands Ticket `#<n>`, whose branch `issue-<n>` is checked out in `<worktree>`, with the implementer's report in `<report-file>`. It refuses, touching nothing, when the worktree is the main checkout, is on another branch, has uncommitted changes (untracked files included), or the report file is missing or empty, or the worktree's Contract is malformed. Otherwise:
+`verkstad land <n> <worktree> <report-file>` lands Ticket `#<n>`, whose branch `issue-<n>` is checked out in `<worktree>`, with the implementer's report in `<report-file>`. It refuses, touching nothing, when the worktree is the main checkout, is on another branch, has uncommitted changes (untracked files included), or the report file is missing or empty, or the worktree's Contract is malformed. It fails with `review-missing`, changing nothing, when no review of `issue-<n>` is recorded in the log directory, or its `review-issue-<n>.json` is malformed (above): any recorded review of the branch counts, whatever commit it was on, since the implementer commits its fixes after the review and a rebase rewrites every commit. Otherwise:
 
 1. It takes the main checkout's Landing lock (`<git common dir>/verkstad-land.lock`, held with flock(1)), so one Landing runs at a time per main checkout; a second says it is waiting and runs when the first is done. The kernel releases the lock when a Landing exits, however it exits, so a lock is never stale.
 2. It fetches `origin/<baseBranch>`, rebases the branch onto it and runs the full Gate in the worktree (never `--quick`), printing the Gate's lines.
 3. It checks the Verdict, as `verkstad verdict check` does ([docs/verdict.md](verdict.md)): a branch that touches a Surface needs a `live-verified` Verdict for its rebased patch.
 4. It pushes `HEAD` to `<baseBranch>` on `origin`. When the push is rejected because the base moved meanwhile, it says so and goes back to 2; after 3 attempts it gives up.
-5. It closes the Ticket with the comment `Landed on <baseBranch> in <sha>.`, a blank line, the report, a blank line and how far the Ticket was proven (below); removes the worktree, the branch, and the branch on `origin` if an earlier Park pushed it; fast-forwards the main checkout when it is on a clean `<baseBranch>` (and says so when it is not); and prunes the log directory.
+5. It closes the Ticket with the comment `Landed on <baseBranch> in <sha>.`, a blank line, the report, a blank line and how far the Ticket was proven (below); removes the worktree, the branch, its review record (so that a later `issue-<n>` needs a review of its own), and the branch on `origin` if an earlier Park pushed it; fast-forwards the main checkout when it is on a clean `<baseBranch>` (and says so when it is not); and prunes the log directory.
 
 The closing comment ends with the Ticket's Verification state and the Surfaces it touched. With a Verdict for the landed patch, that is the Verdict's state, its Evidence directory and a line per acceptance criterion:
 
@@ -132,15 +134,16 @@ That is the `push` Landing mode. In the `pull-request` mode steps 1 to 3 are the
 
 4. It force-pushes `HEAD` to `issue-<n>` on `origin`, over whatever an earlier Park or Landing put there. It does not touch `<baseBranch>`, so a base that moves meanwhile does not matter and it never rebases again.
 5. It opens a pull request from `issue-<n>` onto `<baseBranch>`, titled as the Ticket, whose body is `Closes #<n>.`, a blank line, the report, a blank line and how far the Ticket was proven, as in the closing comment. When a pull request from `issue-<n>` onto `<baseBranch>` is already open, from an earlier Landing of the Ticket, it replaces that one's body instead; the push has already updated its commits.
-6. It removes the worktree and the local branch (the pull request's branch is on `origin`, and a leftover local `issue-<n>` would tell the next Run that the Ticket stopped mid-way) and prunes the log directory. It leaves the main checkout alone, since the base has not moved.
+6. It removes the worktree, the local branch and its review record (the pull request's branch is on `origin`, and a leftover local `issue-<n>` would tell the next Run that the Ticket stopped mid-way) and prunes the log directory. It leaves the main checkout alone, since the base has not moved.
 
 The Ticket stays open, and assigned, until the owner merges the pull request, which closes it; `verkstad frontier` lists it as in progress meanwhile, so no Run dispatches it again, and the Tickets it blocks wait for the merge. It prints `Opened <url> onto <baseBranch> for #<n> (issue-<n> at <sha>); #<n> closes when it merges.`, or `Updated <url> …` for a pull request that was open, and exits 0.
 
-Every failure, in either mode, prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and no pull request, and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error` and a failed Verdict check, whose worktree the Verifier Walks next.
+Every failure, in either mode, prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and no pull request, and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error`, `review-missing`, which changed nothing, and a failed Verdict check, whose worktree the Verifier Walks next.
 
 | Reason | What failed | The branch |
 | --- | --- | --- |
 | `refused` | The call: arguments, worktree, report or Contract, as above. | Untouched, worktree too. |
+| `review-missing` | No review of the branch is recorded, or its record is malformed: the implementer did not run `verkstad:review`. A Resume reviews it. | Untouched, worktree too. |
 | `no-commits` | After the rebase the branch has nothing that is not on `origin/<baseBranch>`. | Kept. |
 | `conflict` | The rebase conflicted; the message names the conflicting files. | Kept as it was before the rebase. |
 | `gate-failed` | The full Gate; the message has the failing step's last lines and the Gate log's path. | Kept, rebased. |

@@ -7,6 +7,7 @@ import { gate } from "./gate.ts";
 import { labels } from "./labels.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
+import { review } from "./review.ts";
 import { runLog } from "./run-log.ts";
 import { start } from "./start.ts";
 import { surfaces } from "./surfaces.ts";
@@ -48,6 +49,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad prune",
     summary: "Deletes what the log directory holds once it is older than 30 days",
     run: prune,
+  },
+  review: {
+    usage: "verkstad review record",
+    summary: "Records that the branch here was reviewed, at the commit HEAD is on, for Landing to check",
+    run: review,
   },
   "run-log": {
     usage: "verkstad run-log [--session <id>] [--log-dir <dir>]",

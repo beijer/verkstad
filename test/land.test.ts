@@ -32,19 +32,41 @@ function tmpFile(p: Project, name: string, content: string): string {
   return path;
 }
 
-/** A Ticket's worktree as an implementing agent leaves it: branch issue-<n> off main, a commit per file set. */
+/** A Ticket's worktree as an implementing agent leaves it: branch issue-<n> off main, a commit per file set,
+ * reviewed at its last commit. */
 function ticket(p: Project, n: number, ...commits: Array<Record<string, string>>): string {
+  const wt = unreviewed(p, n, ...commits);
+  recordReview(p, wt);
+  return wt;
+}
+
+/** A Ticket's worktree whose branch has no recorded review, as an implementer that skipped verkstad:review leaves it. */
+function unreviewed(p: Project, n: number, ...commits: Array<Record<string, string>>): string {
   const wt = join(p.dir, "..", `wt-${n}`);
   p.git("worktree", "add", "--quiet", "-b", `issue-${n}`, wt, "main");
-  for (const files of commits) {
-    for (const [path, content] of Object.entries(files)) {
-      mkdirSync(dirname(join(wt, path)), { recursive: true });
-      writeFileSync(join(wt, path), content);
-      p.git("-C", wt, "add", path);
-    }
-    p.git("-C", wt, "commit", "--quiet", "-m", `Adds ${Object.keys(files).join(", ")}. Refs #${n}`);
-  }
+  for (const files of commits) commit(p, wt, files, `Adds ${Object.keys(files).join(", ")}. Refs #${n}`);
   return wt;
+}
+
+/** Adds a commit of these files to the worktree's branch. */
+function commit(p: Project, wt: string, files: Record<string, string>, message: string): void {
+  for (const [path, content] of Object.entries(files)) {
+    mkdirSync(dirname(join(wt, path)), { recursive: true });
+    writeFileSync(join(wt, path), content);
+    p.git("-C", wt, "add", path);
+  }
+  p.git("-C", wt, "commit", "--quiet", "-m", message);
+}
+
+/** Records, as verkstad:review does, that the worktree's branch was reviewed at the commit it is on. */
+function recordReview(p: Project, wt: string): void {
+  const r = p.runIn(wt, "review", "record");
+  assert.equal(r.code, 0, r.stderr);
+}
+
+/** The file Landing looks for a review of issue-<n> in. */
+function reviewPath(p: Project, n: number): string {
+  return join(p.dir, ".claude", "verkstad", `review-issue-${n}.json`);
 }
 
 /** Pushes a commit to origin's main from another clone, as another Landing would. */
@@ -321,6 +343,70 @@ test("a branch with nothing to land exits with no-commits; branch kept, no issue
   assert.equal(reason(r.stderr), "reason: no-commits");
   assert.match(r.stderr, /^verkstad land: #7 did not land: issue-7 has no commits that are not on origin\/main\.$/m);
   assertNothingLanded(p, wt, base, base);
+});
+
+test("a branch with no recorded review exits with review-missing before the rebase and the Gate; Ticket, branch, worktree and origin untouched", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "touch ../gate-ran" }]) });
+  const wt = unreviewed(p, 7, { "feature.txt": "a feature\n" });
+  const head = p.git("rev-parse", "issue-7");
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, "");
+  assert.equal(
+    r.stderr,
+    `verkstad land: #7 did not land: no review of issue-7 is recorded: there is no ${reviewPath(p, 7)}. ` +
+      "Running verkstad:review on the branch records one.\n" +
+      "Branch issue-7 is kept as it was, in its worktree.\n" +
+      "reason: review-missing\n",
+  );
+  assert.equal(existsSync(join(p.dir, "..", "gate-ran")), false, "the Gate did not run");
+  assert.equal(originHead(p), base, "origin's main is unchanged");
+  assert.equal(originHas(p, "issue-7"), false, "nothing was pushed");
+  assert.equal(p.git("-C", wt, "rev-parse", "HEAD"), head, "the branch is not rebased");
+  assert.equal(p.git("-C", wt, "branch", "--show-current"), "issue-7", "the worktree is still on the branch");
+  assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
+  assert.deepEqual(p.calls(), [], "no issue was touched");
+  assert.equal(issueOf(p, 7).state, "open");
+  assert.deepEqual(issueOf(p, 7).assignees, ["owner"]);
+});
+
+test("a review record that is not valid JSON or names another branch is no recorded review: review-missing", (t) => {
+  const cases = [
+    { content: "{not json", why: /is not valid JSON: / },
+    { content: '{"branch": "issue-8", "commit": "0123456789abcdef0123456789abcdef01234567"}', why: /names the branch "issue-8", not issue-7\. / },
+    { content: '{"branch": "issue-7"}', why: /names no commit: its commit is undefined\. / },
+  ];
+  for (const { content, why } of cases) {
+    const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
+    const wt = unreviewed(p, 7, { "feature.txt": "a feature\n" });
+    mkdirSync(dirname(reviewPath(p, 7)), { recursive: true });
+    writeFileSync(reviewPath(p, 7), content);
+
+    const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+    assert.equal(r.code, 1, content);
+    assert.equal(reason(r.stderr), "reason: review-missing");
+    assert.match(r.stderr, why);
+    assert.equal(existsSync(wt), true, "the worktree is kept");
+  }
+});
+
+test("a review recorded on an earlier commit of the branch lands it, and the Landing deletes the record with the branch", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  commit(p, wt, { "fix.txt": "the review's fix\n" }, "Fixes what the review found. Refs #7");
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(originLog(p).slice(0, 3), ["Fixes what the review found. Refs #7", "Adds feature.txt. Refs #7", "Landed meanwhile"]);
+  assert.equal(issueOf(p, 7).state, "closed");
+  assert.equal(existsSync(reviewPath(p, 7)), false, "the review record is deleted");
 });
 
 test("Landing refuses the main checkout, a worktree on another branch and one with uncommitted changes, touching nothing", (t) => {
@@ -706,6 +792,7 @@ test("in pull-request mode a clean branch is rebased, gated in full, pushed as i
   assert.deepEqual(issue.comments, []);
   assert.equal(existsSync(wt), false, "the worktree is removed");
   assert.deepEqual(localBranches(p), [], "the local branch is deleted; the pull request's is on origin");
+  assert.equal(existsSync(reviewPath(p, 7)), false, "the review record goes with the local branch");
   assert.equal(p.git("rev-parse", "main"), mainBefore, "the main checkout is left where it was");
 });
 
