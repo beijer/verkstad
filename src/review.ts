@@ -1,7 +1,7 @@
 // `verkstad review record`: records that verkstad:review ran on the branch the
 // worktree it runs in is on, as `review-<branch>.json` in the log directory:
-// the branch and the commit HEAD was on. Landing refuses a Ticket's branch with
-// no recorded review (`reason: review-missing`). Any review of the branch
+// the branch and the commit HEAD was on. Landing fails on a Ticket's branch
+// with no recorded review (`reason: review-missing`), changing nothing. Any review of the branch
 // counts, whatever commit it was on: the implementer commits its fixes after
 // the review, and a rebase rewrites every commit anyway. A Landing that puts
 // the branch on origin deletes its record with the branch.
@@ -15,7 +15,7 @@ import { ensureLogDirectory, git, worktreeRoot } from "./git.ts";
 const USAGE = "usage: verkstad review record";
 
 /** The file `review-<branch>.json` in the log directory. */
-export interface ReviewRecord {
+interface ReviewRecord {
   branch: string;
   /** The full SHA HEAD was on when the review was recorded. */
   commit: string;
@@ -24,7 +24,7 @@ export interface ReviewRecord {
 }
 
 /** Where the review of `branch` is recorded in the log directory `dir`; a slash in the branch is escaped. */
-export function reviewPath(dir: string, branch: string): string {
+function reviewPath(dir: string, branch: string): string {
   return join(dir, `review-${encodeURIComponent(branch)}.json`);
 }
 

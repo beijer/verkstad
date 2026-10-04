@@ -376,21 +376,35 @@ test("a branch with no recorded review exits with review-missing before the reba
 
 test("a review record that is not valid JSON or names another branch is no recorded review: review-missing", (t) => {
   const cases = [
-    { content: "{not json", why: /is not valid JSON: / },
-    { content: '{"branch": "issue-8", "commit": "0123456789abcdef0123456789abcdef01234567"}', why: /names the branch "issue-8", not issue-7\. / },
-    { content: '{"branch": "issue-7"}', why: /names no commit: its commit is undefined\. / },
+    // JSON.parse's own message follows the colon, so only this case's first line is matched, not spelt out.
+    { content: "{not json", why: (path: string) => new RegExp(`^verkstad land: #7 did not land: no review of issue-7 is recorded: ${path} is not valid JSON: .+\\. Running`) },
+    {
+      content: '{"branch": "issue-8", "commit": "0123456789abcdef0123456789abcdef01234567"}',
+      why: (path: string) => `${path} names the branch "issue-8", not issue-7`,
+    },
+    { content: '{"branch": "issue-7"}', why: (path: string) => `${path} names no commit: its commit is undefined` },
   ];
   for (const { content, why } of cases) {
     const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
     const wt = unreviewed(p, 7, { "feature.txt": "a feature\n" });
-    mkdirSync(dirname(reviewPath(p, 7)), { recursive: true });
-    writeFileSync(reviewPath(p, 7), content);
+    const path = reviewPath(p, 7);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, content);
 
     const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
     assert.equal(r.code, 1, content);
-    assert.equal(reason(r.stderr), "reason: review-missing");
-    assert.match(r.stderr, why);
+    const expected = why(path);
+    if (typeof expected === "string") {
+      assert.equal(
+        r.stderr,
+        `verkstad land: #7 did not land: no review of issue-7 is recorded: ${expected}. Running verkstad:review on the branch records one.\n` +
+          "Branch issue-7 is kept as it was, in its worktree.\nreason: review-missing\n",
+      );
+    } else {
+      assert.match(r.stderr, expected);
+      assert.equal(reason(r.stderr), "reason: review-missing");
+    }
     assert.equal(existsSync(wt), true, "the worktree is kept");
   }
 });
