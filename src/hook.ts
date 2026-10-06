@@ -10,8 +10,8 @@
 // checkout, outside git, and for any other command or tool, it prints nothing.
 //
 // When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it also
-// refuses a Bash command with an unquoted word that starts with =, or an assignment whose value
-// does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
+// refuses a Bash command with an unquoted word that starts with =, or an assignment (before the
+// command, or an argument of export and its kin) whose value does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
 // none, abandons the rest of the command line. The reason says how to quote the word.
 //
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
@@ -51,6 +51,14 @@ const SEPARATORS = ";&|()`";
 
 /** Words that run the command after them, so that it is the one to look at. */
 const PREFIXES = new Set(["env", "command", "exec", "nohup", "time", "then", "do", "else", "!", "{"]);
+
+/** Reserved words after which a word is in command position, so that `[[` opens a test and `a==b` is an assignment. */
+const KEYWORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "{", "time"]);
+
+/** Commands whose `name=value` arguments zsh treats as assignments, expanding a value that starts with =. */
+const DECLARATIONS = new Set(["export", "local", "typeset", "declare", "readonly", "integer", "float"]);
+
+const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
 
 /** Reads the quoted string (`'…'`, `"…"` or `$'…'`) that opens at `i`: its text, and the index after it. */
 function readQuoted(command: string, i: number): { text: string; end: number } {
@@ -100,10 +108,14 @@ function segments(command: string): Segment[] {
   const pending: Array<{ delimiter: string; strip: boolean }> = [];
 
   const endWord = () => {
-    if (inWord && shape === "[[") condition = true;
-    else if (inWord && shape === "]]") condition = false;
+    // Only reserved words and assignments come before it: the word is a command or an assignment.
+    const leading = redirect === null && segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w));
+    if (inWord && shape === "[[" && leading) condition = true;
+    else if (inWord && shape === "]]" && condition) condition = false;
     else if (inWord && !condition) {
-      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(?==.)/.exec(shape);
+      const declares = segment.words.find((w) => !KEYWORDS.has(w) && !ASSIGNMENT.test(w));
+      const assignable = redirect === null && (declares === undefined || DECLARATIONS.has(declares));
+      const assignment = assignable ? /^([A-Za-z_][A-Za-z0-9_]*)=(?==.)/.exec(shape) : null;
       if (assignment) {
         const name = assignment[1];
         segment.equals.push({ word, quoted: `${name}=${singleQuoted(word.slice(name.length + 1))}` });
@@ -227,7 +239,7 @@ function segments(command: string): Segment[] {
 function heredocEdit(segment: Segment): boolean {
   if (!segment.heredoc) return false;
   const words = [...segment.words];
-  while (words.length && (PREFIXES.has(words[0]) || /^[A-Za-z_][A-Za-z0-9_]*=/.test(words[0]))) words.shift();
+  while (words.length && (PREFIXES.has(words[0]) || ASSIGNMENT.test(words[0]))) words.shift();
   const [command, ...args] = words;
   if (command === undefined) return false;
   const name = basename(command);
@@ -259,8 +271,8 @@ export function hook(args: string[]): void {
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
   const parsed = segments(command);
-  const equals = parsed.flatMap((segment) => segment.equals)[0];
-  if (basename(process.env.SHELL ?? "") === "zsh" && equals) return deny(zshReason(equals.word, equals.quoted));
+  const expanded = parsed.flatMap((segment) => segment.equals)[0];
+  if (basename(process.env.SHELL ?? "") === "zsh" && expanded) return deny(zshReason(expanded.word, expanded.quoted));
   if (!/\bgit/i.test(command) || !parsed.some(heredocEdit)) return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
   if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;

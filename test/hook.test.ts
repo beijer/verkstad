@@ -277,6 +277,9 @@ test("under zsh, the hook refuses an assignment whose value starts with =, and a
     ["[ a == b ] && echo same", "==", "'=='"],
     ["ls > =out", "=out", "'=out'"],
     ["echo $(echo =x)", "=x", "'=x'"],
+    ["x=1 y==2 npm test", "y==2", "y='=2'"],
+    ["export PAGER==less", "PAGER==less", "PAGER='=less'"],
+    ["echo [[ =x", "=x", "'=x'"],
   ];
   for (const [command, word, quoted] of cases) {
     const r = hookUnder(p, "/bin/zsh", p.dir, command);
@@ -294,6 +297,8 @@ test("under zsh, the hook lets a quoted =word, an assignment, an option and a [[
     "a=b",
     "x=1 npm test",
     "npm test -- --opt=value",
+    "echo a==b",
+    "pip install requests==2.31",
     "[[ x == y ]] && echo same",
     "if [[ $a == b || $a == c ]]; then echo yes; fi",
     "echo a = b",
