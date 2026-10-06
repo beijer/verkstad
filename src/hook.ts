@@ -6,8 +6,8 @@
 // `node -` or `cat >` (or `>>`), and names the Edit and Write tools: Claude Code's worktree
 // guard refuses such a command when its text mentions git, with a message that says nothing
 // about what to do instead. A command whose text does not mention git (`git` at the start of a
-// word, anywhere in the text, case-insensitive) passes, as the guard lets it run. In the main checkout, outside git, and for any other command or
-// tool, it prints nothing.
+// word, anywhere in the text, case-insensitive) passes, as the guard lets it run. In the main
+// checkout, outside git, and for any other command or tool, it prints nothing.
 //
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.

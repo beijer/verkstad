@@ -115,6 +115,27 @@ test("in the main checkout, the hook lets a heredoc fed to python3 -, node - or 
   }
 });
 
+test("in the main checkout, the hook lets a heredoc without git in its text through", (t) => {
+  const p = project(t);
+  agentWorktree(p);
+
+  const command = "cat > /tmp/x.py <<EOF\nprint(1)\nEOF";
+  const r = p.pipe(p.dir, bashEvent(p.dir, command), "hook", "pre-tool-use");
+
+  assert.deepEqual(r, { code: 0, stdout: "", stderr: "" });
+});
+
+test("in an agent worktree, git counts when it starts a word, as in .gitignore, and not inside one, as in digit", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+
+  const refused = p.pipe(wt, bashEvent(wt, "cat > .gitignore <<EOF\nx\nEOF"), "hook", "pre-tool-use");
+  const passed = p.pipe(wt, bashEvent(wt, "cat > /tmp/digit.txt <<EOF\nx\nEOF"), "hook", "pre-tool-use");
+
+  assert.equal(JSON.parse(refused.stdout).hookSpecificOutput.permissionDecision, "deny");
+  assert.deepEqual(passed, { code: 0, stdout: "", stderr: "" });
+});
+
 test("in a submodule's checkout, which is no worktree, the hook lets a heredoc edit through", (t) => {
   const p = project(t);
   p.git("-c", "protocol.file.allow=always", "submodule", "add", "--quiet", p.origin, "sub");
