@@ -9,6 +9,11 @@
 // word, anywhere in the text, case-insensitive) passes, as the guard lets it run. In the main
 // checkout, outside git, and for any other command or tool, it prints nothing.
 //
+// When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it also
+// refuses a Bash command with an unquoted word that starts with =, or an assignment whose value
+// does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
+// none, abandons the rest of the command line. The reason says how to quote the word.
+//
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.
 
@@ -24,11 +29,22 @@ const REASON =
   "not with a heredoc fed to python3 -, node - or cat >: Claude Code's worktree guard refuses such a command " +
   "when its text mentions git.";
 
-/** One simple command of a Bash command line: its words, whether it reads a heredoc, and the files its stdout goes to. */
+function zshReason(word: string, quoted: string): string {
+  return (
+    "verkstad: zsh, the shell here, expands an unquoted word that starts with = as the path of a command " +
+    `and abandons the rest of the command line when there is none, so ${word} would fail; quote it: ${quoted}`
+  );
+}
+
+/**
+ * One simple command of a Bash command line: its words, whether it reads a heredoc, the files
+ * its stdout goes to, and the words zsh would expand as a command path, each with the way to quote it.
+ */
 interface Segment {
   words: string[];
   heredoc: boolean;
   outputs: string[];
+  equals: Array<{ word: string; quoted: string }>;
 }
 
 const SEPARATORS = ";&|()`";
@@ -52,6 +68,11 @@ function readQuoted(command: string, i: number): { text: string; end: number } {
   return { text, end: j + 1 };
 }
 
+/** `text` as one single-quoted shell word. */
+function singleQuoted(text: string): string {
+  return `'${text.replaceAll("'", "'\\''")}'`;
+}
+
 /** The index of the newline that ends the line `i` is on, or the command's length. */
 function lineEnd(command: string, i: number): number {
   const newline = command.indexOf("\n", i);
@@ -66,25 +87,40 @@ function lineEnd(command: string, i: number): number {
  */
 function segments(command: string): Segment[] {
   const out: Segment[] = [];
-  let segment: Segment = { words: [], heredoc: false, outputs: [] };
+  let segment: Segment = { words: [], heredoc: false, outputs: [], equals: [] };
   let word = "";
+  // The word as written, with each quoted string or escaped character as one \0: what zsh
+  // sees unquoted, so that =word is told apart from '=word'.
+  let shape = "";
   let inWord = false;
+  // Inside [[ … ]], where zsh expands no =word.
+  let condition = false;
   // What the next word is the target of: a redirect of stdout, or another one.
   let redirect: "stdout" | "other" | null = null;
   const pending: Array<{ delimiter: string; strip: boolean }> = [];
 
   const endWord = () => {
+    if (inWord && shape === "[[") condition = true;
+    else if (inWord && shape === "]]") condition = false;
+    else if (inWord && !condition) {
+      const assignment = /^([A-Za-z_][A-Za-z0-9_]*)=(?==.)/.exec(shape);
+      if (assignment) {
+        const name = assignment[1];
+        segment.equals.push({ word, quoted: `${name}=${singleQuoted(word.slice(name.length + 1))}` });
+      } else if (/^=./.test(shape)) segment.equals.push({ word, quoted: singleQuoted(word) });
+    }
     if (inWord && redirect === "stdout") segment.outputs.push(word);
     else if (inWord && redirect === null) segment.words.push(word);
     if (inWord) redirect = null;
     word = "";
+    shape = "";
     inWord = false;
   };
   const endSegment = () => {
     endWord();
     redirect = null;
-    if (segment.words.length || segment.heredoc) out.push(segment);
-    segment = { words: [], heredoc: false, outputs: [] };
+    if (segment.words.length || segment.heredoc || segment.equals.length) out.push(segment);
+    segment = { words: [], heredoc: false, outputs: [], equals: [] };
   };
   /** Skips the bodies of the heredocs the line just ended opened, returning the index after the last. */
   const skipBodies = (i: number): number => {
@@ -106,15 +142,18 @@ function segments(command: string): Segment[] {
     if (c === "'" || c === '"' || command.startsWith("$'", i)) {
       const { text, end } = readQuoted(command, i);
       word += text;
+      shape += "\0";
       inWord = true;
       i = end;
     } else if (command.startsWith("$((", i) || (!inWord && command.startsWith("((", i))) {
       const close = command.indexOf("))", i);
       i = close < 0 ? command.length : close + 2;
+      shape += "\0";
       inWord = true;
     } else if (c === "\\") {
       if (command[i + 1] !== "\n") {
         word += command[i + 1] ?? "";
+        shape += "\0";
         inWord = true;
       }
       i += 2;
@@ -157,6 +196,7 @@ function segments(command: string): Segment[] {
       const fd = inWord && /^[0-9]+$/.test(word) ? word : "";
       if (fd) {
         word = "";
+        shape = "";
         inWord = false;
       } else endWord();
       i++;
@@ -174,6 +214,7 @@ function segments(command: string): Segment[] {
       i++;
     } else {
       word += c;
+      shape += c;
       inWord = true;
       i++;
     }
@@ -217,9 +258,16 @@ export function hook(args: string[]): void {
   const event = readEvent();
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
-  if (!/\bgit/i.test(command) || !segments(command).some(heredocEdit)) return;
+  const parsed = segments(command);
+  const equals = parsed.flatMap((segment) => segment.equals)[0];
+  if (basename(process.env.SHELL ?? "") === "zsh" && equals) return deny(zshReason(equals.word, equals.quoted));
+  if (!/\bgit/i.test(command) || !parsed.some(heredocEdit)) return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
   if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
-  const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: REASON };
+  deny(REASON);
+}
+
+function deny(reason: string): void {
+  const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason };
   process.stdout.write(JSON.stringify({ hookSpecificOutput: decision }) + "\n");
 }

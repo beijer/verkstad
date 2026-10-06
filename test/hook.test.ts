@@ -239,3 +239,93 @@ test("hook without its event, or with another, is a usage error", (t) => {
     stderr: "verkstad hook: no hook for 'post-tool-use'; usage: verkstad hook pre-tool-use\n",
   });
 });
+
+/** Runs the hook on a Bash command in `cwd`, with `SHELL` set to `shell`, or unset when it is undefined. */
+function hookUnder(p: Project, shell: string | undefined, cwd: string, command: string) {
+  const bin = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bin", "verkstad");
+  const env = { ...p.env, ...(shell === undefined ? {} : { SHELL: shell }) };
+  const r = spawnSync(bin, ["hook", "pre-tool-use"], { cwd, env, input: bashEvent(cwd, command), encoding: "utf8" });
+  return { code: r.status ?? -1, stdout: r.stdout, stderr: r.stderr };
+}
+
+function zshRefusal(word: string, quoted: string): string {
+  const reason =
+    "verkstad: zsh, the shell here, expands an unquoted word that starts with = as the path of a command " +
+    `and abandons the rest of the command line when there is none, so ${word} would fail; quote it: ${quoted}`;
+  const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason };
+  return JSON.stringify({ hookSpecificOutput: decision }) + "\n";
+}
+
+test("under zsh, the hook refuses a word that starts with = in the main checkout, in an agent worktree and outside git", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+  const outside = realpathSync(join(p.dir, ".."));
+
+  for (const cwd of [p.dir, wt, outside]) {
+    const r = hookUnder(p, "/usr/bin/zsh", cwd, "echo a; echo =====; echo b");
+
+    assert.deepEqual(r, { code: 0, stdout: zshRefusal("=====", "'====='"), stderr: "" }, cwd);
+  }
+});
+
+test("under zsh, the hook refuses an assignment whose value starts with =, and a test whose operator is ==", (t) => {
+  const p = project(t);
+
+  const cases: Array<[string, string, string]> = [
+    ["a==b", "a==b", "a='=b'"],
+    ["npm test && x==it\\'s", "x==it's", "x='=it'\\''s'"],
+    ["[ a == b ] && echo same", "==", "'=='"],
+    ["ls > =out", "=out", "'=out'"],
+    ["echo $(echo =x)", "=x", "'=x'"],
+  ];
+  for (const [command, word, quoted] of cases) {
+    const r = hookUnder(p, "/bin/zsh", p.dir, command);
+
+    assert.deepEqual(r, { code: 0, stdout: zshRefusal(word, quoted), stderr: "" }, command);
+  }
+});
+
+test("under zsh, the hook lets a quoted =word, an assignment, an option and a [[ ]] test through", (t) => {
+  const p = project(t);
+  const commands = [
+    "echo '====='",
+    'echo "====="',
+    "echo \\=====",
+    "a=b",
+    "x=1 npm test",
+    "npm test -- --opt=value",
+    "[[ x == y ]] && echo same",
+    "if [[ $a == b || $a == c ]]; then echo yes; fi",
+    "echo a = b",
+    "echo $((1 == 1))",
+    "cat <<'EOF'\n=====\nEOF",
+    "gh issue comment 19 --body \"=== Done ===\"",
+  ];
+
+  for (const command of commands) {
+    const r = hookUnder(p, "/usr/bin/zsh", p.dir, command);
+
+    assert.deepEqual(r, { code: 0, stdout: "", stderr: "" }, command);
+  }
+});
+
+test("under bash, or with SHELL unset, the hook lets a word that starts with = through", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+
+  for (const shell of ["/bin/bash", undefined]) {
+    for (const cwd of [p.dir, wt]) {
+      const r = hookUnder(p, shell, cwd, "echo =====");
+
+      assert.deepEqual(r, { code: 0, stdout: "", stderr: "" }, `${shell} in ${cwd}`);
+    }
+  }
+});
+
+test("under zsh, the heredoc refusal is unchanged: an agent worktree refuses it, the main checkout lets it through", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+
+  assert.deepEqual(hookUnder(p, "/usr/bin/zsh", wt, pythonEdit), { code: 0, stdout: refusal, stderr: "" });
+  assert.deepEqual(hookUnder(p, "/usr/bin/zsh", p.dir, pythonEdit), { code: 0, stdout: "", stderr: "" });
+});
