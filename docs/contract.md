@@ -58,7 +58,7 @@ An object, required: the Gate that `verkstad gate` runs.
 }
 ```
 
-- `steps` (required, non-empty): the steps, run in this order. Each has:
+- `steps` (required): the steps, run in this order; `[]` for a Project with nothing to check yet, such as a new one, whose Gate passes with a line `--  the Gate has no steps: it checked nothing`. The Ticket that adds a check (a test runner, a typecheck) adds its step. Each step has:
   - `name` (required, unique): what the Gate prints for the step.
   - `command` (required): a command run by `bash -c` from the root of the worktree the Gate runs in, with stdin closed and stdout and stderr going to the log. A non-zero exit fails the step.
   - `unlessExists` (optional): a path relative to the worktree root. While it exists the step is skipped without a word; it is checked as the step comes up, so an earlier step may create it. For an install step that only a fresh worktree needs.

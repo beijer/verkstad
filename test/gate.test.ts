@@ -57,6 +57,18 @@ test("with every step passing, the Gate prints each step ok and a pass line, and
   assert.equal(readFileSync(log, "utf8"), "== typecheck\nchecking types\n== unit tests\n3 passed\n");
 });
 
+test("a Gate with no steps, as a new Project has, passes saying it checked nothing", (t) => {
+  const p = project(t, { contract: contract([]) });
+
+  const r = p.run("gate");
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  const [log] = logs(p);
+  assert.equal(r.stdout, `--  the Gate has no steps: it checked nothing\nGate passed. Log: ${log}\n`);
+  assert.equal(readFileSync(log, "utf8"), "");
+});
+
 test("a failing step stops the Gate: it prints only that step's output and the full log's path, and exits 1", (t) => {
   const noisy = Array.from({ length: 100 }, (_, i) => `echo line ${i + 1}`).join("; ");
   const p = project(t, {
@@ -349,7 +361,7 @@ const malformed: Array<[string, unknown, string]> = [
   ["a Contract that is not an object", [], "the Contract must be a JSON object"],
   ["no baseBranch", { gate: { steps: [{ name: "a", command: "true" }] } }, "baseBranch must be a non-empty string"],
   ["no gate", { baseBranch: "main" }, "gate must be an object"],
-  ["no steps", { baseBranch: "main", gate: { steps: [] } }, "gate.steps must be a non-empty array"],
+  ["no steps", { baseBranch: "main", gate: {} }, "gate.steps must be an array of steps ([] for a Project with nothing to check yet)"],
   [
     "a step without a command",
     { baseBranch: "main", gate: { steps: [{ name: "a", command: "true" }, { name: "b" }] } },

@@ -34,6 +34,7 @@ The log directory is {LOG_DIR}: gitignored, outside every worktree, and kept aft
 Work:
 - Implement exactly the Ticket and its acceptance criteria, nothing beyond. Test-first where there is logic (Skill verkstad:tdd), through the seams the prose doc names.
 - When the change alters something a user or another system observes (a UI, a generated file, a device the Project drives), Walk each acceptance criterion on it with the Project's Verify skill (the `verify` field of `.claude/harness.json`) before writing its end-to-end test, as the prose doc says. When you are done, a Verifier that never sees your report Walks the criteria again on your commits; what it finds comes back to you as a Fix round.
+- When your change adds a check the Gate does not run yet (a test runner, a typecheck, a lint), add it as a step to `gate.steps` in `.claude/harness.json` (`{ "name": "unit tests", "command": "npm test" }`, run from the repo root), so that Landing runs it; run `verkstad gate` to see it pass. Never add or change a Surface or `verify` there: that is the owner's, through setup.
 - Run single tests while you work. Run `verkstad gate --quick` before review and again before your last commit: every Gate step, with a slow suite narrowed to the test files your branch adds or changes. It prints a line per step, or the failing step's last lines and its full log's path. Landing runs the full Gate; run `verkstad gate` without `--quick` only when the prose doc says your change needs it.
 - When the Gate passes, run `git merge-base HEAD origin/{BASE}` on its own and review the branch with Skill verkstad:review against the commit it prints. Fix the real findings and run the Gate again.
 - Commit on issue-{N}, in the style of `git log --oneline`, each message ending with `Refs #{N}`. Leave the worktree clean.
@@ -49,6 +50,7 @@ commits: <short hashes>
 What was built: <two or three sentences>
 Acceptance criteria: one line each, how it was verified: the test, and what you saw where a user would see it
 surfaces: <the Surfaces in .claude/harness.json your change can alter, by name, comma-separated, whether or not the diff touches their globs; or none. The Verifier Walks each one named here or touched by the diff, so name one the globs miss>
+new surface: <what your change lets a user or another system observe that no Surface in .claude/harness.json covers (the first UI, a CLI's first command, an HTTP route, a file written for someone else), with the paths behind it; or none>
 Uncertain or undone: <or "none">
 tier: ok | too low (too low if you had to guess at a design or ran out of room)
 

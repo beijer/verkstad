@@ -103,7 +103,7 @@ function parseGate(value: unknown): Gate {
       env[name] = v;
     }
   }
-  if (!Array.isArray(value.steps) || value.steps.length === 0) throw malformed("gate.steps must be a non-empty array");
+  if (!Array.isArray(value.steps)) throw malformed("gate.steps must be an array of steps ([] for a Project with nothing to check yet)");
   const steps = value.steps.map((s, i) => parseStep(s, `gate.steps[${i}]`));
   steps.forEach((s, i) => {
     const first = steps.findIndex((other) => other.name === s.name);

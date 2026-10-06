@@ -19,6 +19,8 @@ claude plugin install verkstad@verkstad
 
 In a repo, `/verkstad:setup` makes it a Project: it writes the Contract and the agent docs, asking what it can't find out, creates the triage labels (`verkstad labels`) and runs the Gate and the Frontier once to prove them. Run it again on a Project to check it; it changes nothing it finds correct.
 
+To start a new Project, run `/verkstad:setup` in an empty directory. Once you agree, it runs `git init`, creates the GitHub repo with `gh repo create` and pushes the first commit, with an empty Gate and no Surfaces. The first Spec's first Ticket scaffolds the Project and adds its tests as a Gate step. When a Ticket adds something a user can observe (the first UI, a CLI's first command), the Run stops dispatching and tells you to run `/verkstad:setup` again to declare the Surface, then `/verkstad:create-verify` to write the Verify skill the Verifier needs.
+
 Inside Claude Code the plugin puts `verkstad` on the PATH. Elsewhere, run `bin/verkstad` from the checkout:
 
 ```sh

@@ -135,6 +135,8 @@ export function runGate(root: string, quick: boolean): string {
   const env = stepEnvironment(contract);
   const log = createLog(dir, root);
 
+  // A new Project has nothing to check yet; the Gate says so rather than passing silently.
+  if (planned.length === 0) process.stdout.write("--  the Gate has no steps: it checked nothing\n");
   try {
     for (const p of planned) {
       if (p.skip) {
