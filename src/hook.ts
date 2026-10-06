@@ -5,7 +5,8 @@
 // In an agent worktree, it refuses a Bash command that feeds a heredoc into `python3 -`,
 // `node -` or `cat >` (or `>>`), and names the Edit and Write tools: Claude Code's worktree
 // guard refuses such a command when its text mentions git, with a message that says nothing
-// about what to do instead. In the main checkout, outside git, and for any other command or
+// about what to do instead. A command whose text does not mention git (`git` at the start of a
+// word, anywhere in the text, case-insensitive) passes, as the guard lets it run. In the main checkout, outside git, and for any other command or
 // tool, it prints nothing.
 //
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
@@ -216,7 +217,7 @@ export function hook(args: string[]): void {
   const event = readEvent();
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
-  if (!segments(command).some(heredocEdit)) return;
+  if (!/\bgit/i.test(command) || !segments(command).some(heredocEdit)) return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
   if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
   const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: REASON };

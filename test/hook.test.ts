@@ -75,12 +75,31 @@ test("in an agent worktree, the hook refuses a heredoc fed to node - or cat >, w
   const p = project(t);
   const wt = agentWorktree(p);
 
-  for (const command of otherHeredocEdits) {
+  for (const edit of otherHeredocEdits) {
+    const command = edit + "\nGIT_PAGER=cat true";
     const r = p.pipe(wt, bashEvent(wt, command), "hook", "pre-tool-use");
 
     assert.equal(r.stderr, "", command);
     assert.equal(r.code, 0, command);
     assert.equal(r.stdout, refusal, command);
+  }
+});
+
+test("in an agent worktree, the hook lets a heredoc edit whose text does not mention git through", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+  const plainPython = "python3 - <<'EOF'\nopen('a.txt', 'w').write('x')\nEOF";
+  const commands = [
+    plainPython,
+    "cat > /tmp/x.py <<EOF\nprint(1)\nEOF",
+    "node - <<'EOF'\nconsole.log(1)\nEOF",
+    ...otherHeredocEdits.slice(2).map((c) => c.replace(/git/g, "it")),
+  ];
+
+  for (const command of commands) {
+    const r = p.pipe(wt, bashEvent(wt, command), "hook", "pre-tool-use");
+
+    assert.deepEqual(r, { code: 0, stdout: "", stderr: "" }, command);
   }
 });
 
