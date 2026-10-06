@@ -23,6 +23,9 @@ const REFLECT = "verkstad:reflect";
 const SLACK_MS = 60_000;
 const EXAMPLES_PER_KIND = 2;
 const KINDS_SHOWN = 12;
+const LARGEST_SHOWN = 5;
+/** The tools whose call edits a file. */
+const EDITS = new Set(["Edit", "Write", "NotebookEdit"]);
 
 type Json = Record<string, unknown>;
 
@@ -41,6 +44,16 @@ interface ToolError {
   denied: boolean;
 }
 
+interface ToolResult {
+  /** Its text's length in characters. */
+  size: number;
+  /** `<file>:<line>` of the tool result. */
+  where: string;
+  agent: string;
+  tool: string;
+  subject: string;
+}
+
 /** What one transcript (the orchestrator's or an agent's) says, within the Run's window. */
 interface Transcript {
   file: string;
@@ -50,6 +63,9 @@ interface Transcript {
   peakContext: number;
   ownerPrompts: Array<{ at: number; text: string }>;
   errors: ToolError[];
+  results: ToolResult[];
+  /** How many tool calls came before the first edit; undefined when there was none. */
+  callsBeforeEdit: number | undefined;
   gateRuns: number;
   gateFailures: number;
   /** The names of the Gate logs a failed Gate named. */
@@ -142,11 +158,15 @@ function ticketIn(...texts: string[]): number | undefined {
   return undefined;
 }
 
-/** The command a tool call ran, for an example: a Bash command's first line, or what else it was given. */
-function describeCall(name: string, input: Json): string {
+/** What a tool call was given, cut to one line: a Bash command's first line, a path, a pattern or a description. */
+function callSubject(input: Json): string {
   const raw = str(input.command) || str(input.file_path) || str(input.pattern) || str(input.description) || JSON.stringify(input);
-  const first = raw.split("\n")[0].trim();
-  return clip(name === "Bash" || !name ? first : `${name} ${first}`, 100);
+  return clip(raw.split("\n")[0].trim(), 100);
+}
+
+/** The command a tool call ran, for an example: a Bash command's first line, or the tool and what else it was given. */
+function describeCall(name: string, input: Json): string {
+  return clip(name === "Bash" || !name ? callSubject(input) : `${name} ${callSubject(input)}`, 100);
 }
 
 function clip(text: string, max: number): string {
@@ -208,6 +228,8 @@ function readTranscript(path: string, agent: string, from: number, until: number
     peakContext: 0,
     ownerPrompts: [],
     errors: [],
+    results: [],
+    callsBeforeEdit: undefined,
     gateRuns: 0,
     gateFailures: 0,
     failedGateLogs: [],
@@ -224,6 +246,7 @@ function readTranscript(path: string, agent: string, from: number, until: number
   const messages = new Set<string>();
   let handback = "";
   let lastText = "";
+  let callCount = 0;
   for (const e of readEntries(path)) {
     const at = time(e);
     if (at && (at < from || at >= until)) continue;
@@ -243,6 +266,9 @@ function readTranscript(path: string, agent: string, from: number, until: number
         if (b.type !== "tool_use") continue;
         const name = str(b.name);
         const input = obj(b.input);
+        // A call the worktree guard or the permission system refused counts too: the agent spent a turn on it.
+        if (EDITS.has(name) && t.callsBeforeEdit === undefined) t.callsBeforeEdit = callCount;
+        callCount++;
         calls.set(str(b.id), { name, input });
         if (name === "SubagentHandback") handback = str(input.message);
         if (name === "Agent" || name === "Task") {
@@ -269,6 +295,7 @@ function readTranscript(path: string, agent: string, from: number, until: number
       const output = resultText(b);
       const command = str(call.input.command);
       const where = `${file}:${e.line}`;
+      t.results.push({ size: output.length, where, agent, tool: call.name || "?", subject: callSubject(call.input) });
       // A call the worktree guard or the permission system refused never ran: it is a tool error, not a Gate run or a Landing.
       const refused = b.is_error === true && (GUARD_REFUSAL.test(output) || DENIAL.test(output.slice(0, 400)));
       if (call.name === "Bash" && refused && verkstadCall(command, "gate")) t.gateRuns--;
@@ -450,6 +477,7 @@ function agentLine(a: Agent, stopped: Map<string, string>): string {
   const parts = [
     plural(t.turns, "turn"),
     `context ${Math.round(t.peakContext / 1000)}k`,
+    t.callsBeforeEdit === undefined ? "no edit" : `${plural(t.callsBeforeEdit, "call")} before first edit`,
     t.gateRuns ? `gate ${t.gateRuns}${t.gateFailures ? ` (${t.gateFailures} failed)` : ""}` : "",
     errorsPart(t.errors),
     a.parent ? `under ${a.parent}` : "",
@@ -581,6 +609,16 @@ export function runLog(args: string[]): void {
 
   const errors = [...orchestrator.errors, ...agents.flatMap((a) => a.transcript.errors)];
   if (errors.length) out.push(`Tool errors (${errors.length}), by kind:`, ...errorKinds(errors), "");
+
+  const largest = [orchestrator, ...agents.map((a) => a.transcript)]
+    .flatMap((t) => t.results)
+    .sort((a, b) => b.size - a.size)
+    .slice(0, LARGEST_SHOWN);
+  if (largest.length) {
+    out.push("Largest tool results:");
+    for (const r of largest) out.push(`  ${(r.size / 1000).toFixed(1)}k  ${r.agent}  ${r.tool}  ${r.subject}  ${r.where}`);
+    out.push("");
+  }
 
   out.push(...logLines(dir, run.start, end, new Set([orchestrator, ...agents.map((a) => a.transcript)].flatMap((t) => t.failedGateLogs))));
   process.stdout.write(out.join("\n") + "\n");

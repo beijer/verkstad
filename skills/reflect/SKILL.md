@@ -29,7 +29,7 @@ verkstad run-log --log-dir <dir>     # with the Run's files in another directory
 
 It finds Claude Code's transcripts itself: the sessions of the main checkout and its worktrees under `~/.claude/projects/` (or `$CLAUDE_CONFIG_DIR/projects/`), each agent's transcript under `<session>/subagents/`. The Run's time window, from the invocation to its last entry (or to `/verkstad:reflect`, when you run in the Run's own session), picks the log directory's files that belong to it. When it finds no Run, ask the owner which session it was.
 
-The digest has the Run's owner prompts, the orchestrator's dispatches, Landings and Parks, one line per agent (type, Ticket, turns, peak context, Gate runs and failures, tool errors and denials, its report's status and tier, whether it was stopped), the tool errors grouped by kind with example locations, and the log directory's reports, Park reasons, Verdicts and Gate logs (naming those a failed Gate pointed at; read a failing step with `grep -n "^== " <log>` and `tail`). Locations are `<file>:<line>`, the file in the transcript or agents' directory the digest's header names.
+The digest has the Run's owner prompts, the orchestrator's dispatches, Landings and Parks, one line per agent (type, Ticket, turns, peak context, tool calls before its first edit, Gate runs and failures, tool errors and denials, its report's status and tier, whether it was stopped), the tool errors grouped by kind with example locations, the Run's five largest tool results, and the log directory's reports, Park reasons, Verdicts and Gate logs (naming those a failed Gate pointed at; read a failing step with `grep -n "^== " <log>` and `tail`). Locations are `<file>:<line>`, the file in the transcript or agents' directory the digest's header names.
 
 ## 2. Read the evidence behind each signal
 
@@ -45,8 +45,8 @@ Read the Contract (`.claude/harness.json`, `docs/agents/project.md`) with its Ga
 | `status partial` or `blocked`, `tier too low`, a high context or turn count, `stopped` | Was the Ticket too large, the Tier too low, or the agent stuck on something a script would do? |
 | A failed or blocked Verdict | What the Verifier saw, and what would have caught it before the Walk. |
 | A report's Uncertain lines | `grep -A3 -i '^uncertain' <log>/report-*.md`: guesses that repeat across Tickets. |
-| Many Reads, Greps and Globs before an agent's first edit | What was it looking for, and which pointer, in a file it already reads, would have led it there? |
-| A tool result far larger than what the agent used of it | Which command, and what flag, filter or shorter output (verkstad's own commands included) would have given just that? |
+| Many calls before an agent's first edit | What was it looking for, and which pointer, in a file it already reads, would have led it there? |
+| A large tool result, far larger than what the agent used of it | Which command, and what flag, filter or shorter output (verkstad's own commands included) would have given just that? |
 | An agent guessing, or asking, for a fact it could not read | What access (a log teed to a file, a read-only command, a Contract field) would have given it the fact? |
 
 Useful extractions (`$F` a transcript, `$L` a line number):
@@ -56,9 +56,9 @@ sed -n "${L}p" "$F" | jq -r '.message.content[]? | .content? // .text? // .input
 sed -n "$((L-12)),${L}p" "$F" | jq -r 'select(.type=="assistant") | .message.content[]? | (.text? // .input.command? // empty)' | cut -c1-300   # what led up to it
 jq -r 'select(.type=="assistant") | .message.content[]? | select(.name=="SubagentHandback") | .input.message' "$F"   # an agent's report
 grep -c '<phrase>' "$D"/agent-*.jsonl | grep -v ':0$'   # how many agents hit it
-jq -r 'select(.type=="user") | .message.content[]? | select(.type?=="tool_result") | "\(input_line_number) \(.content | tostring | length)"' "$F" | sort -k2 -rn | head -5   # its largest tool results: line, size
-jq -r 'select(.type=="assistant") | .message.content[]? | select(.type?=="tool_use") | "\(input_line_number) \(.name)"' "$F" | awk '$2=="Edit"||$2=="Write"{exit} {print}' | cut -d' ' -f2 | sort | uniq -c   # its calls before its first edit
 ```
+
+An agent's calls before its first edit and the Run's largest tool results are in the digest already: each agent's line says `<n> calls before first edit` or `no edit`, and its "Largest tool results" section gives each result's size, agent, tool, command or path and `<file>:<line>`. Read what led up to one with the second extraction above.
 
 To see whether a lesson was also there in an earlier Run, run `verkstad run-log --session <older id>` on it, or `grep -l '<phrase>'` across the project directory's sessions. With many signals, give each a read-only `Explore` agent: the digest lines, the file paths and the question; it returns the excerpt and its location.
 

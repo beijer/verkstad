@@ -205,9 +205,9 @@ test("run-log digests the last session that invoked verkstad:orchestrate: its ow
       "  Landings: 2; failed: #7 gate-failed (new-run.jsonl:10); Parked: #9",
       "",
       "Agents (3):",
-      '  a1  ticket-standard  #7  4 turns, context 41k, gate 1 (1 failed), 2 errors  status done, tier too low  "Ticket #7 import"',
-      '  a2  ticket-light  #9  4 turns, context 23k, 3 errors (1 denied)  status blocked, tier ok  "Ticket #9 export"',
-      '  a3  general-purpose  #7  1 turn, context 12k, under a1  "Standards review of #7"',
+      '  a1  ticket-standard  #7  4 turns, context 41k, no edit, gate 1 (1 failed), 2 errors  status done, tier too low  "Ticket #7 import"',
+      '  a2  ticket-light  #9  4 turns, context 23k, no edit, 3 errors (1 denied)  status blocked, tier ok  "Ticket #9 export"',
+      '  a3  general-purpose  #7  1 turn, context 12k, no edit, under a1  "Standards review of #7"',
       "",
       "Tool errors (6), by kind:",
       "  2x in 2 agents: This agent is isolated in the worktree <path>, but this command is too complex to verify that it stays inside the workt…",
@@ -221,6 +221,13 @@ test("run-log digests the last session that invoked verkstad:orchestrate: its ow
       "    agent-a1.jsonl:6  verkstad gate --quick",
       "  1x: verkstad land: the Gate failed",
       "    new-run.jsonl:10  verkstad land 7 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-7.md",
+      "",
+      "Largest tool results:",
+      "  0.2k  a1  Bash  verkstad gate --quick  agent-a1.jsonl:6",
+      "  0.2k  a1  Bash  git -C /elsewhere status  agent-a1.jsonl:4",
+      "  0.2k  a2  Bash  cd /p && git status  agent-a2.jsonl:3",
+      "  0.1k  a2  Bash  kill 4242  agent-a2.jsonl:5",
+      "  0.1k  orchestrator  Bash  verkstad land 7 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-7.md  new-run.jsonl:10",
       "",
       "Log directory, written during the Run (7 entries):",
       "  report-7.md  status done, tier too low",
@@ -312,8 +319,17 @@ test("run-log ends the Run where its session invoked verkstad:reflect, and marks
     "Run run-then-reflect, invoked as Skill verkstad:orchestrate, from 2026-10-02 06:00 to 2026-10-02 06:06 UTC",
   );
   assert.ok(r.stdout.includes("Owner prompts (0)\n\nOrchestrator: 3 turns, 1 error\n  Dispatched: 1 agent\n\n"), r.stdout);
-  assert.ok(r.stdout.includes('Agents (1):\n  b1  ticket-light  #3  1 turn, context 9k, gate 1, killed  "Ticket #3 parser"\n'), r.stdout);
+  assert.ok(r.stdout.includes('Agents (1):\n  b1  ticket-light  #3  1 turn, context 9k, no edit, gate 1, killed  "Ticket #3 parser"\n'), r.stdout);
   assert.ok(r.stdout.includes("Tool errors (1), by kind:\n  1x: exit N from grep\n"), r.stdout);
+  // verkstad run-log's own result came after /verkstad:reflect, outside the Run.
+  assert.ok(
+    r.stdout.includes(
+      "Largest tool results:\n" +
+        "  0.0k  b1  Bash  verkstad gate --quick  agent-b1.jsonl:3\n" +
+        '  0.0k  orchestrator  Bash  grep -n "verkstad gate" docs/contract.md  run-then-reflect.jsonl:5\n\n',
+    ),
+    r.stdout,
+  );
   assert.ok(r.stdout.endsWith("Log directory, written during the Run (1 entry):\n  report-3.md  status partial, tier too low\n"), r.stdout);
 });
 
@@ -351,7 +367,7 @@ test("run-log counts neither a Gate run nor a failure for a command the worktree
   const r = p.run("run-log");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.stdout.includes("context 9k, gate 2, 1 error"), r.stdout);
+  assert.ok(r.stdout.includes("context 9k, no edit, gate 2, 1 error"), r.stdout);
   assert.ok(!r.stdout.includes("failed)"), r.stdout);
   assert.ok(!r.stdout.includes("Landings:"), r.stdout);
   assert.ok(r.stdout.includes("Tool errors (2)"), r.stdout);
@@ -384,9 +400,94 @@ test("run-log counts neither a Gate run nor a Landing for a command the permissi
   const r = p.run("run-log");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.stdout.includes("context 9k, 2 errors (2 denied)"), r.stdout);
+  assert.ok(r.stdout.includes("context 9k, no edit, 2 errors (2 denied)"), r.stdout);
   assert.ok(!r.stdout.includes("failed)"), r.stdout);
   assert.ok(!r.stdout.includes("Landings:"), r.stdout);
+});
+
+test("run-log counts each agent's calls before its first edit, refused ones too, and lists the Run's five largest tool results", (t) => {
+  const p = project(t);
+  writeSession(
+    p,
+    "sizes",
+    [
+      call(650, "m0", "o0", "Bash", { command: "cat huge.log" }),
+      result(650, "o0", "q".repeat(90_000)),
+      call(699, "m1", "s1", "Skill", { skill: "verkstad:orchestrate" }),
+      call(700, "m2", "o1", "Agent", { description: "Ticket #5 parser", prompt: "You are implementing Ticket #5" }),
+      call(700, "m2", "o2", "Agent", { description: "Find the parser", prompt: "Find the parser" }),
+      call(709, "m3", "o3", "Bash", { command: "verkstad frontier --json" }),
+      result(709, "o3", "f".repeat(6_000)),
+    ],
+    [
+      {
+        id: "e1",
+        meta: { agentType: "ticket-standard", description: "Ticket #5 parser" },
+        entries: [
+          prompt(701, "You are implementing Ticket #5"),
+          call(702, "m1", "t1", "Read", { file_path: "/p/wt/src/big.ts" }, 10_000),
+          result(702, "t1", "x".repeat(48_200)),
+          call(703, "m2", "t2", "Grep", { pattern: "parse" }),
+          result(703, "t2", "src/a.ts:1"),
+          call(703, "m3", "t3", "Bash", { command: "git -C /p log" }),
+          result(703, "t3", REFUSED, true),
+          call(704, "m4", "t4", "Bash", { command: "kill 1" }),
+          result(704, "t4", DENIED, true),
+          call(704, "m5", "t5", "Glob", { pattern: "src/**" }),
+          result(704, "t5", "src/a.ts"),
+          call(705, "m6", "t6", "Bash", { command: "npm test 2>&1\necho done" }),
+          result(705, "t6", "y".repeat(12_400)),
+          call(706, "m7", "t7", "Read", { file_path: "/p/wt/src/a.ts" }),
+          result(706, "t7", "z".repeat(3_000)),
+          call(707, "m8", "t8", "Edit", { file_path: "/p/wt/src/a.ts", old_string: "a", new_string: "b" }),
+          result(707, "t8", "ok"),
+          call(708, "m9", "t9", "Bash", { command: "verkstad gate --quick" }),
+          result(708, "t9", "Quick gate passed."),
+        ],
+      },
+      {
+        id: "e2",
+        meta: { agentType: "Explore", description: "Find the parser" },
+        entries: [
+          prompt(702, "Find the parser"),
+          call(702, "m1", "t1", "Grep", { pattern: "parse", path: "/p/wt" }),
+          result(702, "t1", "w".repeat(20_000)),
+          call(703, "m2", "t2", "Read", { file_path: "/p/wt/src/parser.ts" }),
+          result(703, "t2", "v".repeat(5_100)),
+        ],
+      },
+    ],
+  );
+
+  const r = p.run("run-log");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(
+    r.stdout.includes(
+      [
+        "Agents (2):",
+        '  e1  ticket-standard  #5  9 turns, context 10k, 7 calls before first edit, gate 1, 2 errors (1 denied)  "Ticket #5 parser"',
+        '  e2  Explore  -  2 turns, context 1k, no edit  "Find the parser"',
+        "",
+      ].join("\n"),
+    ),
+    r.stdout,
+  );
+  assert.ok(
+    r.stdout.includes(
+      [
+        "Largest tool results:",
+        "  48.2k  e1  Read  /p/wt/src/big.ts  agent-e1.jsonl:3",
+        "  20.0k  e2  Grep  parse  agent-e2.jsonl:3",
+        "  12.4k  e1  Bash  npm test 2>&1  agent-e1.jsonl:13",
+        "  6.0k  orchestrator  Bash  verkstad frontier --json  sizes.jsonl:7",
+        "  5.1k  e2  Read  /p/wt/src/parser.ts  agent-e2.jsonl:5",
+        "",
+      ].join("\n"),
+    ),
+    r.stdout,
+  );
+  assert.ok(!r.stdout.includes("90.0k"), r.stdout);
 });
 
 test("run-log --log-dir reads the Run's files from another directory", (t) => {
