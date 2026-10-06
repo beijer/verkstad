@@ -58,7 +58,7 @@ jq -r 'select(.type=="assistant") | .message.content[]? | select(.name=="Subagen
 grep -c '<phrase>' "$D"/agent-*.jsonl | grep -v ':0$'   # how many agents hit it
 ```
 
-An agent's calls before its first edit and the Run's largest tool results are in the digest already: each agent's line says `<n> calls before first edit` or `no edit`, and its "Largest tool results" section gives each result's size, agent, tool, command or path and `<file>:<line>`. Read what led up to one with the second extraction above.
+An agent's calls before its first edit and the Run's largest tool results are in the digest already: each agent's line says `<n> calls before first edit` or `no edit`, and its "Largest tool results" section gives each result's size, agent, tool, command or path and `<file>:<line>`. Read what led up to one with the extraction marked `# what led up to it` above.
 
 To see whether a lesson was also there in an earlier Run, run `verkstad run-log --session <older id>` on it, or `grep -l '<phrase>'` across the project directory's sessions. With many signals, give each a read-only `Explore` agent: the digest lines, the file paths and the question; it returns the excerpt and its location.
 

@@ -25,7 +25,7 @@ const EXAMPLES_PER_KIND = 2;
 const KINDS_SHOWN = 12;
 const LARGEST_SHOWN = 5;
 /** The tools whose call edits a file. */
-const EDITS = new Set(["Edit", "Write", "NotebookEdit"]);
+const EDIT_TOOLS = new Set(["Edit", "Write", "NotebookEdit"]);
 
 type Json = Record<string, unknown>;
 
@@ -166,7 +166,8 @@ function callSubject(input: Json): string {
 
 /** The command a tool call ran, for an example: a Bash command's first line, or the tool and what else it was given. */
 function describeCall(name: string, input: Json): string {
-  return clip(name === "Bash" || !name ? callSubject(input) : `${name} ${callSubject(input)}`, 100);
+  const subject = callSubject(input);
+  return name === "Bash" || !name ? subject : clip(`${name} ${subject}`, 100);
 }
 
 function clip(text: string, max: number): string {
@@ -267,7 +268,7 @@ function readTranscript(path: string, agent: string, from: number, until: number
         const name = str(b.name);
         const input = obj(b.input);
         // A call the worktree guard or the permission system refused counts too: the agent spent a turn on it.
-        if (EDITS.has(name) && t.callsBeforeEdit === undefined) t.callsBeforeEdit = callCount;
+        if (EDIT_TOOLS.has(name) && t.callsBeforeEdit === undefined) t.callsBeforeEdit = callCount;
         callCount++;
         calls.set(str(b.id), { name, input });
         if (name === "SubagentHandback") handback = str(input.message);
