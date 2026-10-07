@@ -1,9 +1,15 @@
 // Moves what an implementing agent left under its worktree's gitignored .claude/verkstad/ (its notes, its
-// Walk evidence) into the log directory, before Landing or Parking removes the worktree. The agent cannot
+// Walk Evidence) into the log directory, before Landing or Parking removes the worktree. The agent cannot
 // write to the log directory itself: its session is isolated to its worktree.
 
-import { cpSync, lstatSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
+import { cpSync, lstatSync, lutimesSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { extname, join } from "node:path";
+
+/** What a move did: the lines saying what it moved and what it could not, and whether it moved everything. */
+export interface MovedLogs {
+  notes: string;
+  complete: boolean;
+}
 
 /** An entry moved into the log directory: its path there, relative, and the name it was renamed to, if any. */
 interface Moved {
@@ -29,7 +35,10 @@ function freeName(dir: string, name: string): string {
   }
 }
 
-/** Renames `from` to `to`, copying and deleting when they are on different filesystems. */
+/**
+ * Renames `from` to `to`, copying and deleting when they are on different filesystems, and dates it now,
+ * so that the prune the Landing runs next counts it as new.
+ */
 function move(from: string, to: string): void {
   try {
     renameSync(from, to);
@@ -38,6 +47,8 @@ function move(from: string, to: string): void {
     cpSync(from, to, { recursive: true, verbatimSymlinks: true });
     rmSync(from, { recursive: true, force: true });
   }
+  const now = new Date();
+  lutimesSync(to, now, now);
 }
 
 /** Moves the entries of `from` into `to`, merging directories both have and renaming a taken name beside it. */
@@ -61,15 +72,21 @@ function moveInto(from: string, to: string, prefix: string, moved: Moved[]): voi
 
 /**
  * Moves what is under `<root>/.claude/verkstad/` into the log directory `logDir`, keeping what is there
- * already, and returns the lines saying what it moved; none when there was nothing. Throws when a move fails.
+ * already. Stops at the first entry it cannot move, saying what it moved before.
  */
-export function moveWorktreeLogs(root: string, logDir: string): string {
+export function moveWorktreeLogs(root: string, logDir: string): MovedLogs {
   const from = join(root, ".claude", "verkstad");
-  if (!isDirectory(from)) return "";
+  if (!isDirectory(from)) return { notes: "", complete: true };
   const moved: Moved[] = [];
-  moveInto(from, logDir, "", moved);
-  if (moved.length === 0) return "";
+  let failure = "";
+  try {
+    moveInto(from, logDir, "", moved);
+  } catch (error) {
+    failure = `Could not move all of ${from} into the log directory: ${error instanceof Error ? error.message : String(error)}\n`;
+  }
+  if (moved.length === 0) return { notes: failure, complete: failure === "" };
   const entries = moved.length === 1 ? "1 entry" : `${moved.length} entries`;
   const lines = moved.map(({ path, renamed }) => `  ${path}${renamed === null ? "" : `, as ${renamed}`}\n`);
-  return `Moved ${entries} from the worktree's .claude/verkstad/ into ${logDir}:\n${lines.join("")}`;
+  const notes = `Moved ${entries} from the worktree's .claude/verkstad/ into ${logDir}:\n${lines.join("")}${failure}`;
+  return { notes, complete: failure === "" };
 }

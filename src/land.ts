@@ -120,20 +120,22 @@ function readFile(path: string, what: string): string {
   return text;
 }
 
+/** What removing a worktree did: the lines saying what it moved and what it could not do, and whether it is gone. */
+interface Removal {
+  notes: string;
+  removed: boolean;
+}
+
 /**
  * Removes the worktree, even one Claude Code locked, keeping its branch, once what the agent left under its
- * .claude/verkstad/ is in the log directory; says what it moved, and says so when it cannot remove it.
+ * .claude/verkstad/ is in the log directory. A worktree whose files could not all be moved is kept.
  */
-function removeWorktree(main: string, root: string): string {
-  let moved: string;
-  try {
-    moved = moveWorktreeLogs(root, logDirectory(main));
-  } catch (error) {
-    const why = error instanceof Error ? error.message : String(error);
-    return `Could not move ${join(root, ".claude", "verkstad")} into the log directory, so the worktree ${root} is kept: ${why}\n`;
-  }
+function removeWorktree(main: string, root: string): Removal {
+  const moved = moveWorktreeLogs(root, logDirectory(main));
+  if (!moved.complete) return { notes: `${moved.notes}The worktree ${root} is kept.\n`, removed: false };
   const r = tryGit(main, ["worktree", "remove", "--force", "--force", root]);
-  return moved + (r.status === 0 ? "" : `Could not remove the worktree ${root}: ${r.stderr.trim()}\n`);
+  if (r.status === 0) return { notes: moved.notes, removed: true };
+  return { notes: `${moved.notes}Could not remove the worktree ${root}: ${r.stderr.trim()}\n`, removed: false };
 }
 
 /**
@@ -143,9 +145,8 @@ function removeWorktree(main: string, root: string): string {
 function keepBranch(ticket: TicketBranch, reason: Reason, what: string, asItWas = false): LandingFailure {
   const kept = `Branch ${ticket.branch} is kept${asItWas ? " as it was" : ""}`;
   if (ticket.root === null) return new LandingFailure(reason, `${what}\n${kept}.`);
-  const notes = removeWorktree(ticket.main, ticket.root);
-  const removed = existsSync(ticket.root) ? "" : `${kept}; its worktree is removed.`;
-  return new LandingFailure(reason, `${what}\n${notes}${removed}`);
+  const { notes, removed } = removeWorktree(ticket.main, ticket.root);
+  return new LandingFailure(reason, `${what}\n${notes}${removed ? `${kept}; its worktree is removed.` : ""}`);
 }
 
 function didNotLand(ticket: Ticket, reason: Reason, detail: string, asItWas = false): LandingFailure {
@@ -289,12 +290,11 @@ function landTicket(args: Args): void {
  */
 function removeWorktreeAndBranch(ticket: Ticket): string {
   deleteReview(logDirectory(ticket.main), ticket.branch);
-  return (
-    removeWorktree(ticket.main, ticket.root) +
-    (tryGit(ticket.main, ["branch", "--delete", "--force", ticket.branch]).status === 0
-      ? ""
-      : `Could not delete the branch ${ticket.branch}.\n`)
-  );
+  const { notes, removed } = removeWorktree(ticket.main, ticket.root);
+  // git deletes no branch a worktree has checked out.
+  if (!removed) return `${notes}Branch ${ticket.branch} is kept with it.\n`;
+  const deleted = tryGit(ticket.main, ["branch", "--delete", "--force", ticket.branch]).status === 0;
+  return notes + (deleted ? "" : `Could not delete the branch ${ticket.branch}.\n`);
 }
 
 /** Landing mode push: lands the branch on the base branch and closes the Ticket. */
@@ -406,7 +406,7 @@ function parkTicket(args: Args): void {
     const what = `#${ticket.n} was not parked: pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}`;
     throw keepBranch(ticket, "push-failed", what);
   }
-  const notes = ticket.root === null ? "" : removeWorktree(ticket.main, ticket.root);
+  const { notes, removed } = ticket.root === null ? { notes: "", removed: false } : removeWorktree(ticket.main, ticket.root);
   const n = String(ticket.n);
   const comment = `${why}\n\nParked: branch \`${ticket.branch}\` is on origin at ${sha}; a Resume continues from it.`;
   for (const call of [
@@ -425,7 +425,7 @@ function parkTicket(args: Args): void {
       );
     }
   }
-  const worktree = ticket.root === null ? "" : ", worktree removed";
+  const worktree = removed ? ", worktree removed" : "";
   process.stdout.write(`${notes}Parked #${ticket.n}: branch ${ticket.branch} pushed to origin${worktree}, labelled needs-info.\n`);
 }
 
