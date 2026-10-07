@@ -1,5 +1,6 @@
 // The verkstad command line: one module per subcommand, dispatched here.
 
+import { conflicts } from "./conflicts.ts";
 import { convertLinks } from "./convert-links.ts";
 import { Failure } from "./fail.ts";
 import { frontier } from "./frontier.ts";
@@ -25,6 +26,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad frontier [--json]",
     summary: "Lists the Tickets that are ready, in progress and waiting, and what each waits on",
     run: frontier,
+  },
+  conflicts: {
+    usage: "verkstad conflicts <n>",
+    summary: "Fetches and prints the files a rebase of issue-<n> onto origin's base branch would conflict in, exiting 1 if any",
+    run: conflicts,
   },
   "convert-links": {
     usage: "verkstad convert-links [--dry-run]",
