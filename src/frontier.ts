@@ -9,6 +9,7 @@
 
 import { Failure } from "./fail.ts";
 import { allIssues, currentRepo } from "./gh.ts";
+import { staleCopyWarning } from "./plugin-copy.ts";
 
 const READY_LABEL = "ready-for-agent";
 /** A blocker with one of these labels waits on the owner, not on an agent; the view marks it. */
@@ -77,6 +78,8 @@ export function frontier(args: string[]): void {
   const unknown = args.filter((arg) => arg !== "--json");
   if (unknown.length) throw new Failure(`unknown argument '${unknown[0]}'; usage: verkstad frontier [--json]`, 2);
 
+  const stale = staleCopyWarning();
+  if (stale) process.stderr.write(`verkstad frontier: ${stale}\n`);
   const result = classify(fetchLabelled(READY_LABEL));
   process.stdout.write(json ? JSON.stringify(result, null, 2) + "\n" : render(result));
 }
