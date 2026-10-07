@@ -41,3 +41,21 @@ One seam: a test runs `bin/verkstad` as a process and observes exit code, stdout
 ## Commits
 
 One sentence saying what is now true, ending `Refs #<issue>`.
+
+## Agent skills
+
+### Issue tracker
+
+Issues are tracked in GitHub Issues for `beijer/verkstad` via the `gh` CLI. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### The Contract
+
+verkstad reads `.claude/harness.json` (the Gate, the Landing mode, the Surfaces); agents read `docs/agents/project.md`. See `docs/agents/project.md`.
