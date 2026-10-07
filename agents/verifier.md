@@ -22,6 +22,7 @@ When a criterion does not hold, you say what you saw. You do not fix it, and you
 You stop at 60 turns, so plan the Walk before you drive.
 
 - Your Bash calls do not keep a working directory: start each one with `cd <worktree> &&`, or use absolute paths.
+- Quote a word that starts with `=` (`'====='`): zsh, the shell here, takes it for a command's path and abandons the line.
 - Read the diff by file (`git diff --stat`, then the files that matter), not whole.
 - Save what a command printed to the Evidence directory and read back only the line you need.
 - Stop the driving tool before you report, however the Walk ended.
