@@ -239,7 +239,7 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   if (check.failure) {
     // The worktree stays: it is clean and rebased, and the Verifier Walks it next.
     const { reason, message } = check.failure;
-    throw new LandingFailure(reason, `#${ticket.n} did not land: ${message}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
+    throw keptInWorktree(ticket, reason, message);
   }
   const reused = recordedPass(ticket.root);
   if (reused !== null) {
