@@ -1,8 +1,8 @@
 // `verkstad land <n> <worktree> <report-file>`: lands a finished Ticket's
 // branch, issue-<n>, on the base branch. Under a lock, so that one Landing runs
 // at a time per main checkout, it rebases the branch onto origin's base branch,
-// runs the full Gate in the worktree, unless a full pass on the rebased tree is
-// recorded (src/gate.ts), and checks the Ticket's Verdict. Then, by
+// checks the Ticket's Verdict, and runs the full Gate in the worktree, unless a
+// full pass on the rebased tree is recorded (src/gate.ts). Then, by
 // the Contract's Landing mode:
 //   - push (the default): it pushes to the base branch, rebasing again when the
 //     base moved meanwhile, closes the Ticket with the report and the Verdict,
@@ -202,8 +202,8 @@ function describeGate(reused: string | null): string {
 }
 
 /**
- * Fetches the base, rebases the branch onto it, runs the full Gate, unless a full pass on the rebased tree
- * is recorded, and checks the Verdict; a failure throws.
+ * Fetches the base, rebases the branch onto it, checks the Verdict, and runs the full Gate, unless a full
+ * pass on the rebased tree is recorded; a failure throws.
  */
 function rebaseGateCheck(ticket: Ticket, base: string): Checked {
   const upstream = `origin/${base}`;
@@ -218,6 +218,13 @@ function rebaseGateCheck(ticket: Ticket, base: string): Checked {
   if (git(ticket.root, ["rev-list", "--count", `${upstream}..HEAD`]).trim() === "0") {
     throw didNotLand(ticket, "no-commits", `${ticket.branch} has no commits that are not on ${upstream}.`);
   }
+  // The Verdict is checked first, for the rebased patch, so that a branch it refuses costs no Gate run.
+  const check = checkVerdict(ticket.root, ticket.n, upstream);
+  if (check.failure) {
+    // The worktree stays: it is clean and rebased, and the Verifier Walks it next.
+    const { reason, message } = check.failure;
+    throw new LandingFailure(reason, `#${ticket.n} did not land: ${message}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
+  }
   const reused = recordedPass(ticket.root);
   if (reused !== null) {
     process.stdout.write(`Reused the full Gate pass recorded for tree ${reused}; no step ran.\n`);
@@ -228,12 +235,6 @@ function rebaseGateCheck(ticket: Ticket, base: string): Checked {
       if (!(error instanceof Failure)) throw error;
       throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
     }
-  }
-  const check = checkVerdict(ticket.root, ticket.n, upstream);
-  if (check.failure) {
-    // The worktree stays: it is clean and rebased, and the Verifier Walks it next.
-    const { reason, message } = check.failure;
-    throw new LandingFailure(reason, `#${ticket.n} did not land: ${message}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
   }
   return { check, reused };
 }

@@ -1,9 +1,9 @@
 // `verkstad gate [--quick]`: runs the Contract's Gate steps in order from the
 // worktree root, stopping at the first failure. It prints `ok  <step>` per step
 // and a pass line, or the failing step's last lines; the full log goes to the
-// log directory in the main checkout. A full pass on a clean worktree in which
-// every step ran is recorded there against the tree of HEAD, and Landing reuses
-// it for a rebased branch whose tree is the same.
+// log directory in the main checkout. A full pass on a clean worktree is
+// recorded there against the tree of HEAD, a step skipped by unlessExists
+// included, and Landing reuses it for a rebased branch whose tree is the same.
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
@@ -157,25 +157,20 @@ export function runGate(root: string, quick: boolean): string {
   const dir = ensureLogDirectory(root);
   const env = stepEnvironment(contract);
   const log = createLog(dir, root);
-  // Only a full pass on a clean worktree in which every step ran is recorded: a skip can depend on files
-  // outside the tree.
+  // Only a full pass on a clean worktree is recorded: --quick narrows and skips steps by what the branch
+  // changed. A step skipped by unlessExists does not stop it, since its path is an install cache, not a check.
   const tree = quick ? null : cleanTree(root);
-  let skipped = false;
 
   // A new Project has nothing to check yet; the Gate says so rather than passing silently.
   if (planned.length === 0) process.stdout.write("--  the Gate has no steps: it checked nothing\n");
   try {
     for (const p of planned) {
       if (p.skip) {
-        skipped = true;
         process.stdout.write(`--  ${p.label} skipped: ${p.skip}\n`);
         continue;
       }
       // Checked as the step comes up, since an earlier step may create the path.
-      if (p.step.unlessExists && existsSync(join(root, p.step.unlessExists))) {
-        skipped = true;
-        continue;
-      }
+      if (p.step.unlessExists && existsSync(join(root, p.step.unlessExists))) continue;
       writeSync(log.fd, `== ${p.label}\n`);
       const start = fstatSync(log.fd).size;
       const stepEnv = { ...env, ...p.env };
@@ -201,7 +196,7 @@ export function runGate(root: string, quick: boolean): string {
   }
   // A step that committed, or changed a tracked file, made later steps run on something other than the tree.
   const unchanged = () => headTree(root) === tree && git(root, ["status", "--porcelain", "--untracked-files=no"]).trim() === "";
-  if (tree !== null && !skipped && unchanged()) {
+  if (tree !== null && unchanged()) {
     const commit = git(root, ["rev-parse", "HEAD"]).trim();
     const record = { tree, commit, log: log.path, passedAt: new Date().toISOString() };
     writeFileSync(passRecord(dir, tree), `${JSON.stringify(record, null, 2)}\n`);

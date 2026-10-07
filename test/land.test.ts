@@ -13,6 +13,7 @@ interface Step {
   name: string;
   command: string;
   unlessExists?: string;
+  quick?: { files: string; env: string };
 }
 
 /** A Contract whose Gate has these steps. Steps run from the worktree root, which sits beside the
@@ -711,10 +712,13 @@ function assertStoppedByVerdict(p: Project, wt: string, base: string): void {
   assert.equal(issueOf(p, 7).state, "open");
 }
 
-test("a Ticket touching a Surface with no Verdict exits with verdict-missing after the Gate; base unchanged, branch kept, no issue closed", (t) => {
+/** A Gate step that counts its runs in `../gate-runs.txt`, beside the main checkout. */
+const COUNTED: Step = { name: "build", command: "echo run >> ../gate-runs.txt" };
+
+test("a Ticket touching a Surface with no Verdict exits with verdict-missing before the Gate runs a step; base unchanged, branch kept, no issue closed", (t) => {
   const p = project(t, {
     issues: [claimed(7)],
-    contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+    contract: contract([COUNTED], { surfaces: UI }),
   });
   const wt = ticket(p, 7, { "src/ui/panel.ts": "panel\n" });
   const base = originHead(p);
@@ -722,7 +726,8 @@ test("a Ticket touching a Surface with no Verdict exits with verdict-missing aft
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
   assert.equal(r.code, 1);
-  assert.match(r.stdout, /^ok {2}build\nGate passed\. Log: /);
+  assert.equal(r.stdout, "");
+  assert.equal(gateRuns(p), 0, "no Gate step ran");
   assert.equal(
     r.stderr,
     `verkstad land: #7 did not land: #7 touches the Surface ui, and has no Verdict: there is no ${join(p.dir, ".claude", "verkstad", "verdict-7.json")}.\n` +
@@ -732,11 +737,11 @@ test("a Ticket touching a Surface with no Verdict exits with verdict-missing aft
   assertStoppedByVerdict(p, wt, base);
 });
 
-test("a test-verified, blocked or failed Verdict does not land a Ticket touching a Surface: verdict-not-live", (t) => {
+test("a test-verified, blocked or failed Verdict does not land a Ticket touching a Surface: verdict-not-live, before the Gate runs a step", (t) => {
   for (const state of ["test-verified", "blocked", "failed"]) {
     const p = project(t, {
       issues: [claimed(7)],
-      contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+      contract: contract([COUNTED], { surfaces: UI }),
     });
     const wt = ticket(p, 7, { "src/ui/panel.ts": "panel\n" });
     recordVerdict(p, 7, wt, state);
@@ -745,6 +750,8 @@ test("a test-verified, blocked or failed Verdict does not land a Ticket touching
     const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
     assert.equal(r.code, 1, state);
+    assert.equal(r.stdout, "", state);
+    assert.equal(gateRuns(p), 0, `${state}: no Gate step ran`);
     assert.equal(
       r.stderr,
       `verkstad land: #7 did not land: #7 touches the Surface ui, and its Verdict is ${state}, not live-verified.\n` +
@@ -788,10 +795,10 @@ test("a clean rebase keeps a live-verified Verdict valid, and the Ticket closes 
   assert.equal(landed.stdout.split(" ")[0], given, "the landed, rebased patch has the Verdict's patch-id");
 });
 
-test("a conflict resolution that changes the patch voids the Verdict: land exits with verdict-void; base unchanged, branch kept, no issue closed", (t) => {
+test("a conflict resolution that changes the patch voids the Verdict: land exits with verdict-void before the Gate runs a step; base unchanged, branch kept, no issue closed", (t) => {
   const p = project(t, {
     issues: [claimed(7)],
-    contract: contract([{ name: "build", command: "true" }], { surfaces: UI }),
+    contract: contract([COUNTED], { surfaces: UI }),
     files: { "src/ui/panel.ts": "panel\n" },
   });
   const wt = ticket(p, 7, { "src/ui/panel.ts": "panel, with the job's time\n" });
@@ -814,6 +821,8 @@ test("a conflict resolution that changes the patch voids the Verdict: land exits
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
   assert.equal(r.code, 1);
+  assert.equal(r.stdout, "");
+  assert.equal(gateRuns(p), 0, "no Gate step ran");
   assert.equal(
     r.stderr,
     `verkstad land: #7 did not land: #7 touches the Surface ui, and its Verdict is void: it was given for patch ${given.slice(0, 12)}, ` +
@@ -1266,14 +1275,6 @@ const NOT_RECORDED: Array<[string, (p: Project, wt: string) => void]> = [
       p.git("-C", wt, "checkout", "--", "feature.txt");
     },
   ],
-  [
-    "a pass with a step skipped by unlessExists",
-    (p, wt) => {
-      writeFileSync(join(p.dir, "..", "installed"), "");
-      assert.equal(p.runIn(wt, "gate").code, 0);
-      rmSync(join(p.dir, "..", "installed"));
-    },
-  ],
 ];
 
 for (const [what, gateFirst] of NOT_RECORDED) {
@@ -1296,6 +1297,50 @@ for (const [what, gateFirst] of NOT_RECORDED) {
     assert.match(r.stdout, /^ok {2}install\nok {2}test\nGate passed\. /);
   });
 }
+
+test("a full Gate that skipped an install step by unlessExists is recorded: Landing on an unmoved base runs no step and says it reused the pass", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "install", command: "mkdir node_modules && echo install >> ../gate-runs.txt", unlessExists: "node_modules" }, NOTES_RUN]),
+    files: { ".gitignore": ".claude/verkstad/\nnode_modules/\n" },
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  // The agent's quick Gate installs; its full Gate after the last commit skips the install.
+  assert.equal(p.runIn(wt, "gate", "--quick").code, 0);
+  const full = p.runIn(wt, "gate");
+  assert.equal(full.code, 0, full.stderr);
+  assert.match(full.stdout, /^ok {2}test\nGate passed\. /);
+  assert.equal(gateRuns(p), 3);
+  const tree = treeOf(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(gateRuns(p), 3, "no Gate step ran during the Landing");
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  assert.equal(
+    r.stdout,
+    `Reused the full Gate pass recorded for tree ${tree}; no step ran.\nLanded #7 on main in ${sha} and closed it.\n`,
+  );
+});
+
+test("a quick Gate that skipped a step by its file filter is not recorded: Landing runs the full Gate", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ ...NOTES_RUN, name: "e2e", quick: { files: "e2e/*.e2e.ts", env: "E2E_FILES" } }]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const quick = p.runIn(wt, "gate", "--quick");
+  assert.equal(quick.code, 0, quick.stderr);
+  assert.match(quick.stdout, /^-- {2}e2e skipped: no file matching e2e\/\*\.e2e\.ts changed since main\nQuick gate passed\. /);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 1, "the Landing ran the Gate");
+  assert.match(r.stdout, /^ok {2}e2e\nGate passed\. /);
+});
 
 test("in pull-request mode a Landing on an unmoved base reuses a recorded full pass, and the pull request's body says so", (t) => {
   const p = project(t, { issues: [{ ...claimed(7), title: "Show the job's time" }], contract: contract([NOTES_RUN], PR_MODE) });
