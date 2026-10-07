@@ -17,7 +17,6 @@ Claude Code's worktree isolation and verkstad's hook refuse some command forms; 
 
 - The Bash tool already runs in your worktree: never start a command with `cd` into it.
 - Write a value out where it is used: no shell variable set and expanded later (`F=…; grep … $F`).
-- Change a file with Edit and create one with Write, never with a heredoc fed to `cat >`, `python3 -` or `node -`.
 - Quote a word that starts with `=`: zsh, the shell here, takes it for a command's path.
 - Keep git commands plain: no `$(…)` inside them and no loop around them.
 
