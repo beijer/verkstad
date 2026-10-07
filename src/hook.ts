@@ -77,8 +77,8 @@ interface Segment {
   expansions: Variable[];
 }
 
-/** A variable's expansion, `$name` or `${name…`, at the start of a text. */
-const EXPANSION = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)/;
+/** A variable's expansion, `$name`, `${name…` or `${#name}`, at the start of a text. */
+const EXPANSION = /^\$(?:\{#?)?([A-Za-z_][A-Za-z0-9_]*)/;
 
 const SEPARATORS = ";&|()`";
 
@@ -91,7 +91,7 @@ const KEYWORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", 
 /** Commands whose `name=value` arguments zsh treats as assignments, expanding a value that starts with =. */
 const DECLARATIONS = new Set(["export", "local", "typeset", "declare", "readonly", "integer", "float"]);
 
-const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const ASSIGNMENT = /^([A-Za-z_][A-Za-z0-9_]*)=/;
 
 /** Reads the quoted string (`'…'`, `"…"` or `$'…'`) that opens at `i`: its text, and the index after it. */
 function readQuoted(command: string, i: number): { text: string; end: number } {
@@ -141,6 +141,8 @@ function segments(command: string): Segment[] {
   const pending: Array<{ delimiter: string; strip: boolean }> = [];
   // The variables the command line has assigned so far, by name, with their values.
   const assigned = new Map<string, string>();
+  // The assignments the simple command being read starts with, which set variables only when no command follows.
+  let prefixes: Variable[] = [];
   /** Notes the expansion `text` starts with when it is of a variable assigned so far. */
   const expand = (text: string) => {
     const name = EXPANSION.exec(text)?.[1];
@@ -153,8 +155,12 @@ function segments(command: string): Segment[] {
     const leading = redirect === null && segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w));
     const declares = segment.words.find((w) => !KEYWORDS.has(w) && !ASSIGNMENT.test(w));
     const assignable = redirect === null && (declares === undefined || DECLARATIONS.has(declares));
-    const variable = inWord && !condition && assignable ? /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(shape) : null;
-    if (variable) assigned.set(variable[1], word.slice(variable[1].length + 1));
+    const variable = inWord && !condition && assignable ? ASSIGNMENT.exec(shape) : null;
+    if (variable) {
+      const assignment = { name: variable[1], value: word.slice(variable[1].length + 1) };
+      if (declares === undefined) prefixes.push(assignment);
+      else assigned.set(assignment.name, assignment.value);
+    }
     if (inWord && shape === "[[" && leading) condition = true;
     else if (inWord && shape === "]]" && condition) condition = false;
     else if (inWord && !condition) {
@@ -174,6 +180,11 @@ function segments(command: string): Segment[] {
   const endSegment = () => {
     endWord();
     redirect = null;
+    // Assignments before a command set its environment only; without a command they set the variables.
+    if (segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w))) {
+      for (const { name, value } of prefixes) assigned.set(name, value);
+    }
+    prefixes = [];
     if (segment.words.length || segment.heredoc || segment.equals.length || segment.expansions.length) out.push(segment);
     segment = { words: [], heredoc: false, outputs: [], equals: [], expansions: [] };
   };
@@ -321,14 +332,18 @@ export function hook(args: string[]): void {
   const expanded = parsed.flatMap((segment) => segment.equals)[0];
   if (basename(process.env.SHELL ?? "") === "zsh" && expanded) return deny(zshReason(expanded.word, expanded.quoted));
   const heredoc = /\bgit/i.test(command) && parsed.some(heredocEdit);
-  const cd = CHANGE_DIRECTORY.exec(command);
+  const change = CHANGE_DIRECTORY.exec(command);
   const variable = parsed.flatMap((segment) => segment.expansions)[0];
-  if (!heredoc && !cd && !variable) return;
+  if (!heredoc && !change && !variable) return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
   if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
   if (heredoc) return deny(REASON);
-  const into = cd && changeInto(realpathSync(cwd), cd[1] ?? cd[2] ?? cd[3], command.slice(cd[0].length).trim());
-  if (into) return deny(into);
+  if (change) {
+    const [prefix, inSingleQuotes, inDoubleQuotes, plain] = change;
+    const directory = inSingleQuotes ?? inDoubleQuotes ?? plain;
+    const reason = changeInto(realpathSync(cwd), directory, command.slice(prefix.length).trim());
+    if (reason) return deny(reason);
+  }
   if (variable) deny(variableReason(variable));
 }
 
@@ -347,10 +362,11 @@ function changeInto(cwd: string, directory: string, rest: string): string | null
   const target = resolve(cwd, directory);
   const real = existsSync(target) ? realpathSync(target) : target;
   if (rest === "" || (real !== worktree && !real.startsWith(worktree + "/"))) return null;
+  // The worktree's path where a word or a quoted string starts: dropped before a path inside it, `.` on its own.
   const escaped = worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const relativeRest = rest.replace(new RegExp(`${escaped}(?:/|(?![^\\s;&|<>()'"]))`, "g"), (path) =>
-    path.endsWith("/") ? "" : ".",
-  );
+  const path = `[^\\s;&|<>()'"]`;
+  const absolute = new RegExp(`(?<![^\\s'"=])${escaped}(?:(/(?=${path}))|/?(?!${path}))`, "g");
+  const relativeRest = rest.replace(absolute, (_, inside: string | undefined) => (inside ? "" : "."));
   return cdReason(worktree, relativeRest, relative(worktree, real));
 }
 

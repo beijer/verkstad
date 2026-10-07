@@ -256,8 +256,7 @@ function zshRefusal(word: string, quoted: string): string {
   const reason =
     "verkstad: zsh, the shell here, expands an unquoted word that starts with = as the path of a command " +
     `and abandons the rest of the command line when there is none, so ${word} would fail; quote it: ${quoted}`;
-  const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason };
-  return JSON.stringify({ hookSpecificOutput: decision }) + "\n";
+  return denial(reason);
 }
 
 test("under zsh, the hook refuses a word that starts with = in the main checkout, in an agent worktree and outside git", (t) => {
@@ -359,6 +358,7 @@ test("in an agent worktree, the hook refuses a command that starts by changing i
   const cases: Array<[string, string]> = [
     [`cd ${wt} && git status --short`, cdRefusal(wt, "git status --short")],
     [`cd ${wt}; sed -i s/a/b/ ${wt}/src/a.ts && git diff ${wt}`, cdRefusal(wt, "sed -i s/a/b/ src/a.ts && git diff .")],
+    [`cd ${wt}/ && ls "${wt}/" /mnt${wt}/x`, cdRefusal(wt, `ls "." /mnt${wt}/x`)],
     [`cd "${wt}"  &&  ls ${wt}-other`, cdRefusal(wt, `ls ${wt}-other`)],
     [`cd ${wt}/packages/x && npm test`, cdRefusal(wt, "npm test", "packages/x")],
     ["cd packages/x && git log -1", cdRefusal(wt, "git log -1", "packages/x")],
@@ -387,6 +387,7 @@ test("in an agent worktree, the hook refuses a command that sets a shell variabl
     ['f=a.ts; git add "$f"', variableRefusal("f", "a.ts")],
     ["export D=docs; ls ${D}/x", variableRefusal("D", "docs")],
     ["V='x y'\necho $(cat $V)", variableRefusal("V", "x y")],
+    ["n=abc; echo ${#n}", variableRefusal("n", "abc")],
   ];
   for (const [command, expected] of cases) {
     const r = p.pipe(wt, bashEvent(wt, command), "hook", "pre-tool-use");
@@ -410,6 +411,7 @@ test("in an agent worktree, the hook lets a plain command, a cd elsewhere and a 
     "echo $HOME && git status",
     "for f in a b; do echo $f; done",
     "x=1 npm test",
+    "x=1 npm test && echo $x",
     "echo $f; f=1",
     "f=1 && cat <<'EOF'\n$f\nEOF",
   ];
