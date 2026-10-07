@@ -1356,3 +1356,36 @@ test("in pull-request mode a Landing on an unmoved base reuses a recorded full p
     "Verification state: test-verified. Surfaces: none.\n";
   assert.equal(p.state().pullRequests[0].body, body);
 });
+
+test("a Gate that fails on a rebased branch whose tree passed the full Gate before ends with gate-flaky, names both logs and keeps the worktree", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "unit tests", command: "[ -e ../red ] && { echo 'timed out'; exit 3; }; true" }]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const gate = p.runIn(wt, "gate");
+  assert.equal(gate.code, 0, gate.stderr);
+  const passLog = /Log: (.*)$/m.exec(gate.stdout)?.[1];
+  assert.ok(passLog && existsSync(passLog));
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+  writeFileSync(join(p.dir, "..", "red"), "");
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  const failLog = /^Full log: (.*)$/m.exec(r.stderr)?.[1];
+  assert.ok(failLog && failLog !== passLog && existsSync(failLog), r.stderr);
+  assert.equal(
+    r.stderr,
+    "verkstad land: #7 did not land: the Gate failed on a branch whose tree passed the full Gate before (log of that pass: " +
+      `${passLog}): unit tests failed (exit 3). The end of its output:\n` +
+      "timed out\n" +
+      `Full log: ${failLog}\n` +
+      "Branch issue-7 is kept, rebased, in its worktree.\n" +
+      "reason: gate-flaky\n",
+  );
+  assert.equal(existsSync(wt), true, "the worktree is kept");
+  assert.equal(originHead(p), base);
+  assert.equal(issueOf(p, 7).state, "open");
+});

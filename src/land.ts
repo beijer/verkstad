@@ -32,7 +32,7 @@ import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync }
 import { join, resolve } from "node:path";
 import { type LandingMode, readContract, readLandingMode, readSurfaces } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { recordedPass, runGate } from "./gate.ts";
+import { recordedPass, recordedPassLog, runGate } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
 import { moveWorktreeLogs } from "./move-logs.ts";
@@ -51,6 +51,7 @@ type Reason =
   | "no-commits"
   | "conflict"
   | "gate-failed"
+  | "gate-flaky"
   | VerdictReason
   | "push-failed"
   | "github-failed"
@@ -208,6 +209,9 @@ function describeGate(reused: string | null): string {
 function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const upstream = `origin/${base}`;
   fetch(ticket, base);
+  // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the failure is
+  // a flake until proven otherwise, since the Ticket's own tree passed.
+  const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassLog(ticket.root) ?? "its log is unknown");
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
   if (rebase.status !== 0) {
     const unmerged = tryGit(ticket.root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
@@ -233,7 +237,13 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
       runGate(ticket.root, false);
     } catch (error) {
       if (!(error instanceof Failure)) throw error;
-      throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
+      if (passedBefore === null) throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
+      // The worktree stays: it is clean and rebased, and landing again is the next step.
+      throw new LandingFailure(
+        "gate-flaky",
+        `#${ticket.n} did not land: the Gate failed on a branch whose tree passed the full Gate before (log of that pass: ${passedBefore}): ${error.message}\n` +
+          `Branch ${ticket.branch} is kept, rebased, in its worktree.`,
+      );
     }
   }
   return { check, reused };

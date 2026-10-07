@@ -142,6 +142,18 @@ export function recordedPass(root: string): string | null {
   return tree !== null && existsSync(passRecord(logDirectory(root), tree)) ? tree : null;
 }
 
+/** The path of the Gate log of the full pass recorded for the tree at `root`'s HEAD, or null: none, or its record is unreadable. */
+export function recordedPassLog(root: string): string | null {
+  const path = passRecord(logDirectory(root), headTree(root));
+  if (!existsSync(path)) return null;
+  try {
+    const { log } = JSON.parse(readFileSync(path, "utf8")) as { log?: unknown };
+    return typeof log === "string" ? log : null;
+  } catch {
+    return null;
+  }
+}
+
 export function gate(args: string[]): void {
   const { quick } = parseArgs(args);
   runGate(worktreeRoot(process.cwd()), quick);

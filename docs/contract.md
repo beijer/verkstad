@@ -142,7 +142,7 @@ That is the `push` Landing mode. In the `pull-request` mode steps 1 to 3 are the
 
 The Ticket stays open, and assigned, until the owner merges the pull request, which closes it; `verkstad frontier` lists it as in progress meanwhile, so no Run dispatches it again, and the Tickets it blocks wait for the merge. It prints `Opened <url> onto <baseBranch> for #<n> (issue-<n> at <sha>); #<n> closes when it merges.`, or `Updated <url> …` for a pull request that was open, and exits 0.
 
-Every failure, in either mode, prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and no pull request, and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error`, `review-missing`, which changed nothing, and a failed Verdict check, whose worktree the Verifier Walks next.
+Every failure, in either mode, prints what failed on stderr, `verkstad land: …`, and ends with a line `reason: <code>` the orchestrator routes on. A refusal exits 2, any other failure 1. A Landing that fails before its push touches no issue and no pull request, and keeps the branch. It also removes the worktree, so that a Resume can switch to the branch, except after `refused`, `error`, `review-missing`, which changed nothing, a failed Verdict check, whose worktree the Verifier Walks next, and `gate-flaky`, whose worktree the next Landing uses.
 
 | Reason | What failed | The branch |
 | --- | --- | --- |
@@ -151,6 +151,7 @@ Every failure, in either mode, prints what failed on stderr, `verkstad land: …
 | `no-commits` | After the rebase the branch has nothing that is not on `origin/<baseBranch>`. | Kept. |
 | `conflict` | The rebase conflicted; the message names the conflicting files. | Kept as it was before the rebase. |
 | `gate-failed` | The full Gate; the message has the failing step's last lines and the Gate log's path. | Kept, rebased. |
+| `gate-flaky` | The full Gate failed, but the branch as it stood before the rebase had a full pass recorded: the failure is a flake in the Project's tests, or an interaction with what the base gained, not the Ticket's work. The message names the log of that pass and the failing run's log. Landing again settles it. | Kept, rebased, in its worktree. |
 | `verdict-missing` | The branch touches a Surface, and the Ticket has no Verdict, or its Verdict file is malformed. The Verifier Walks it. | Kept, rebased, in its worktree. |
 | `verdict-void` | The branch touches a Surface, and its Verdict was given for another patch: a conflict resolution or a new commit changed it. Whatever the Verdict's state, the Verifier Walks it again. | Kept, rebased, in its worktree. |
 | `verdict-not-live` | The branch touches a Surface, and its Verdict for this patch is `test-verified`, `blocked` or `failed`; the message names it. The orchestrator routes on the state (a Fix round, or Park). | Kept, rebased, in its worktree. |
