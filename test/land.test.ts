@@ -1281,10 +1281,7 @@ for (const [what, gateFirst] of NOT_RECORDED) {
   test(`${what} is never reused: Landing runs the full Gate`, (t) => {
     const p = project(t, {
       issues: [claimed(7)],
-      contract: contract([
-        { name: "install", command: "true", unlessExists: "../installed" },
-        { name: "test", command: "test ! -e ../red && echo run >> ../gate-runs.txt" },
-      ]),
+      contract: contract([{ name: "test", command: "test ! -e ../red && echo run >> ../gate-runs.txt" }]),
     });
     const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
     gateFirst(p, wt);
@@ -1294,7 +1291,7 @@ for (const [what, gateFirst] of NOT_RECORDED) {
 
     assert.equal(r.code, 0, r.stderr);
     assert.equal(gateRuns(p), before + 1, "the Landing ran the Gate");
-    assert.match(r.stdout, /^ok {2}install\nok {2}test\nGate passed\. /);
+    assert.match(r.stdout, /^ok {2}test\nGate passed\. /);
   });
 }
 

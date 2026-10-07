@@ -205,7 +205,7 @@ function describeGate(reused: string | null): string {
  * Fetches the base, rebases the branch onto it, checks the Verdict, and runs the full Gate, unless a full
  * pass on the rebased tree is recorded; a failure throws.
  */
-function rebaseGateCheck(ticket: Ticket, base: string): Checked {
+function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const upstream = `origin/${base}`;
   fetch(ticket, base);
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
@@ -239,11 +239,11 @@ function rebaseGateCheck(ticket: Ticket, base: string): Checked {
   return { check, reused };
 }
 
-/** Rebases, gates, checks the Verdict and pushes to the base branch until the push lands or fails. */
-function rebaseGatePush(ticket: Ticket, base: string): Landed {
+/** Rebases, checks the Verdict, gates and pushes to the base branch until the push lands or fails. */
+function rebaseCheckGatePush(ticket: Ticket, base: string): Landed {
   const upstream = `origin/${base}`;
   for (let attempt = 1; ; attempt++) {
-    const { check, reused } = rebaseGateCheck(ticket, base);
+    const { check, reused } = rebaseCheckGate(ticket, base);
     const push = tryGit(ticket.root, ["push", "--quiet", "origin", `HEAD:refs/heads/${base}`]);
     if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), check, reused };
     fetch(ticket, base);
@@ -322,7 +322,7 @@ function removeWorktreeAndBranch(ticket: Ticket): string {
 
 /** Landing mode push: lands the branch on the base branch and closes the Ticket. */
 function pushToBase(ticket: Ticket, base: string, report: string): void {
-  const { sha, check, reused } = rebaseGatePush(ticket, base);
+  const { sha, check, reused } = rebaseCheckGatePush(ticket, base);
   let closing: Failure | null = null;
   try {
     const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeGate(reused)}${describeVerification(check)}`;
@@ -353,7 +353,7 @@ function pushToBase(ticket: Ticket, base: string, report: string): void {
  * tell the next Run the Ticket stopped mid-way.
  */
 function landAsPullRequest(ticket: Ticket, base: string, report: string): void {
-  const { check, reused } = rebaseGateCheck(ticket, base);
+  const { check, reused } = rebaseCheckGate(ticket, base);
   const push = tryGit(ticket.root, ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${ticket.branch}`]);
   if (push.status !== 0) throw didNotLand(ticket, "push-failed", `pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}`);
   const sha = git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim();
