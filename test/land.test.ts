@@ -568,6 +568,78 @@ test("--park refuses a worktree with uncommitted changes, which removing it woul
   assert.deepEqual(p.calls(), []);
 });
 
+/** Leaves, as an implementing agent does, notes and Walk evidence under the worktree's gitignored .claude/verkstad/. */
+function leaveNotes(wt: string, files: Record<string, string>): void {
+  for (const [path, content] of Object.entries(files)) {
+    const file = join(wt, ".claude", "verkstad", path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, content);
+  }
+}
+
+/** A file in the main checkout's log directory, or null when there is none. */
+function logFile(p: Project, path: string): string | null {
+  const file = join(p.dir, ".claude", "verkstad", path);
+  return existsSync(file) ? readFileSync(file, "utf8") : null;
+}
+
+/** An agent's notes and evidence in its worktree, and a notes-7.md and evidence/7/ an earlier agent left in the log directory. */
+function notesScenario(p: Project, wt: string): void {
+  leaveNotes(wt, { "notes-7.md": "this agent's notes\n", "evidence/7/walk.txt": "what the Walk saw\n" });
+  mkdirSync(join(p.dir, ".claude", "verkstad", "evidence", "7"), { recursive: true });
+  writeFileSync(join(p.dir, ".claude", "verkstad", "notes-7.md"), "an earlier agent's notes\n");
+  writeFileSync(join(p.dir, ".claude", "verkstad", "evidence", "7", "shot.txt"), "an earlier Walk\n");
+}
+
+function assertNotesMoved(p: Project, stdout: string): void {
+  const dir = join(p.dir, ".claude", "verkstad");
+  const moved = `Moved 2 entries from the worktree's .claude/verkstad/ into ${dir}:\n  evidence/7/walk.txt\n  notes-7.md, as notes-7-2.md\n`;
+  assert.ok(stdout.includes(moved), stdout);
+  assert.equal(logFile(p, "notes-7.md"), "an earlier agent's notes\n", "the file already there is kept");
+  assert.equal(logFile(p, "notes-7-2.md"), "this agent's notes\n", "the moved one is renamed beside it");
+  assert.equal(logFile(p, "evidence/7/walk.txt"), "what the Walk saw\n");
+  assert.equal(logFile(p, "evidence/7/shot.txt"), "an earlier Walk\n");
+}
+
+test("a Landing moves what the agent left under the worktree's .claude/verkstad/ into the log directory, renaming a file whose name is taken", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  notesScenario(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(existsSync(wt), false, "the worktree is removed");
+  assertNotesMoved(p, r.stdout);
+});
+
+test("--park moves what the agent left under the worktree's .claude/verkstad/ into the log directory, renaming a file whose name is taken", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  notesScenario(p, wt);
+
+  const r = p.run("land", "--park", "7", wt, tmpFile(p, "park-7.md", "Stuck.\n"));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(existsSync(wt), false, "the worktree is removed");
+  assertNotesMoved(p, r.stdout);
+  assert.match(r.stdout, /\nParked #7: branch issue-7 pushed to origin, worktree removed, labelled needs-info\.\n$/);
+});
+
+test("a failed Landing that removes the worktree moves what the agent left there into the log directory too", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "unit tests", command: "exit 1" }]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  leaveNotes(wt, { "notes-7.md": "this agent's notes\n" });
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(reason(r.stderr), "reason: gate-failed");
+  assert.equal(existsSync(wt), false);
+  assert.equal(logFile(p, "notes-7.md"), "this agent's notes\n");
+});
+
 const UI = [{ name: "ui", globs: ["src/ui/**"] }];
 const CRITERIA = [
   { criterion: "The panel shows the job's time", seen: "Opened the panel: it read 3 min 12 s." },

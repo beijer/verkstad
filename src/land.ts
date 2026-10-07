@@ -34,6 +34,7 @@ import { Failure } from "./fail.ts";
 import { runGate } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
+import { moveWorktreeLogs } from "./move-logs.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
 import { deleteReview, missingReview } from "./review.ts";
 import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
@@ -119,10 +120,20 @@ function readFile(path: string, what: string): string {
   return text;
 }
 
-/** Removes the worktree, even one Claude Code locked, keeping its branch; says so when it cannot. */
+/**
+ * Removes the worktree, even one Claude Code locked, keeping its branch, once what the agent left under its
+ * .claude/verkstad/ is in the log directory; says what it moved, and says so when it cannot remove it.
+ */
 function removeWorktree(main: string, root: string): string {
+  let moved: string;
+  try {
+    moved = moveWorktreeLogs(root, logDirectory(main));
+  } catch (error) {
+    const why = error instanceof Error ? error.message : String(error);
+    return `Could not move ${join(root, ".claude", "verkstad")} into the log directory, so the worktree ${root} is kept: ${why}\n`;
+  }
   const r = tryGit(main, ["worktree", "remove", "--force", "--force", root]);
-  return r.status === 0 ? "" : `Could not remove the worktree ${root}: ${r.stderr.trim()}\n`;
+  return moved + (r.status === 0 ? "" : `Could not remove the worktree ${root}: ${r.stderr.trim()}\n`);
 }
 
 /**
@@ -132,8 +143,9 @@ function removeWorktree(main: string, root: string): string {
 function keepBranch(ticket: TicketBranch, reason: Reason, what: string, asItWas = false): LandingFailure {
   const kept = `Branch ${ticket.branch} is kept${asItWas ? " as it was" : ""}`;
   if (ticket.root === null) return new LandingFailure(reason, `${what}\n${kept}.`);
-  const problem = removeWorktree(ticket.main, ticket.root);
-  return new LandingFailure(reason, `${what}\n${problem || `${kept}; its worktree is removed.`}`);
+  const notes = removeWorktree(ticket.main, ticket.root);
+  const removed = existsSync(ticket.root) ? "" : `${kept}; its worktree is removed.`;
+  return new LandingFailure(reason, `${what}\n${notes}${removed}`);
 }
 
 function didNotLand(ticket: Ticket, reason: Reason, detail: string, asItWas = false): LandingFailure {

@@ -29,7 +29,7 @@ Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it
 
 Current state of the Project: {CURRENT_STATE}
 
-The log directory is {LOG_DIR}: gitignored, outside every worktree, and kept after your worktree is removed.
+Keep notes and Walk evidence under `.claude/verkstad/` in your worktree (gitignored); Landing and Parking move them to the log directory, {LOG_DIR}. You cannot write to the log directory yourself.
 
 Work:
 - Implement exactly the Ticket and its acceptance criteria, nothing beyond. Test-first where there is logic (Skill verkstad:tdd), through the seams the prose doc names.
