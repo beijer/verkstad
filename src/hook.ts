@@ -21,6 +21,8 @@
 // command, or an argument of export and its kin) whose value does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
 // none, abandons the rest of the command line. The reason says how to quote the word.
 //
+// `verkstad hook subagent-stop`, the plugin's SubagentStop hook, is in src/subagent-stop.ts.
+//
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.
 
@@ -28,8 +30,9 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import { Failure } from "./fail.ts";
 import { inLinkedWorktree, worktreeRoot } from "./git.ts";
+import { subagentStop } from "./subagent-stop.ts";
 
-const USAGE = "usage: verkstad hook pre-tool-use";
+const USAGE = "usage: verkstad hook pre-tool-use|subagent-stop";
 
 const REASON =
   "verkstad: in an agent worktree, change a file with the Edit tool and create one with the Write tool, " +
@@ -311,21 +314,23 @@ interface ToolEvent {
   tool_input?: { command?: unknown };
 }
 
-function readEvent(): ToolEvent {
+/** The hook event `name` Claude Code sends as JSON on stdin. */
+function readEvent(name: string): Record<string, unknown> {
   const text = readFileSync(0, "utf8");
   try {
     const event: unknown = JSON.parse(text);
-    if (typeof event === "object" && event !== null && !Array.isArray(event)) return event as ToolEvent;
+    if (typeof event === "object" && event !== null && !Array.isArray(event)) return event as Record<string, unknown>;
   } catch {
     // Reported below.
   }
-  throw new Failure("stdin is not a PreToolUse event as JSON");
+  throw new Failure(`stdin is not a ${name} event as JSON`);
 }
 
 export function hook(args: string[]): void {
   if (args.length === 0) throw new Failure(`needs the hook event; ${USAGE}`, 2);
+  if (args.length === 1 && args[0] === "subagent-stop") return subagentStop(readEvent("SubagentStop"));
   if (args.length !== 1 || args[0] !== "pre-tool-use") throw new Failure(`no hook for '${args.join(" ")}'; ${USAGE}`, 2);
-  const event = readEvent();
+  const event: ToolEvent = readEvent("PreToolUse");
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
   const parsed = segments(command);

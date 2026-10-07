@@ -43,8 +43,10 @@ const subcommands: Record<string, Subcommand> = {
     run: gate,
   },
   hook: {
-    usage: "verkstad hook pre-tool-use",
-    summary: "Refuses, as the plugin's PreToolUse hook, a heredoc edit in an agent worktree, naming the Edit and Write tools",
+    usage: "verkstad hook pre-tool-use|subagent-stop",
+    summary:
+      "Refuses, as the plugin's PreToolUse hook, a heredoc edit in an agent worktree, naming the Edit and Write tools; " +
+      "as its SubagentStop hook, blocks a Tier agent's stop with unreviewed commits, naming verkstad:review",
     run: hook,
   },
   land: {

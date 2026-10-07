@@ -236,11 +236,15 @@ test("hook without its event, or with another, is a usage error", (t) => {
   const none = p.pipe(p.dir, bashEvent(p.dir, pythonEdit), "hook");
   const other = p.pipe(p.dir, bashEvent(p.dir, pythonEdit), "hook", "post-tool-use");
 
-  assert.deepEqual(none, { code: 2, stdout: "", stderr: "verkstad hook: needs the hook event; usage: verkstad hook pre-tool-use\n" });
+  assert.deepEqual(none, {
+    code: 2,
+    stdout: "",
+    stderr: "verkstad hook: needs the hook event; usage: verkstad hook pre-tool-use|subagent-stop\n",
+  });
   assert.deepEqual(other, {
     code: 2,
     stdout: "",
-    stderr: "verkstad hook: no hook for 'post-tool-use'; usage: verkstad hook pre-tool-use\n",
+    stderr: "verkstad hook: no hook for 'post-tool-use'; usage: verkstad hook pre-tool-use|subagent-stop\n",
   });
 });
 
