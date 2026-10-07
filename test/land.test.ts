@@ -12,6 +12,7 @@ const DAY = 24 * 60 * 60 * 1000;
 interface Step {
   name: string;
   command: string;
+  unlessExists?: string;
 }
 
 /** A Contract whose Gate has these steps. Steps run from the worktree root, which sits beside the
@@ -1184,8 +1185,10 @@ test("when the base moved after the Gate passed, the rebased tree differs and La
   assert.equal(r.code, 0, r.stderr);
   assert.equal(gateRuns(p), 2, "the Landing ran the Gate");
   assert.match(r.stdout, /^ok {2}test\nGate passed\. Log: /);
-  assert.doesNotMatch(r.stdout, /Reused/);
-  assert.doesNotMatch(issueOf(p, 7).comments[0].body, /not run again/);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  assert.equal(r.stdout.split("\n").slice(2).join("\n"), `Landed #7 on main in ${sha} and closed it.\n`);
+  const body = `Landed on main in ${sha}.\n\n${REPORT}\nVerification state: test-verified. Surfaces: none.\n`;
+  assert.deepEqual(issueOf(p, 7).comments, [{ author: "owner", body }]);
 });
 
 test("a change to the Gate's steps committed after the Gate passed changes the tree, so Landing runs the Gate again", (t) => {
@@ -1216,6 +1219,24 @@ test("a recorded Gate pass older than 30 days is pruned with the rest of the log
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
   assert.equal(r.code, 0, r.stderr);
   assert.equal(gateRuns(p), 2, "the Landing ran the Gate");
+});
+
+test("a pass in which a step changed a tracked file is never reused: the later steps ran on something other than the tree", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "format", command: "[ -e ../reformat ] && echo reformatted > feature.txt; true" }, NOTES_RUN]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  writeFileSync(join(p.dir, "..", "reformat"), "");
+  assert.equal(p.runIn(wt, "gate").code, 0);
+  rmSync(join(p.dir, "..", "reformat"));
+  p.git("-C", wt, "checkout", "--", "feature.txt");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 2, "the Landing ran the Gate");
+  assert.match(r.stdout, /^ok {2}format\nok {2}test\nGate passed\. /);
 });
 
 /** Gates a Ticket's worktree in a way that must not be recorded, leaving it as the Ticket's agent would. */
@@ -1260,7 +1281,7 @@ for (const [what, gateFirst] of NOT_RECORDED) {
     const p = project(t, {
       issues: [claimed(7)],
       contract: contract([
-        { name: "install", command: "true", unlessExists: "../installed" } as Step,
+        { name: "install", command: "true", unlessExists: "../installed" },
         { name: "test", command: "test ! -e ../red && echo run >> ../gate-runs.txt" },
       ]),
     });

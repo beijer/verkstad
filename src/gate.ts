@@ -129,6 +129,10 @@ function passRecord(dir: string, tree: string): string {
 /** The tree of HEAD when the worktree at `root` has no uncommitted or untracked changes; otherwise null. */
 function cleanTree(root: string): string | null {
   if (git(root, ["status", "--porcelain"]).trim() !== "") return null;
+  return headTree(root);
+}
+
+function headTree(root: string): string {
   return git(root, ["rev-parse", "HEAD^{tree}"]).trim();
 }
 
@@ -195,8 +199,9 @@ export function runGate(root: string, quick: boolean): string {
   } finally {
     closeSync(log.fd);
   }
-  // A step that committed changed the tree it ran on.
-  if (tree !== null && !skipped && git(root, ["rev-parse", "HEAD^{tree}"]).trim() === tree) {
+  // A step that committed, or changed a tracked file, made later steps run on something other than the tree.
+  const unchanged = () => headTree(root) === tree && git(root, ["status", "--porcelain", "--untracked-files=no"]).trim() === "";
+  if (tree !== null && !skipped && unchanged()) {
     const commit = git(root, ["rev-parse", "HEAD"]).trim();
     const record = { tree, commit, log: log.path, passedAt: new Date().toISOString() };
     writeFileSync(passRecord(dir, tree), `${JSON.stringify(record, null, 2)}\n`);
