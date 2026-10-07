@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { project, type Project } from "./project.ts";
@@ -1133,4 +1133,163 @@ test("a Landing prunes the log directory once it has landed", (t) => {
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^Pruned 1 entry older than 30 days from .*:\n {2}gate-wt-3-20260801-101010\.log\n/m);
   assert.equal(existsSync(join(p.dir, ".claude", "verkstad", "gate-wt-3-20260801-101010.log")), false);
+});
+
+/** A Gate step that notes each run in the test's temp dir, so that a test sees whether the Gate ran. */
+const NOTES_RUN: Step = { name: "test", command: "echo run >> ../gate-runs.txt" };
+
+function gateRuns(p: Project): number {
+  const path = join(p.dir, "..", "gate-runs.txt");
+  return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean).length : 0;
+}
+
+function treeOf(p: Project, wt: string): string {
+  return p.git("-C", wt, "rev-parse", "HEAD^{tree}");
+}
+
+test("after a full Gate passed on the clean branch, a Landing on an unmoved base runs no step, says it reused the pass for that tree, and the closing comment says so", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }, NOTES_RUN]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const gate = p.runIn(wt, "gate");
+  assert.equal(gate.code, 0, gate.stderr);
+  assert.equal(gateRuns(p), 1);
+  const tree = treeOf(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(gateRuns(p), 1, "no Gate step ran during the Landing");
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  assert.equal(
+    r.stdout,
+    `Reused the full Gate pass recorded for tree ${tree}; no step ran.\nLanded #7 on main in ${sha} and closed it.\n`,
+  );
+  const body =
+    `Landed on main in ${sha}.\n\n${REPORT}\n` +
+    `The Gate was not run again: a full pass on this tree (${tree}) was recorded before.\n` +
+    "Verification state: test-verified. Surfaces: none.\n";
+  assert.deepEqual(issueOf(p, 7).comments, [{ author: "owner", body }]);
+  assert.equal(originLog(p)[0], "Adds feature.txt. Refs #7");
+});
+
+test("when the base moved after the Gate passed, the rebased tree differs and Landing runs the full Gate", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([NOTES_RUN]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  assert.equal(p.runIn(wt, "gate").code, 0);
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 2, "the Landing ran the Gate");
+  assert.match(r.stdout, /^ok {2}test\nGate passed\. Log: /);
+  assert.doesNotMatch(r.stdout, /Reused/);
+  assert.doesNotMatch(issueOf(p, 7).comments[0].body, /not run again/);
+});
+
+test("a change to the Gate's steps committed after the Gate passed changes the tree, so Landing runs the Gate again", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([NOTES_RUN]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  assert.equal(p.runIn(wt, "gate").code, 0);
+  const steps = [NOTES_RUN, { name: "build", command: "true" }];
+  commit(p, wt, { ".claude/harness.json": `${JSON.stringify(contract(steps), null, 2)}\n` }, "Adds a build step. Refs #7");
+  recordReview(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 2);
+  assert.match(r.stdout, /^ok {2}test\nok {2}build\nGate passed\. /);
+});
+
+test("a recorded Gate pass older than 30 days is pruned with the rest of the log directory, and Landing then runs the Gate", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([NOTES_RUN]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  assert.equal(p.runIn(wt, "gate").code, 0);
+  const record = `gate-pass-${treeOf(p, wt)}.json`;
+  age(p, record, 31);
+
+  const pruned = p.run("prune");
+
+  assert.match(pruned.stdout, new RegExp(`^ {2}${record}$`, "m"));
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 2, "the Landing ran the Gate");
+});
+
+/** Gates a Ticket's worktree in a way that must not be recorded, leaving it as the Ticket's agent would. */
+const NOT_RECORDED: Array<[string, (p: Project, wt: string) => void]> = [
+  ["a --quick pass", (p, wt) => assert.equal(p.runIn(wt, "gate", "--quick").code, 0)],
+  [
+    "a failed Gate",
+    (p, wt) => {
+      writeFileSync(join(p.dir, "..", "red"), "");
+      assert.equal(p.runIn(wt, "gate").code, 1);
+      rmSync(join(p.dir, "..", "red"));
+    },
+  ],
+  [
+    "a pass on a worktree with an untracked file",
+    (p, wt) => {
+      writeFileSync(join(wt, "scratch.txt"), "not committed\n");
+      assert.equal(p.runIn(wt, "gate").code, 0);
+      rmSync(join(wt, "scratch.txt"));
+    },
+  ],
+  [
+    "a pass on a worktree with an uncommitted change",
+    (p, wt) => {
+      writeFileSync(join(wt, "feature.txt"), "changed, not committed\n");
+      assert.equal(p.runIn(wt, "gate").code, 0);
+      p.git("-C", wt, "checkout", "--", "feature.txt");
+    },
+  ],
+  [
+    "a pass with a step skipped by unlessExists",
+    (p, wt) => {
+      writeFileSync(join(p.dir, "..", "installed"), "");
+      assert.equal(p.runIn(wt, "gate").code, 0);
+      rmSync(join(p.dir, "..", "installed"));
+    },
+  ],
+];
+
+for (const [what, gateFirst] of NOT_RECORDED) {
+  test(`${what} is never reused: Landing runs the full Gate`, (t) => {
+    const p = project(t, {
+      issues: [claimed(7)],
+      contract: contract([
+        { name: "install", command: "true", unlessExists: "../installed" } as Step,
+        { name: "test", command: "test ! -e ../red && echo run >> ../gate-runs.txt" },
+      ]),
+    });
+    const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+    gateFirst(p, wt);
+    const before = gateRuns(p);
+
+    const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+    assert.equal(r.code, 0, r.stderr);
+    assert.equal(gateRuns(p), before + 1, "the Landing ran the Gate");
+    assert.match(r.stdout, /^ok {2}install\nok {2}test\nGate passed\. /);
+  });
+}
+
+test("in pull-request mode a Landing on an unmoved base reuses a recorded full pass, and the pull request's body says so", (t) => {
+  const p = project(t, { issues: [{ ...claimed(7), title: "Show the job's time" }], contract: contract([NOTES_RUN], PR_MODE) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  assert.equal(p.runIn(wt, "gate").code, 0);
+  const tree = treeOf(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 1, "no Gate step ran during the Landing");
+  assert.match(r.stdout, new RegExp(`^Reused the full Gate pass recorded for tree ${tree}; no step ran\\.\\nOpened `));
+  const body =
+    `Closes #7.\n\n${REPORT}\n` +
+    `The Gate was not run again: a full pass on this tree (${tree}) was recorded before.\n` +
+    "Verification state: test-verified. Surfaces: none.\n";
+  assert.equal(p.state().pullRequests[0].body, body);
 });

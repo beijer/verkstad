@@ -1,14 +1,16 @@
 // `verkstad gate [--quick]`: runs the Contract's Gate steps in order from the
 // worktree root, stopping at the first failure. It prints `ok  <step>` per step
 // and a pass line, or the failing step's last lines; the full log goes to the
-// log directory in the main checkout.
+// log directory in the main checkout. A full pass on a clean worktree in which
+// every step ran is recorded there against the tree of HEAD, and Landing reuses
+// it for a rebased branch whose tree is the same.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, fstatSync, openSync, readFileSync, writeSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
 import { type Contract, type GateStep, readContract, VARIABLE } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { ensureLogDirectory, tryGit, worktreeRoot } from "./git.ts";
+import { ensureLogDirectory, git, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 
 const USAGE = "usage: verkstad gate [--quick]";
 /** How many of a failing step's last lines the Gate prints. */
@@ -119,6 +121,23 @@ function lastLines(text: string, count: number): string[] {
   return lines.slice(-count);
 }
 
+/** Where the log directory `dir` records a full pass on `tree`. */
+function passRecord(dir: string, tree: string): string {
+  return join(dir, `gate-pass-${tree}.json`);
+}
+
+/** The tree of HEAD when the worktree at `root` has no uncommitted or untracked changes; otherwise null. */
+function cleanTree(root: string): string | null {
+  if (git(root, ["status", "--porcelain"]).trim() !== "") return null;
+  return git(root, ["rev-parse", "HEAD^{tree}"]).trim();
+}
+
+/** The tree of the clean worktree at `root` when a full Gate pass on that tree is recorded; otherwise null. */
+export function recordedPass(root: string): string | null {
+  const tree = cleanTree(root);
+  return tree !== null && existsSync(passRecord(logDirectory(root), tree)) ? tree : null;
+}
+
 export function gate(args: string[]): void {
   const { quick } = parseArgs(args);
   runGate(worktreeRoot(process.cwd()), quick);
@@ -134,17 +153,25 @@ export function runGate(root: string, quick: boolean): string {
   const dir = ensureLogDirectory(root);
   const env = stepEnvironment(contract);
   const log = createLog(dir, root);
+  // Only a full pass on a clean worktree in which every step ran is recorded: a skip can depend on files
+  // outside the tree.
+  const tree = quick ? null : cleanTree(root);
+  let skipped = false;
 
   // A new Project has nothing to check yet; the Gate says so rather than passing silently.
   if (planned.length === 0) process.stdout.write("--  the Gate has no steps: it checked nothing\n");
   try {
     for (const p of planned) {
       if (p.skip) {
+        skipped = true;
         process.stdout.write(`--  ${p.label} skipped: ${p.skip}\n`);
         continue;
       }
       // Checked as the step comes up, since an earlier step may create the path.
-      if (p.step.unlessExists && existsSync(join(root, p.step.unlessExists))) continue;
+      if (p.step.unlessExists && existsSync(join(root, p.step.unlessExists))) {
+        skipped = true;
+        continue;
+      }
       writeSync(log.fd, `== ${p.label}\n`);
       const start = fstatSync(log.fd).size;
       const stepEnv = { ...env, ...p.env };
@@ -167,6 +194,12 @@ export function runGate(root: string, quick: boolean): string {
     }
   } finally {
     closeSync(log.fd);
+  }
+  // A step that committed changed the tree it ran on.
+  if (tree !== null && !skipped && git(root, ["rev-parse", "HEAD^{tree}"]).trim() === tree) {
+    const commit = git(root, ["rev-parse", "HEAD"]).trim();
+    const record = { tree, commit, log: log.path, passedAt: new Date().toISOString() };
+    writeFileSync(passRecord(dir, tree), `${JSON.stringify(record, null, 2)}\n`);
   }
   process.stdout.write(`${quick ? "Quick gate passed" : "Gate passed"}. Log: ${log.path}\n`);
   return log.path;

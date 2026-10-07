@@ -19,7 +19,7 @@ function logs(p: Project): string[] {
   const dir = join(p.dir, ".claude", "verkstad");
   if (!existsSync(dir)) return [];
   return readdirSync(dir)
-    .filter((f) => f.startsWith("gate-"))
+    .filter((f) => f.startsWith("gate-") && f.endsWith(".log"))
     .sort()
     .map((f) => join(dir, f));
 }
