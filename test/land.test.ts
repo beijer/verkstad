@@ -1357,35 +1357,105 @@ test("in pull-request mode a Landing on an unmoved base reuses a recorded full p
   assert.equal(p.state().pullRequests[0].body, body);
 });
 
-test("a Gate that fails on a rebased branch whose tree passed the full Gate before ends with gate-flaky, names both logs and keeps the worktree", (t) => {
-  const p = project(t, {
-    issues: [claimed(7)],
-    contract: contract([{ name: "unit tests", command: "[ -e ../red ] && { echo 'timed out'; exit 3; }; true" }]),
-  });
-  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+/**
+ * A branch whose full Gate passed, then a Landing onto a base that moved meanwhile, with the Gate's one step
+ * failing while ../red exists. Returns the log of the pass recorded before the rebase.
+ */
+function passedThenBaseMoved(p: Project, wt: string): string {
   const gate = p.runIn(wt, "gate");
   assert.equal(gate.code, 0, gate.stderr);
   const passLog = /Log: (.*)$/m.exec(gate.stdout)?.[1];
   assert.ok(passLog && existsSync(passLog));
   landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
   writeFileSync(join(p.dir, "..", "red"), "");
+  return passLog;
+}
+
+test("a Gate that fails once on a rebased branch whose tree passed the full Gate before runs once more; the second run passes, the branch lands, and stdout and the comment name the failing step and the first run's log", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    // Fails once, as a flaky test does: the first failing run removes ../red.
+    contract: contract([{ name: "unit tests", command: "if [ -e ../red ]; then rm ../red; echo 'timed out'; exit 3; fi" }]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const passLog = passedThenBaseMoved(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stderr, "");
+  const failLog = /^The Gate failed at unit tests \(log: (.*?)\)/.exec(r.stdout)?.[1];
+  assert.ok(failLog && failLog !== passLog && existsSync(failLog), r.stdout);
+  const secondLog = /^Gate passed\. Log: (.*)$/m.exec(r.stdout)?.[1];
+  assert.ok(secondLog && secondLog !== failLog && existsSync(secondLog), r.stdout);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  assert.equal(
+    r.stdout,
+    `The Gate failed at unit tests (log: ${failLog}) on a branch whose tree passed the full Gate before the rebase ` +
+      `(log of that pass: ${passLog}); running it once more.\n` +
+      "ok  unit tests\n" +
+      `Gate passed. Log: ${secondLog}\n` +
+      `Landed #7 on main in ${sha} and closed it.\n`,
+  );
+  const body =
+    `Landed on main in ${sha}.\n\n${REPORT}\n` +
+    `The first Gate run failed at unit tests (log: ${failLog}); the second passed.\n` +
+    "Verification state: test-verified. Surfaces: none.\n";
+  assert.deepEqual(issueOf(p, 7).comments, [{ author: "owner", body }]);
+  assert.equal(issueOf(p, 7).state, "closed");
+  assert.equal(existsSync(wt), false, "the worktree is removed");
+});
+
+test("a Gate that fails twice on a rebased branch whose tree passed the full Gate before ends with gate-failed, names both runs' logs and removes the worktree", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "unit tests", command: "echo run >> ../gate-runs.txt; [ -e ../red ] && { echo 'expected 2, got 3'; exit 3; }; true" }]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const passLog = passedThenBaseMoved(p, wt);
   const base = originHead(p);
 
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
   assert.equal(r.code, 1);
-  const failLog = /^Full log: (.*)$/m.exec(r.stderr)?.[1];
-  assert.ok(failLog && failLog !== passLog && existsSync(failLog), r.stderr);
+  assert.equal(gateRuns(p), 3, "the Gate passed once before the Landing and ran twice in it");
+  const failLog = /^The Gate failed at unit tests \(log: (.*?)\)/.exec(r.stdout)?.[1];
+  assert.ok(failLog && failLog !== passLog && existsSync(failLog), r.stdout);
+  assert.equal(
+    r.stdout,
+    `The Gate failed at unit tests (log: ${failLog}) on a branch whose tree passed the full Gate before the rebase ` +
+      `(log of that pass: ${passLog}); running it once more.\n`,
+  );
+  const secondLog = /^Full log: (.*)$/m.exec(r.stderr)?.[1];
+  assert.ok(secondLog && secondLog !== failLog && existsSync(secondLog), r.stderr);
   assert.equal(
     r.stderr,
-    "verkstad land: #7 did not land: the Gate failed on a branch whose tree passed the full Gate before (log of that pass: " +
-      `${passLog}): unit tests failed (exit 3). The end of its output:\n` +
-      "timed out\n" +
-      `Full log: ${failLog}\n` +
-      "Branch issue-7 is kept, rebased, in its worktree.\n" +
-      "reason: gate-flaky\n",
+    `verkstad land: #7 did not land: the Gate failed again when run once more (the first run failed at unit tests, log: ${failLog}): ` +
+      "unit tests failed (exit 3). The end of its output:\n" +
+      "expected 2, got 3\n" +
+      `Full log: ${secondLog}\n` +
+      "Branch issue-7 is kept; its worktree is removed.\n" +
+      "reason: gate-failed\n",
   );
-  assert.equal(existsSync(wt), true, "the worktree is kept");
+  assert.equal(existsSync(wt), false, "the worktree is removed");
   assert.equal(originHead(p), base);
   assert.equal(issueOf(p, 7).state, "open");
+});
+
+test("a Gate that fails on a branch with no full pass recorded ends with gate-failed after one run", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([{ name: "unit tests", command: "echo run >> ../gate-runs.txt; echo 'expected 2, got 3'; exit 3" }]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.equal(gateRuns(p), 1, "the Gate ran once");
+  assert.equal(r.stdout, "");
+  assert.match(r.stderr, /^verkstad land: #7 did not land: the Gate failed: unit tests failed \(exit 3\)\./);
+  assert.match(r.stderr, /\nreason: gate-failed\n$/);
+  assert.equal(existsSync(wt), false, "the worktree is removed");
 });

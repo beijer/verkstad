@@ -159,9 +159,21 @@ export function gate(args: string[]): void {
   runGate(worktreeRoot(process.cwd()), quick);
 }
 
+/** A Gate step that failed: the message names it, with its last lines and the log's path. */
+export class StepFailure extends Failure {
+  step: string;
+  log: string;
+
+  constructor(step: string, log: string, message: string) {
+    super(message);
+    this.step = step;
+    this.log = log;
+  }
+}
+
 /**
  * Runs the Gate in the worktree at `root`, printing a line per step and the pass line, and returns the
- * full log's path. A failing step throws a Failure naming the step, with its last lines and the log's path.
+ * full log's path. A failing step throws a StepFailure naming the step, with its last lines and the log's path.
  */
 export function runGate(root: string, quick: boolean): string {
   const contract = readContract(root);
@@ -201,7 +213,7 @@ export function runGate(root: string, quick: boolean): string {
       const how = r.signal ? `killed by ${r.signal}` : `exit ${r.status}`;
       const tail = lastLines(readFileSync(log.path).subarray(start).toString("utf8"), TAIL_LINES);
       const output = tail.length ? ` The end of its output:\n${tail.join("\n")}` : " It printed nothing.";
-      throw new Failure(`${p.label} failed (${how}).${output}\nFull log: ${log.path}`);
+      throw new StepFailure(p.label, log.path, `${p.label} failed (${how}).${output}\nFull log: ${log.path}`);
     }
   } finally {
     closeSync(log.fd);

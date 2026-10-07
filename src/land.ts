@@ -32,7 +32,7 @@ import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync }
 import { join, resolve } from "node:path";
 import { type LandingMode, readContract, readLandingMode, readSurfaces } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { recordedPass, recordedPassLog, runGate } from "./gate.ts";
+import { recordedPass, recordedPassLog, runGate, StepFailure } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
 import { moveWorktreeLogs } from "./move-logs.ts";
@@ -51,7 +51,6 @@ type Reason =
   | "no-commits"
   | "conflict"
   | "gate-failed"
-  | "gate-flaky"
   | VerdictReason
   | "push-failed"
   | "github-failed"
@@ -183,23 +182,30 @@ function fetch(ticket: Ticket, base: string): void {
   if (r.status !== 0) throw new Failure(`could not fetch origin/${base}: ${r.stderr.trim()}`);
 }
 
-/** What a Landing pushed: the landed commit, abbreviated, and the Verdict check it passed. */
+/** What a Landing pushed: the landed commit, abbreviated, and what the rebased branch passed. */
 interface Landed {
   sha: string;
-  check: VerdictCheck;
-  /** The tree whose recorded Gate pass this Landing reused, if it ran no Gate. */
-  reused: string | null;
+  checked: Checked;
 }
 
-/** What a rebased branch passed: the Verdict check, and the tree whose recorded Gate pass stood in for the Gate. */
+/**
+ * What a rebased branch passed: the Verdict check, the tree whose recorded Gate pass stood in for the Gate,
+ * and the failed first run when the Gate passed only when run once more.
+ */
 interface Checked {
   check: VerdictCheck;
   reused: string | null;
+  retried: StepFailure | null;
 }
 
-/** The line a Landing's comment carries when it reused a recorded Gate pass; none when it ran the Gate. */
-function describeGate(reused: string | null): string {
-  return reused === null ? "" : `The Gate was not run again: a full pass on this tree (${reused}) was recorded before.\n`;
+/**
+ * The line a Landing's comment carries when it reused a recorded Gate pass, or when the Gate passed only
+ * on its second run; none when the Gate passed at once.
+ */
+function describeGate({ reused, retried }: Checked): string {
+  if (reused !== null) return `The Gate was not run again: a full pass on this tree (${reused}) was recorded before.\n`;
+  if (retried !== null) return `The first Gate run failed at ${retried.step} (log: ${retried.log}); the second passed.\n`;
+  return "";
 }
 
 /**
@@ -209,8 +215,8 @@ function describeGate(reused: string | null): string {
 function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const upstream = `origin/${base}`;
   fetch(ticket, base);
-  // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the failure is
-  // the Ticket's own tree passed, so the failure is named gate-flaky, not gate-failed.
+  // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the Ticket's own
+  // tree passed, so the failure may be a flaky test, and the Gate runs once more before it ends gate-failed.
   const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassLog(ticket.root) ?? "its log is unknown");
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
   if (rebase.status !== 0) {
@@ -232,30 +238,42 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const reused = recordedPass(ticket.root);
   if (reused !== null) {
     process.stdout.write(`Reused the full Gate pass recorded for tree ${reused}; no step ran.\n`);
-  } else {
+    return { check, reused, retried: null };
+  }
+  let retried: StepFailure | null = null;
+  try {
+    runGate(ticket.root, false);
+  } catch (error) {
+    if (!(error instanceof Failure)) throw error;
+    // Only a failing step on a tree that passed before the rebase is run once more: it may be a flaky test.
+    if (passedBefore === null || !(error instanceof StepFailure)) {
+      throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
+    }
+    retried = error;
+    process.stdout.write(
+      `The Gate failed at ${error.step} (log: ${error.log}) on a branch whose tree passed the full Gate before the rebase ` +
+        `(log of that pass: ${passedBefore}); running it once more.\n`,
+    );
+  }
+  if (retried !== null) {
     try {
       runGate(ticket.root, false);
     } catch (error) {
       if (!(error instanceof Failure)) throw error;
-      if (passedBefore === null) throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
-      // The worktree stays: it is clean and rebased, and landing again is the next step.
-      throw new LandingFailure(
-        "gate-flaky",
-        `#${ticket.n} did not land: the Gate failed on a branch whose tree passed the full Gate before (log of that pass: ${passedBefore}): ${error.message}\n` +
-          `Branch ${ticket.branch} is kept, rebased, in its worktree.`,
-      );
+      const first = `the first run failed at ${retried.step}, log: ${retried.log}`;
+      throw didNotLand(ticket, "gate-failed", `the Gate failed again when run once more (${first}): ${error.message}`);
     }
   }
-  return { check, reused };
+  return { check, reused: null, retried };
 }
 
 /** Rebases, checks the Verdict, gates and pushes to the base branch until the push lands or fails. */
 function rebaseCheckGatePush(ticket: Ticket, base: string): Landed {
   const upstream = `origin/${base}`;
   for (let attempt = 1; ; attempt++) {
-    const { check, reused } = rebaseCheckGate(ticket, base);
+    const checked = rebaseCheckGate(ticket, base);
     const push = tryGit(ticket.root, ["push", "--quiet", "origin", `HEAD:refs/heads/${base}`]);
-    if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), check, reused };
+    if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), checked };
     fetch(ticket, base);
     const moved = tryGit(ticket.root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).status !== 0;
     if (!moved) throw didNotLand(ticket, "push-failed", `pushing to ${upstream} failed: ${push.stderr.trim()}`);
@@ -332,10 +350,10 @@ function removeWorktreeAndBranch(ticket: Ticket): string {
 
 /** Landing mode push: lands the branch on the base branch and closes the Ticket. */
 function pushToBase(ticket: Ticket, base: string, report: string): void {
-  const { sha, check, reused } = rebaseCheckGatePush(ticket, base);
+  const { sha, checked } = rebaseCheckGatePush(ticket, base);
   let closing: Failure | null = null;
   try {
-    const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeGate(reused)}${describeVerification(check)}`;
+    const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeGate(checked)}${describeVerification(checked.check)}`;
     gh(["issue", "close", String(ticket.n), "--comment", comment]);
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
@@ -363,11 +381,11 @@ function pushToBase(ticket: Ticket, base: string, report: string): void {
  * tell the next Run the Ticket stopped mid-way.
  */
 function landAsPullRequest(ticket: Ticket, base: string, report: string): void {
-  const { check, reused } = rebaseCheckGate(ticket, base);
+  const checked = rebaseCheckGate(ticket, base);
   const push = tryGit(ticket.root, ["push", "--quiet", "--force", "origin", `HEAD:refs/heads/${ticket.branch}`]);
   if (push.status !== 0) throw didNotLand(ticket, "push-failed", `pushing ${ticket.branch} to origin failed: ${push.stderr.trim()}`);
   const sha = git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim();
-  const body = `Closes #${ticket.n}.\n\n${report}\n\n${describeGate(reused)}${describeVerification(check)}`;
+  const body = `Closes #${ticket.n}.\n\n${report}\n\n${describeGate(checked)}${describeVerification(checked.check)}`;
   let published: Published | null = null;
   let failed: Failure | null = null;
   try {
