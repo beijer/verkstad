@@ -195,16 +195,16 @@ interface Landed {
 interface Checked {
   check: VerdictCheck;
   reused: string | null;
-  retried: StepFailure | null;
+  firstFailure: StepFailure | null;
 }
 
 /**
  * The line a Landing's comment carries when it reused a recorded Gate pass, or when the Gate passed only
  * on its second run; none when the Gate passed at once.
  */
-function describeGate({ reused, retried }: Checked): string {
+function describeGate({ reused, firstFailure }: Checked): string {
   if (reused !== null) return `The Gate was not run again: a full pass on this tree (${reused}) was recorded before.\n`;
-  if (retried !== null) return `The first Gate run failed at ${retried.step} (log: ${retried.log}); the second passed.\n`;
+  if (firstFailure !== null) return `The first Gate run failed at ${firstFailure.step} (log: ${firstFailure.log}); the second passed.\n`;
   return "";
 }
 
@@ -238,33 +238,31 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const reused = recordedPass(ticket.root);
   if (reused !== null) {
     process.stdout.write(`Reused the full Gate pass recorded for tree ${reused}; no step ran.\n`);
-    return { check, reused, retried: null };
+    return { check, reused, firstFailure: null };
   }
-  let retried: StepFailure | null = null;
-  try {
-    runGate(ticket.root, false);
-  } catch (error) {
-    if (!(error instanceof Failure)) throw error;
-    // Only a failing step on a tree that passed before the rebase is run once more: it may be a flaky test.
-    if (passedBefore === null || !(error instanceof StepFailure)) {
-      throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
-    }
-    retried = error;
-    process.stdout.write(
-      `The Gate failed at ${error.step} (log: ${error.log}) on a branch whose tree passed the full Gate before the rebase ` +
-        `(log of that pass: ${passedBefore}); running it once more.\n`,
-    );
-  }
-  if (retried !== null) {
+  let firstFailure: StepFailure | null = null;
+  // At most two runs: only a failing step on a tree that passed before the rebase runs once more, since it
+  // may be a flaky test.
+  for (;;) {
     try {
       runGate(ticket.root, false);
+      return { check, reused: null, firstFailure };
     } catch (error) {
       if (!(error instanceof Failure)) throw error;
-      const first = `the first run failed at ${retried.step}, log: ${retried.log}`;
-      throw didNotLand(ticket, "gate-failed", `the Gate failed again when run once more (${first}): ${error.message}`);
+      if (firstFailure !== null) {
+        const first = `the first run failed at ${firstFailure.step}, log: ${firstFailure.log}`;
+        throw didNotLand(ticket, "gate-failed", `the Gate failed again when run once more (${first}): ${error.message}`);
+      }
+      if (passedBefore === null || !(error instanceof StepFailure)) {
+        throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
+      }
+      firstFailure = error;
+      process.stdout.write(
+        `The Gate failed at ${error.step} (log: ${error.log}) on a branch whose tree passed the full Gate before the rebase ` +
+          `(log of that pass: ${passedBefore}); running it once more.\n`,
+      );
     }
   }
-  return { check, reused: null, retried };
 }
 
 /** Rebases, checks the Verdict, gates and pushes to the base branch until the push lands or fails. */

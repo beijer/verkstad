@@ -1455,7 +1455,15 @@ test("a Gate that fails on a branch with no full pass recorded ends with gate-fa
   assert.equal(r.code, 1);
   assert.equal(gateRuns(p), 1, "the Gate ran once");
   assert.equal(r.stdout, "");
-  assert.match(r.stderr, /^verkstad land: #7 did not land: the Gate failed: unit tests failed \(exit 3\)\./);
-  assert.match(r.stderr, /\nreason: gate-failed\n$/);
+  const log = /^Full log: (.*)$/m.exec(r.stderr)?.[1];
+  assert.ok(log && existsSync(log), r.stderr);
+  assert.equal(
+    r.stderr,
+    "verkstad land: #7 did not land: the Gate failed: unit tests failed (exit 3). The end of its output:\n" +
+      "expected 2, got 3\n" +
+      `Full log: ${log}\n` +
+      "Branch issue-7 is kept; its worktree is removed.\n" +
+      "reason: gate-failed\n",
+  );
   assert.equal(existsSync(wt), false, "the worktree is removed");
 });
