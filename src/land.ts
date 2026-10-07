@@ -22,7 +22,8 @@
 // (docs/contract.md says what each leaves behind). A Landing that failed before
 // its push touches no issue and keeps the branch. After a refusal or an error
 // the worktree stays, and after a Verdict check fails too, since the Verifier
-// Walks it next; after any other failure it is removed, so that a Resume can
+// Walks it next, and after push-failed in push mode, since the next Landing
+// runs from it; after any other failure it is removed, so that a Resume can
 // switch to the branch. A branch with no recorded review (src/review.ts) fails
 // first, with review-missing, before the lock and the rebase: nothing changes,
 // the worktree included.
@@ -150,6 +151,11 @@ function keepBranch(ticket: TicketBranch, reason: Reason, what: string, asItWas 
   return new LandingFailure(reason, `${what}\n${notes}${removed ? `${kept}; its worktree is removed.` : ""}`);
 }
 
+/** Fails with the worktree kept, clean and rebased, for a Landing that is about to be run again from it. */
+function keptInWorktree(ticket: Ticket, reason: Reason, detail: string): LandingFailure {
+  return new LandingFailure(reason, `#${ticket.n} did not land: ${detail}\nBranch ${ticket.branch} is kept, rebased, in its worktree.`);
+}
+
 function didNotLand(ticket: Ticket, reason: Reason, detail: string, asItWas = false): LandingFailure {
   return keepBranch(ticket, reason, `#${ticket.n} did not land: ${detail}`, asItWas);
 }
@@ -274,9 +280,9 @@ function rebaseCheckGatePush(ticket: Ticket, base: string): Landed {
     if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), checked };
     fetch(ticket, base);
     const moved = tryGit(ticket.root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).status !== 0;
-    if (!moved) throw didNotLand(ticket, "push-failed", `pushing to ${upstream} failed: ${push.stderr.trim()}`);
+    if (!moved) throw keptInWorktree(ticket, "push-failed", `pushing to ${upstream} failed: ${push.stderr.trim()}`);
     if (attempt === ATTEMPTS) {
-      throw didNotLand(ticket, "push-failed", `${upstream} moved during each of ${ATTEMPTS} Gate runs.`);
+      throw keptInWorktree(ticket, "push-failed", `${upstream} moved during each of ${ATTEMPTS} Gate runs.`);
     }
     process.stdout.write(`${upstream} moved during the Gate; rebasing again (attempt ${attempt + 1} of ${ATTEMPTS}).\n`);
   }

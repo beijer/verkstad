@@ -267,10 +267,39 @@ test("a base that keeps moving fails the Landing after three attempts with push-
     "Landed during the Gate",
     "A throwaway Project",
   ]);
-  assert.equal(existsSync(wt), false);
+  assert.match(r.stderr, /^Branch issue-7 is kept, rebased, in its worktree\.\nreason: push-failed\n$/m);
+  assert.equal(existsSync(wt), true);
+  assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
   assert.deepEqual(localBranches(p), ["issue-7"]);
   assert.notEqual(p.git("rev-parse", "issue-7"), branchHead, "the branch keeps its last rebase");
   assert.deepEqual(p.calls(), []);
+});
+
+test("origin refusing the push in push mode fails with push-failed; the worktree is kept and landing again from it lands", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  landElsewhere(p, "other.txt", "other\n", "Lands on main");
+  const hook = join(p.origin, "hooks", "pre-receive");
+  writeFileSync(hook, "#!/bin/sh\necho 'origin is having a bad day' >&2\nexit 1\n", { mode: 0o755 });
+  const base = originHead(p);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /^verkstad land: #7 did not land: pushing to origin\/main failed: .*origin is having a bad day/m);
+  assert.match(r.stderr, /^Branch issue-7 is kept, rebased, in its worktree\.\nreason: push-failed\n$/m);
+  assert.equal(originHead(p), base);
+  assert.equal(existsSync(wt), true);
+  assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
+  assert.equal(p.git("-C", wt, "log", "--format=%s", "-2"), "Adds feature.txt. Refs #7\nLands on main");
+
+  rmSync(hook);
+  const again = p.run("land", "7", wt, tmpFile(p, "report-7b.md", REPORT));
+
+  assert.equal(again.code, 0, again.stderr);
+  assert.equal(issueOf(p, 7).state, "closed");
+  assert.equal(existsSync(wt), false);
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds feature.txt. Refs #7", "Lands on main"]);
 });
 
 test("a rebase conflict exits with conflict naming the conflicting files; base unchanged, branch kept, no issue closed", (t) => {
