@@ -210,7 +210,7 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const upstream = `origin/${base}`;
   fetch(ticket, base);
   // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the failure is
-  // a flake until proven otherwise, since the Ticket's own tree passed.
+  // the Ticket's own tree passed, so the failure is named gate-flaky, not gate-failed.
   const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassLog(ticket.root) ?? "its log is unknown");
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
   if (rebase.status !== 0) {
