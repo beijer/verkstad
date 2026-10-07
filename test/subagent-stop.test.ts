@@ -19,14 +19,18 @@ function agentWorktree(p: Project, branch: string, commits = 1): string {
 }
 
 /** The SubagentStop event Claude Code sends a hook when an agent of type `agentType` in `cwd` is about to stop. */
-function stopEvent(cwd: string, agentType = "verkstad:ticket-standard", active = false): string {
+function stopEvent(
+  cwd: string,
+  agentType = "verkstad:ticket-standard",
+  { stopHookActive = false }: { stopHookActive?: boolean } = {},
+): string {
   return JSON.stringify({
     session_id: "abc123",
     transcript_path: "/tmp/transcript.jsonl",
     cwd,
     permission_mode: "default",
     hook_event_name: "SubagentStop",
-    stop_hook_active: active,
+    stop_hook_active: stopHookActive,
     agent_id: "agent-a",
     agent_type: agentType,
     agent_transcript_path: "/tmp/agent-a.jsonl",
@@ -119,7 +123,7 @@ test("a hook already continuing a blocked stop (stop_hook_active) lets the agent
   const p = project(t);
   const wt = agentWorktree(p, "issue-7");
 
-  const r = p.pipe(wt, stopEvent(wt, "verkstad:ticket-standard", true), "hook", "subagent-stop");
+  const r = p.pipe(wt, stopEvent(wt, "verkstad:ticket-standard", { stopHookActive: true }), "hook", "subagent-stop");
 
   assert.deepEqual(r, letStop);
 });

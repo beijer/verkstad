@@ -30,7 +30,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import { Failure } from "./fail.ts";
 import { inLinkedWorktree, worktreeRoot } from "./git.ts";
-import { subagentStop } from "./subagent-stop.ts";
+import { subagentStop, type StopEvent } from "./subagent-stop.ts";
 
 const USAGE = "usage: verkstad hook pre-tool-use|subagent-stop";
 
@@ -315,11 +315,11 @@ interface ToolEvent {
 }
 
 /** The hook event `name` Claude Code sends as JSON on stdin. */
-function readEvent(name: string): Record<string, unknown> {
+function readEvent<Event extends object>(name: string): Event {
   const text = readFileSync(0, "utf8");
   try {
     const event: unknown = JSON.parse(text);
-    if (typeof event === "object" && event !== null && !Array.isArray(event)) return event as Record<string, unknown>;
+    if (typeof event === "object" && event !== null && !Array.isArray(event)) return event as Event;
   } catch {
     // Reported below.
   }
@@ -328,9 +328,9 @@ function readEvent(name: string): Record<string, unknown> {
 
 export function hook(args: string[]): void {
   if (args.length === 0) throw new Failure(`needs the hook event; ${USAGE}`, 2);
-  if (args.length === 1 && args[0] === "subagent-stop") return subagentStop(readEvent("SubagentStop"));
+  if (args.length === 1 && args[0] === "subagent-stop") return subagentStop(readEvent<StopEvent>("SubagentStop"));
   if (args.length !== 1 || args[0] !== "pre-tool-use") throw new Failure(`no hook for '${args.join(" ")}'; ${USAGE}`, 2);
-  const event: ToolEvent = readEvent("PreToolUse");
+  const event = readEvent<ToolEvent>("PreToolUse");
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
   const parsed = segments(command);
