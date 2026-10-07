@@ -4,7 +4,9 @@
 // worktree: the files that merge would conflict in, one per line, and exit 1;
 // nothing and exit 0 when it is clean. A Verdict is given for a patch, and a
 // rebase that conflicts changes the patch, so the orchestrator asks this before
-// Verifying (ADR 0005).
+// Verifying (ADR 0005). One merge stands in for the rebase: a rebase replays the
+// branch commit by commit, so it can still stop where the merge is clean, as when
+// one commit changes a line and a later one changes it back.
 
 import { readBaseBranch } from "./contract.ts";
 import { Failure } from "./fail.ts";

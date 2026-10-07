@@ -54,7 +54,8 @@ test("conflicts prints nothing and exits 0 when issue-<n> rebases cleanly, run i
     assert.equal(r.stdout, "");
     assert.equal(r.code, 0);
   }
-  // It only reads: the branch has not moved.
+  // It fetched what landed meanwhile, and it only reads: the branch has not moved.
+  assert.equal(p.git("rev-parse", "origin/main"), p.git("--git-dir", p.origin, "rev-parse", "main"));
   assert.equal(p.git("log", "--format=%s", "-1", "issue-7"), "Ticket work. Refs #7");
 });
 
