@@ -154,7 +154,7 @@ Every failure, in either mode, prints what failed on stderr, `verkstad land: …
 | `verdict-missing` | The branch touches a Surface, and the Ticket has no Verdict, or its Verdict file is malformed. The Verifier Walks it. | Kept, rebased, in its worktree. |
 | `verdict-void` | The branch touches a Surface, and its Verdict was given for another patch: a conflict resolution or a new commit changed it. Whatever the Verdict's state, the Verifier Walks it again. | Kept, rebased, in its worktree. |
 | `verdict-not-live` | The branch touches a Surface, and its Verdict for this patch is `test-verified`, `blocked` or `failed`; the message names it. The orchestrator routes on the state (a Fix round, or Park). | Kept, rebased, in its worktree. |
-| `push-failed` | `origin` refused the push, or the base moved during each of the 3 Gate runs (`push` mode). | Kept, rebased. |
+| `push-failed` | `origin` refused the push, or the base moved during each of the 3 attempts, each a Gate run and its one retry (`push` mode). | Kept, rebased. |
 | `github-failed` | The branch landed (or, with `--park` or in `pull-request` mode, was pushed) and the worktree is removed, but updating the Ticket, or opening or updating its pull request, failed: finish it by hand. | Landed and deleted (in `pull-request` mode, on `origin` and deleted locally; with `--park`, kept). |
 | `error` | Anything else: git, gh or flock could not run, or the fetch failed. | Wherever the Landing stopped; the worktree is not removed. |
 
