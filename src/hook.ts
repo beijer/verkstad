@@ -9,6 +9,13 @@
 // word, anywhere in the text, case-insensitive) passes, as the guard lets it run. In the main
 // checkout, outside git, and for any other command or tool, it prints nothing.
 //
+// In an agent worktree it also refuses two shapes of command that Claude Code's worktree
+// isolation refuses with a message that says nothing about what passes instead: one that starts
+// by changing into the worktree (`cd <the worktree or a path inside it> && …`, or `; …`), whose
+// reason names the rest of the command with the worktree's paths made relative; and one that
+// assigns a shell variable and expands it later, outside single quotes, whose reason says to
+// write the value out in its place.
+//
 // When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it also
 // refuses a Bash command with an unquoted word that starts with =, or an assignment (before the
 // command, or an argument of export and its kin) whose value does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
@@ -17,10 +24,10 @@
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.
 
-import { existsSync, readFileSync } from "node:fs";
-import { basename } from "node:path";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
+import { basename, relative, resolve } from "node:path";
 import { Failure } from "./fail.ts";
-import { inLinkedWorktree } from "./git.ts";
+import { inLinkedWorktree, worktreeRoot } from "./git.ts";
 
 const USAGE = "usage: verkstad hook pre-tool-use";
 
@@ -36,16 +43,42 @@ function zshReason(word: string, quoted: string): string {
   );
 }
 
+function cdReason(worktree: string, rest: string, sub: string): string {
+  const moved = sub === "" ? "" : `it ran in ${sub}, so start a path relative to there with ${sub}/, and `;
+  return (
+    `verkstad: the Bash tool already runs in the agent worktree ${worktree}, and Claude Code's worktree isolation refuses ` +
+    `a command that starts by changing into it; ${moved}run this on its own instead, with paths relative to the worktree: ${rest}`
+  );
+}
+
+function variableReason({ name, value }: Variable): string {
+  return (
+    "verkstad: Claude Code's worktree isolation refuses a command that sets a shell variable and expands it later; " +
+    `write the value of ${name} out in place of $${name}: ${value}`
+  );
+}
+
+/** A shell variable a command line assigns, with the value it assigns. */
+interface Variable {
+  name: string;
+  value: string;
+}
+
 /**
  * One simple command of a Bash command line: its words, whether it reads a heredoc, the files
- * its stdout goes to, and the words zsh would expand as a command path, each with the way to quote it.
+ * its stdout goes to, the words zsh would expand as a command path, each with the way to quote it,
+ * and the variables it expands that an earlier assignment in the command line set.
  */
 interface Segment {
   words: string[];
   heredoc: boolean;
   outputs: string[];
   equals: Array<{ word: string; quoted: string }>;
+  expansions: Variable[];
 }
+
+/** A variable's expansion, `$name` or `${name…`, at the start of a text. */
+const EXPANSION = /^\$\{?([A-Za-z_][A-Za-z0-9_]*)/;
 
 const SEPARATORS = ";&|()`";
 
@@ -95,7 +128,7 @@ function lineEnd(command: string, i: number): number {
  */
 function segments(command: string): Segment[] {
   const out: Segment[] = [];
-  let segment: Segment = { words: [], heredoc: false, outputs: [], equals: [] };
+  let segment: Segment = { words: [], heredoc: false, outputs: [], equals: [], expansions: [] };
   let word = "";
   // The word as written, with each quoted string or escaped character as one \0: what zsh
   // sees unquoted, so that =word is told apart from '=word'.
@@ -106,15 +139,25 @@ function segments(command: string): Segment[] {
   // What the next word is the target of: a redirect of stdout, or another one.
   let redirect: "stdout" | "other" | null = null;
   const pending: Array<{ delimiter: string; strip: boolean }> = [];
+  // The variables the command line has assigned so far, by name, with their values.
+  const assigned = new Map<string, string>();
+  /** Notes the expansion `text` starts with when it is of a variable assigned so far. */
+  const expand = (text: string) => {
+    const name = EXPANSION.exec(text)?.[1];
+    const value = name === undefined ? undefined : assigned.get(name);
+    if (name !== undefined && value !== undefined) segment.expansions.push({ name, value });
+  };
 
   const endWord = () => {
     // Only reserved words and assignments come before it: the word is a command or an assignment.
     const leading = redirect === null && segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w));
+    const declares = segment.words.find((w) => !KEYWORDS.has(w) && !ASSIGNMENT.test(w));
+    const assignable = redirect === null && (declares === undefined || DECLARATIONS.has(declares));
+    const variable = inWord && !condition && assignable ? /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(shape) : null;
+    if (variable) assigned.set(variable[1], word.slice(variable[1].length + 1));
     if (inWord && shape === "[[" && leading) condition = true;
     else if (inWord && shape === "]]" && condition) condition = false;
     else if (inWord && !condition) {
-      const declares = segment.words.find((w) => !KEYWORDS.has(w) && !ASSIGNMENT.test(w));
-      const assignable = redirect === null && (declares === undefined || DECLARATIONS.has(declares));
       const assignment = assignable ? /^([A-Za-z_][A-Za-z0-9_]*)=(?==.)/.exec(shape) : null;
       if (assignment) {
         const name = assignment[1];
@@ -131,8 +174,8 @@ function segments(command: string): Segment[] {
   const endSegment = () => {
     endWord();
     redirect = null;
-    if (segment.words.length || segment.heredoc || segment.equals.length) out.push(segment);
-    segment = { words: [], heredoc: false, outputs: [], equals: [] };
+    if (segment.words.length || segment.heredoc || segment.equals.length || segment.expansions.length) out.push(segment);
+    segment = { words: [], heredoc: false, outputs: [], equals: [], expansions: [] };
   };
   /** Skips the bodies of the heredocs the line just ended opened, returning the index after the last. */
   const skipBodies = (i: number): number => {
@@ -153,6 +196,9 @@ function segments(command: string): Segment[] {
     const c = command[i];
     if (c === "'" || c === '"' || command.startsWith("$'", i)) {
       const { text, end } = readQuoted(command, i);
+      if (c === '"') {
+        for (let j = i + 1; j < end; j++) if (command[j] === "$" && command[j - 1] !== "\\") expand(command.slice(j));
+      }
       word += text;
       shape += "\0";
       inWord = true;
@@ -225,6 +271,7 @@ function segments(command: string): Segment[] {
       endSegment();
       i++;
     } else {
+      if (c === "$") expand(command.slice(i));
       word += c;
       shape += c;
       inWord = true;
@@ -273,10 +320,38 @@ export function hook(args: string[]): void {
   const parsed = segments(command);
   const expanded = parsed.flatMap((segment) => segment.equals)[0];
   if (basename(process.env.SHELL ?? "") === "zsh" && expanded) return deny(zshReason(expanded.word, expanded.quoted));
-  if (!/\bgit/i.test(command) || !parsed.some(heredocEdit)) return;
+  const heredoc = /\bgit/i.test(command) && parsed.some(heredocEdit);
+  const cd = CHANGE_DIRECTORY.exec(command);
+  const variable = parsed.flatMap((segment) => segment.expansions)[0];
+  if (!heredoc && !cd && !variable) return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
   if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
-  deny(REASON);
+  if (heredoc) return deny(REASON);
+  const into = cd && changeInto(realpathSync(cwd), cd[1] ?? cd[2] ?? cd[3], command.slice(cd[0].length).trim());
+  if (into) return deny(into);
+  if (variable) deny(variableReason(variable));
+}
+
+/**
+ * `cd <directory>` followed by `&&` or `;` at the start of a command: the directory as one
+ * single-quoted, double-quoted or plain word, with nothing in it the shell would expand.
+ */
+const CHANGE_DIRECTORY = /^\s*cd\s+(?:'([^']*)'|"([^"$`\\]*)"|([^\s;&|<>()$`'"\\~-][^\s;&|<>()$`'"\\]*))\s*(?:&&|;)/;
+
+/**
+ * The reason to refuse a command run in `cwd` that changes into `directory` and then runs
+ * `rest`, when the directory is the agent worktree or inside it.
+ */
+function changeInto(cwd: string, directory: string, rest: string): string | null {
+  const worktree = worktreeRoot(cwd);
+  const target = resolve(cwd, directory);
+  const real = existsSync(target) ? realpathSync(target) : target;
+  if (rest === "" || (real !== worktree && !real.startsWith(worktree + "/"))) return null;
+  const escaped = worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const relativeRest = rest.replace(new RegExp(`${escaped}(?:/|(?![^\\s;&|<>()'"]))`, "g"), (path) =>
+    path.endsWith("/") ? "" : ".",
+  );
+  return cdReason(worktree, relativeRest, relative(worktree, real));
 }
 
 function deny(reason: string): void {

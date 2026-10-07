@@ -93,7 +93,11 @@ test("in an agent worktree, the hook lets a heredoc edit whose text does not men
     plainPython,
     "cat > /tmp/x.py <<EOF\nprint(1)\nEOF",
     "node - <<'EOF'\nconsole.log(1)\nEOF",
-    ...otherHeredocEdits.slice(2).map((c) => c.replace(/git/g, "it")),
+    // A command that starts by changing into the worktree is refused on its own account.
+    ...otherHeredocEdits
+      .slice(2)
+      .filter((c) => !c.startsWith("cd "))
+      .map((c) => c.replace(/git/g, "it")),
   ];
 
   for (const command of commands) {
@@ -333,4 +337,100 @@ test("under zsh, the heredoc refusal is unchanged: an agent worktree refuses it,
 
   assert.deepEqual(hookUnder(p, "/usr/bin/zsh", wt, pythonEdit), { code: 0, stdout: refusal, stderr: "" });
   assert.deepEqual(hookUnder(p, "/usr/bin/zsh", p.dir, pythonEdit), { code: 0, stdout: "", stderr: "" });
+});
+
+function denial(reason: string): string {
+  const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason };
+  return JSON.stringify({ hookSpecificOutput: decision }) + "\n";
+}
+
+function cdRefusal(wt: string, rest: string, sub?: string): string {
+  const moved = sub === undefined ? "" : `it ran in ${sub}, so start a path relative to there with ${sub}/, and `;
+  return denial(
+    `verkstad: the Bash tool already runs in the agent worktree ${wt}, and Claude Code's worktree isolation refuses ` +
+      `a command that starts by changing into it; ${moved}run this on its own instead, with paths relative to the worktree: ${rest}`,
+  );
+}
+
+test("in an agent worktree, the hook refuses a command that starts by changing into the worktree and names the command to run instead", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+
+  const cases: Array<[string, string]> = [
+    [`cd ${wt} && git status --short`, cdRefusal(wt, "git status --short")],
+    [`cd ${wt}; sed -i s/a/b/ ${wt}/src/a.ts && git diff ${wt}`, cdRefusal(wt, "sed -i s/a/b/ src/a.ts && git diff .")],
+    [`cd "${wt}"  &&  ls ${wt}-other`, cdRefusal(wt, `ls ${wt}-other`)],
+    [`cd ${wt}/packages/x && npm test`, cdRefusal(wt, "npm test", "packages/x")],
+    ["cd packages/x && git log -1", cdRefusal(wt, "git log -1", "packages/x")],
+  ];
+  for (const [command, expected] of cases) {
+    const r = p.pipe(wt, bashEvent(wt, command), "hook", "pre-tool-use");
+
+    assert.deepEqual(r, { code: 0, stdout: expected, stderr: "" }, command);
+  }
+});
+
+function variableRefusal(name: string, value: string): string {
+  return denial(
+    "verkstad: Claude Code's worktree isolation refuses a command that sets a shell variable and expands it later; " +
+      `write the value of ${name} out in place of $${name}: ${value}`,
+  );
+}
+
+test("in an agent worktree, the hook refuses a command that sets a shell variable and expands it later, and says to write the value out", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+
+  const cases: Array<[string, string]> = [
+    ["f=src/a.ts && sed -i s/a/b/ $f", variableRefusal("f", "src/a.ts")],
+    ["E=/tmp/e && scripts/look > $E/file", variableRefusal("E", "/tmp/e")],
+    ['f=a.ts; git add "$f"', variableRefusal("f", "a.ts")],
+    ["export D=docs; ls ${D}/x", variableRefusal("D", "docs")],
+    ["V='x y'\necho $(cat $V)", variableRefusal("V", "x y")],
+  ];
+  for (const [command, expected] of cases) {
+    const r = p.pipe(wt, bashEvent(wt, command), "hook", "pre-tool-use");
+
+    assert.deepEqual(r, { code: 0, stdout: expected, stderr: "" }, command);
+  }
+});
+
+test("in an agent worktree, the hook lets a plain command, a cd elsewhere and a variable only in a quoted string through", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+  const commands = [
+    "git status",
+    `ls ${wt}/src && git log -1`,
+    "cd /tmp && ls",
+    `cd ${wt}-other && ls`,
+    `cd ${wt}`,
+    "cd - && ls",
+    "f=1 && echo '$f'",
+    "f=1; echo \\$f",
+    "echo $HOME && git status",
+    "for f in a b; do echo $f; done",
+    "x=1 npm test",
+    "echo $f; f=1",
+    "f=1 && cat <<'EOF'\n$f\nEOF",
+  ];
+
+  for (const command of commands) {
+    const r = p.pipe(wt, bashEvent(wt, command), "hook", "pre-tool-use");
+
+    assert.deepEqual(r, { code: 0, stdout: "", stderr: "" }, command);
+  }
+});
+
+test("in the main checkout and outside git, the hook lets a cd into the checkout and an expanded variable through", (t) => {
+  const p = project(t);
+  agentWorktree(p);
+  const outside = realpathSync(join(p.dir, ".."));
+
+  for (const cwd of [p.dir, outside]) {
+    for (const command of [`cd ${cwd} && git status`, "f=src/a.ts && sed -i s/a/b/ $f"]) {
+      const r = p.pipe(cwd, bashEvent(cwd, command), "hook", "pre-tool-use");
+
+      assert.deepEqual(r, { code: 0, stdout: "", stderr: "" }, `${command} in ${cwd}`);
+    }
+  }
 });
