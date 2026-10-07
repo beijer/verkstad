@@ -149,3 +149,17 @@ test("with no checkout, at VERKSTAD_HOME or at $HOME/code/verkstad, a plugin cop
   assert.deepEqual(unset, { code: 0, stdout: listing, stderr: "" });
   assert.deepEqual(missing, { code: 0, stdout: listing, stderr: "" });
 });
+
+test("a VERKSTAD_HOME that is a file, or a directory inside the checkout rather than the checkout, prints nothing extra", (t) => {
+  const p = ticketProject(t);
+  const checkout = verkstadCheckout(p);
+  const copy = pluginCopy(p, checkout.old);
+  const file = join(dirname(p.dir), "not-a-checkout");
+  writeFileSync(file, "");
+
+  const fromFile = runFrom(p, copy, file, "frontier");
+  const fromInside = runFrom(p, copy, join(checkout.dir, "src"), "frontier");
+
+  assert.deepEqual(fromFile, { code: 0, stdout: listing, stderr: "" });
+  assert.deepEqual(fromInside, { code: 0, stdout: listing, stderr: "" });
+});
