@@ -121,7 +121,8 @@ async function isRunAlive($: EngineInterface, p: Project, r: RunView): Promise<b
   const found = await $.process.run([
     'sh',
     '-c',
-    'for pid in $(pgrep -f "src/cli.ts run"); do [ "$(readlink "/proc/$pid/cwd")" = "$1" ] && echo "$pid"; done; true',
+    // `[.]`, so that the pattern does not match this shell, whose own command line holds it.
+    'for pid in $(pgrep -f "src/cli[.]ts run"); do [ "$(readlink "/proc/$pid/cwd")" = "$1" ] && echo "$pid"; done; true',
     'sh',
     p.main,
   ])

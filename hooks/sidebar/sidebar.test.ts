@@ -68,7 +68,9 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean;
     if (cmd === 'sh' && script.includes('grep -c')) return ok(`12\n${TAIL}`)
     if (cmd === 'sh' && script.includes('pgrep')) {
       expect(e.argv.at(-1)).toBe(MAIN)
-      return ok(options.runProcess ? '777\n' : '')
+      // As on the machine: a pattern written plainly in the script matches the shell running it, in the main checkout.
+      const self = script.includes('src/cli.ts run') ? '999\n' : ''
+      return ok(self + (options.runProcess ? '777\n' : ''))
     }
     if (cmd?.endsWith('/bin/verkstad')) {
       const args = rest
