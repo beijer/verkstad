@@ -18,7 +18,6 @@ import {
   clip,
   firstLine,
   frontierView,
-  issueInfo,
   lastToolCall,
   phase,
   readEvents,
@@ -154,17 +153,16 @@ async function readGithub($: EngineInterface, p: Project): Promise<void> {
   let view: OwnerView
   try {
     const [issues, pulls, ci] = [
-      await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels,assignees']),
+      await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels']),
       await gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,url']),
       await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url']),
     ]
     const r = await read($, run)
     const working = isGoing(r, await read($, isAlive)) ? (r?.current ?? null) : null
-    const items = attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working })
-    view = { items, issues: issueInfo(issues), at: now, error: '' }
+    view = { items: attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working }), at: now, error: '' }
   } catch (err) {
     const previous = await read($, owner)
-    view = { items: previous?.items ?? [], issues: previous?.issues ?? [], at: now, error: (err as Error).message }
+    view = { items: previous?.items ?? [], at: now, error: (err as Error).message }
   }
   await update($, owner, () => view)
 }
@@ -415,20 +413,14 @@ export const register: Register = on => {
         </Text>
       </Box>
     )
-    /** The open issues, which can be triaged. */
-    const openIssues = new Set((o?.issues ?? []).map(i => i.n))
-    /** A row: a glyph, an issue, its text cut to fit, and a value set to the right; hovered, an open issue's Triage. */
-    const row = (key: string, glyph: string, color: string, n: number | null, text: string, right = '', indent = 0) => (
+    /** A row: a glyph, an issue, its text cut to fit, a value set to the right, and an action after it. */
+    const row = (key: string, glyph: string, color: string, n: number | null, text: string, right = '', indent = 0, action?: JSX.Element) => (
       <Box key={key} flexDirection="row" width={width - indent} marginLeft={indent} gap={1}>
         {fixed(glyph, color)}
         {n === null ? null : <Box flexShrink={0}>{issue(n, color)}</Box>}
         {fill(text)}
         {right ? fixed(right) : null}
-        {n !== null && openIssues.has(n) ? (
-          <Box flexShrink={0} display="none" hover={{ display: 'flex' }}>
-            <Button key={`triage:${key}`} label="Triage" plain onPress={() => void triage($, p, n)} />
-          </Box>
-        ) : null}
+        {action ? <Box flexShrink={0}>{action}</Box> : null}
       </Box>
     )
     const section = (key: string, label: string, rows: JSX.Element[], right?: JSX.Element) => (
@@ -593,7 +585,18 @@ export const register: Register = on => {
                   </Box>
                 </Box>
               ) : (
-                row(`n${i}`, marks[a.kind][0], marks[a.kind][1], a.n, a.text)
+                row(
+                  `n${i}`,
+                  marks[a.kind][0],
+                  marks[a.kind][1],
+                  a.n,
+                  a.text,
+                  '',
+                  0,
+                  a.kind === 'triage' && a.n !== null ? (
+                    <Button key={`triage:${a.n}`} label="Triage" onPress={() => void triage($, p, a.n as number)} />
+                  ) : undefined,
+                )
               ),
             ),
           ),
@@ -618,7 +621,8 @@ export const register: Register = on => {
         <Button key="refresh" label="↻" plain hotkey="r" onPress={() => void refresh($, p)} />
       </Box>
     )
-    const nextRows = [section('next', 'UP NEXT', next, refreshed), ...(waiting.length ? [section('waiting', 'WAITING ON A BLOCKER', waiting)] : [])]
+    const nextRows = [section('next', 'UP NEXT', next, refreshed)]
+    const waitingRows = waiting.length ? [section('waiting', 'WAITING ON A BLOCKER', waiting)] : []
 
     // History: past Runs, newest first; a Run's date opens its Tickets.
     const done = past.filter(one => one.file !== (going ? r?.file : undefined)).slice(0, HISTORY)
@@ -693,8 +697,9 @@ export const register: Register = on => {
         {controls}
         {card}
         {runRows}
-        {needsRows}
         {nextRows}
+        {needsRows}
+        {waitingRows}
         {historyRows}
       </Box>
     )

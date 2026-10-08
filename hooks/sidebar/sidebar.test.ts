@@ -137,7 +137,14 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect((await ui.find({ type: 'Link', text: /^CI / }))?.props.href).toBe('https://github.com/owner/project/actions/runs/1')
     expect((await ui.find({ type: 'Link', text: /^CI / }))?.text).toBe('CI failure on main at 07abb4a (CI)')
     expect(await text(ui, /Is tiering needed/)).toBe('Is tiering needed?')
-    expect(await text(ui, /to triage/)).toBe('1 to triage: #52')
+    expect(await text(ui, /A new idea/)).toBe('A new idea')
+    const order = (await ui.findAll({ type: 'Text' })).map(t => t.text)
+    expect(order.indexOf('UP NEXT')).toBeLessThan(order.indexOf('NEEDS YOU'))
+    expect(order.indexOf('NEEDS YOU')).toBeLessThan(order.indexOf('WAITING ON A BLOCKER'))
+    expect(order.indexOf('WAITING ON A BLOCKER')).toBeLessThan(order.indexOf('HISTORY'))
+    expect((await ui.find({ key: 'triage:52' }))?.text).toBe('Triage')
+    expect(await ui.find({ key: 'triage:50' })).toBeUndefined()
+    expect(await ui.find({ key: 'triage:39' })).toBeUndefined()
     expect(await text(ui, /Next thing/)).toBe('Next thing')
     expect(await text(ui, /^WAITING ON A BLOCKER$/)).toBe('WAITING ON A BLOCKER')
     expect((await ui.find({ type: 'Markdown', text: /#50\]/ }))?.props.text).toBe('[#50](https://github.com/owner/project/issues/50)')
@@ -275,22 +282,21 @@ test('a log without a pid whose verkstad run still works in the Project is shown
   expect((await ui.find({ key: 'stop' }))?.text).toBe('■ Stop after #49')
 })
 
-test("Triage on an open issue's row offers its triage as a task chip that opens a session of its own", async ($, on) => {
+test('Triage on an issue that needs it offers its triage as a task chip that opens a session of its own, and only there', async ($, on) => {
   const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { desktop: true })
   await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
   await w.clock.settle()
   const ui = await open($, 'desktop')
 
-  expect(await ui.find({ key: 'triage:w51' })).toBeUndefined() // #51 is not among the open issues the mock lists
-  await ui.press({ key: 'triage:r50' })
+  await ui.press({ key: 'triage:52' })
   expect(w.spawned).toEqual([
     expect.objectContaining({
       tool: 'mcp__ccd_session__spawn_task',
-      title: 'Triage #50',
-      prompt: '/verkstad:triage owner/project#50',
+      title: 'Triage #52',
+      prompt: '/verkstad:triage owner/project#52',
     }),
   ])
-  expect(await text(ui, /task chip/)).toBe('Triage of #50 is a task chip now: click it to open its session.')
+  expect(await text(ui, /task chip/)).toBe('Triage of #52 is a task chip now: click it to open its session.')
 })
 
 test("without the desktop's task tool, Triage puts the command in the prompt", async ($, on) => {
@@ -299,10 +305,10 @@ test("without the desktop's task tool, Triage puts the command in the prompt", a
   await w.clock.settle()
   const ui = await open($, 'terminal')
 
-  await ui.press({ key: 'triage:n1' })
+  await ui.press({ key: 'triage:52' })
   expect(w.spawned).toEqual([])
-  expect(w.filled).toEqual(['/verkstad:triage owner/project#39'])
-  expect(await text(ui, /in the prompt/)).toBe('/verkstad:triage owner/project#39 is in the prompt: send it to start triage here.')
+  expect(w.filled).toEqual(['/verkstad:triage owner/project#52'])
+  expect(await text(ui, /in the prompt/)).toBe('/verkstad:triage owner/project#52 is in the prompt: send it to start triage here.')
 })
 
 test('a Stop whose command cannot run says so, in place of nothing', async ($, on) => {

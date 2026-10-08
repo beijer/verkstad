@@ -73,10 +73,7 @@ export type Attention = {
   href: string | null;
 };
 
-/** An open issue of the Project. */
-export type IssueInfo = { n: number; title: string; labels: string[]; assignees: string[] };
-
-export type OwnerView = { items: Attention[]; issues: IssueInfo[]; at: number; error: string };
+export type OwnerView = { items: Attention[]; at: number; error: string };
 
 /** What the session working the current Ticket did last, from its transcript. */
 export type Activity = { ticket: number; calls: number; last: string };
