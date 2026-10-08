@@ -590,8 +590,6 @@ export const register: Register = on => {
 
     // History: past Runs, newest first; a Run's date opens its Tickets.
     const done = past.filter(one => one.file !== (going ? r?.file : undefined)).slice(0, HISTORY)
-    const most = Math.max(0, ...done.map(one => one.cost))
-    const barWidth = Math.max(3, Math.min(14, width - 40))
     const ending = (one: RunSummary): [string, string] =>
       one.ending === 'stopped'
         ? ['stopped', BAD]
@@ -614,7 +612,6 @@ export const register: Register = on => {
           </Text>
         </Box>
       )
-      const cells = most > 0 && one.cost > 0 ? Math.max(1, Math.round((one.cost / most) * barWidth)) : 0
       past1.push(
         <Box key={one.file} flexDirection="row" width={width}>
           <Box width={15} flexShrink={0}>
@@ -632,10 +629,6 @@ export const register: Register = on => {
               <Text color={endColor} wrap="truncate-end">
                 {end}
               </Text>
-            ) : cells ? (
-              <Box width={cells} backgroundColor={INFO}>
-                <Text> </Text>
-              </Box>
             ) : null}
           </Box>
           {col(8, usd(one.cost), DIM, true)}
