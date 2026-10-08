@@ -42,7 +42,7 @@ export function conflicts(args: string[]): void {
   if (tryGit(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status !== 0) {
     throw new Failure(`${branch} does not exist`);
   }
-  const ticketRoot = worktree === undefined ? undefined : checkWorktree(worktree, branch);
+  const rebaseRoot = worktree === undefined ? undefined : checkWorktree(worktree, branch);
   git(root, ["fetch", "--quiet", "origin"]);
 
   // With --name-only and --no-messages, stdout is the merged tree's id, then each conflicted file once.
@@ -53,7 +53,7 @@ export function conflicts(args: string[]): void {
     throw new Failure(`${branch} would conflict with ${upstream} in ${files.length} file${files.length === 1 ? "" : "s"}`);
   }
   if (r.status !== 0) throw new Failure(`could not merge ${branch} with ${upstream}: ${r.stderr.trim() || `exit ${r.status}`}`);
-  if (ticketRoot !== undefined) rebase(ticketRoot, branch, upstream);
+  if (rebaseRoot !== undefined) rebase(rebaseRoot, branch, upstream);
 }
 
 /** The root of `worktree`, checked to be one `--rebase` may rebase: a clean worktree on `branch`. */
@@ -63,7 +63,7 @@ function checkWorktree(worktree: string, branch: string): string {
   const top = tryGit(worktree, ["rev-parse", "--show-toplevel"]);
   if (top.status !== 0) throw refuse("is not in a git worktree");
   const root = top.stdout.trim();
-  const current = tryGit(root, ["symbolic-ref", "--quiet", "--short", "HEAD"]).stdout.trim();
+  const current = git(root, ["branch", "--show-current"]).trim();
   if (current !== branch) throw refuse(`is on ${current ? `branch ${current}` : "a detached HEAD"}, not ${branch}`);
   if (git(root, ["status", "--porcelain"]).trim() !== "") throw refuse("has uncommitted changes");
   return root;
@@ -78,10 +78,11 @@ function rebase(root: string, branch: string, upstream: string): void {
   }
   const r = tryGit(root, ["rebase", "--quiet", upstream]);
   if (r.status !== 0) {
-    const unmerged = git(root, ["diff", "--name-only", "--diff-filter=U"]).split("\n").filter(Boolean);
-    tryGit(root, ["rebase", "--abort"]);
+    const unmerged = git(root, ["diff", "--name-only", "--diff-filter=U", "-z"]).split("\0").filter(Boolean);
+    const abort = tryGit(root, ["rebase", "--abort"]);
+    if (abort.status !== 0) throw new Failure(`rebasing ${branch} onto ${upstream} stopped, and aborting it failed: ${abort.stderr.trim()}`);
     process.stdout.write(unmerged.map((f) => `${f}\n`).join(""));
-    const how = unmerged.length ? `conflicts in ${unmerged.length} file${unmerged.length === 1 ? "" : "s"}` : `failed: ${r.stderr.trim()}`;
+    const how = unmerged.length ? `conflicts in ${unmerged.join(", ")}` : `a failure: ${r.stderr.trim()}`;
     throw new Failure(`rebasing ${branch} onto ${upstream} stopped on ${how}; nothing was rebased`);
   }
   process.stdout.write(`Rebased ${branch} onto ${upstream}: ${head()}\n`);

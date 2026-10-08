@@ -124,6 +124,24 @@ test("conflicts --rebase on an issue-<n> that would conflict prints the files, c
   assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
 });
 
+test("conflicts --rebase aborts a rebase that stops where the merge was clean, prints the files and changes nothing", (t) => {
+  const p = project(t, { files: BASE_FILES });
+  // One commit changes a line and a later one changes it back: the merge is clean, the replay of the first is not.
+  const wt = ticketBranch(p, 7, { "a.txt": "one\nTWO on the branch\nthree\n" });
+  writeFileSync(join(wt, "a.txt"), "one\ntwo\nthree\nfour on the branch\n");
+  p.git("-C", wt, "commit", "--quiet", "-am", "Back again. Refs #7");
+  landElsewhere(p, { "a.txt": "one\nTwo on main\nthree\n" });
+  const before = p.git("-C", wt, "rev-parse", "HEAD");
+
+  const r = p.run("conflicts", "7", "--rebase", wt);
+
+  assert.equal(r.stdout, "a.txt\n");
+  assert.equal(r.stderr, "verkstad conflicts: rebasing issue-7 onto origin/main stopped on conflicts in a.txt; nothing was rebased\n");
+  assert.equal(r.code, 1);
+  assert.equal(p.git("-C", wt, "rev-parse", "HEAD"), before);
+  assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
+});
+
 test("conflicts --rebase refuses a worktree with uncommitted changes and changes nothing", (t) => {
   const p = project(t, { files: BASE_FILES });
   const wt = ticketBranch(p, 7, { "a.txt": "one\nTWO on the branch\nthree\n" });
