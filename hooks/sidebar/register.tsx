@@ -38,6 +38,9 @@ const ACTIVITY_MS = 5000
 const GITHUB_MS = 2 * 60_000
 /** How long a Start waits for its Run's event log before showing what the Run printed. */
 const START_MS = 30_000
+/** How long a control's notice stays: long enough to read, and a failure's longer. */
+const NOTICE_MS = 5000
+const FAILURE_MS = 15_000
 const HISTORY = 6
 /** The desktop app's tool that offers a task as a chip the owner opens in a session of its own. */
 const SPAWN_TASK = 'mcp__ccd_session__spawn_task'
@@ -235,6 +238,9 @@ async function poll($: EngineInterface): Promise<void> {
     if (!p) return
     const now = await $.clock.now()
     await readRuns($, p, now)
+
+    const note = await read($, notice)
+    if (note && now - note.at >= (note.isError ? FAILURE_MS : NOTICE_MS)) await update($, notice, () => null)
 
     const r = await read($, run)
     if (r && !r.ended && now - aliveAt > ALIVE_MS) {
@@ -509,8 +515,11 @@ export const register: Register = on => {
     }
     if (note) {
       controls.push(
-        <Box key="notice" width={width} marginTop={1}>
-          <Text color={note.isError ? BAD : DIM} wrap="wrap">
+        <Box key="notice" width={width} marginTop={1} borderStyle="round" borderColor={note.isError ? BAD : INFO} paddingX={1}>
+          <Text color={note.isError ? BAD : INFO} bold>
+            {note.isError ? '✕ ' : '› '}
+          </Text>
+          <Text color={note.isError ? BAD : undefined} bold wrap="wrap">
             {note.text}
           </Text>
         </Box>,

@@ -282,7 +282,7 @@ test('a log without a pid whose verkstad run still works in the Project is shown
   expect((await ui.find({ key: 'stop' }))?.text).toBe('■ Stop after #49')
 })
 
-test('Triage on an issue that needs it offers its triage as a task chip whose session reads the user-only triage skill, and only there', async ($, on) => {
+test('Triage on an issue that needs it offers its triage as a task chip whose session reads the user-only triage skill, and only there, saying so for five seconds', async ($, on) => {
   const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { desktop: true })
   await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
   await w.clock.settle()
@@ -299,6 +299,9 @@ test('Triage on an issue that needs it offers its triage as a task chip whose se
     }),
   ])
   expect(await text(ui, /task chip/)).toBe('Triage of #52 is a task chip now: click it to open its session.')
+
+  await w.clock.advance(6000)
+  expect(await text(ui, /task chip/)).toBeUndefined()
 })
 
 test("without the desktop's task tool, Triage puts the command in the prompt", async ($, on) => {
@@ -313,7 +316,7 @@ test("without the desktop's task tool, Triage puts the command in the prompt", a
   expect(await text(ui, /in the prompt/)).toBe('/verkstad:triage owner/project#52 is in the prompt: send it to start triage here.')
 })
 
-test('a Stop whose command cannot run says so, in place of nothing', async ($, on) => {
+test('a Stop whose command cannot run says so, in place of nothing, for longer than a notice stays', async ($, on) => {
   const w = world(on, { 'run-2026-10-08T17-50-00-000Z.jsonl': LIVE }, { brokenCli: true })
   await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
   await w.clock.settle()
@@ -321,4 +324,9 @@ test('a Stop whose command cannot run says so, in place of nothing', async ($, o
 
   await ui.press({ key: 'stop' })
   expect(await text(ui, /failed/)).toBe('verkstad run --stop failed: verkstad: $.process.run: could not start: permission denied')
+
+  await w.clock.advance(6000)
+  expect(await text(ui, /failed/)).toBeDefined()
+  await w.clock.advance(10_000)
+  expect(await text(ui, /failed/)).toBeUndefined()
 })
