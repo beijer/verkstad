@@ -1,5 +1,5 @@
 ---
-name: run
+name: start-run
 description: "Start a Run of the Project's Frontier with `verkstad run`: check the Project is set up, show the plan and confirm it once, watch the Run, and report what landed, what was Parked and what waits on the owner."
 disable-model-invocation: true
 ---
