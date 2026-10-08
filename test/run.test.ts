@@ -607,7 +607,7 @@ test("run makes the Ticket's worktree with its scratch directory before the impl
   assert.equal(p.git("--git-dir", p.origin, "show", "main:seen.txt"), "present");
 });
 
-test("run makes the scratch directory in the fresh worktree of a Resume and of a Fix round", (t) => {
+test("run makes the scratch directory in the fresh worktree of a Resume", (t) => {
   const partial: StubSession = { run: ["verkstad start 7", ...commitFile(7, "a.txt", "half")], report: report("partial") };
   const resumed: StubSession = { run: ["verkstad start 7 --resume", ...seesScratch(7), "verkstad review record"], report: report("done") };
   const p = runProject(t, [ready(7)], [partial, resumed]);
@@ -616,14 +616,16 @@ test("run makes the scratch directory in the fresh worktree of a Resume and of a
 
   assert.equal(r.code, 0, r.stderr);
   assert.equal(p.git("--git-dir", p.origin, "show", "main:seen.txt"), "present");
+});
 
-  const fixing: StubSession = { run: ["verkstad start 8 --resume", ...seesScratch(8), "verkstad review record"], report: report("done") };
-  const q = runProject(t, [ready(8)], [implemented(8, "ui/panel.txt"), verifies(8, "failed"), fixing, verifies(8, "live-verified")], { surfaces: [UI], verify: "verify-app" });
+test("run makes the scratch directory in the fresh worktree of a Fix round", (t) => {
+  const fixing: StubSession = { run: ["verkstad start 7 --resume", ...seesScratch(7), "verkstad review record"], report: report("done") };
+  const p = runProject(t, [ready(7)], [implemented(7, "ui/panel.txt"), verifies(7, "failed"), fixing, verifies(7, "live-verified")], { surfaces: [UI], verify: "verify-app" });
 
-  const s = q.run("run");
+  const r = p.run("run");
 
-  assert.equal(s.code, 0, s.stderr);
-  assert.equal(q.git("--git-dir", q.origin, "show", "main:seen.txt"), "present");
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(p.git("--git-dir", p.origin, "show", "main:seen.txt"), "present");
 });
 
 test("run refuses a Project that does not gitignore .claude/verkstad/, making no worktree", (t) => {
