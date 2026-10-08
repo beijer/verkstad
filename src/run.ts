@@ -26,6 +26,11 @@
 // a temporary directory the Run deletes, what a Ticket's agents found goes on
 // the Ticket with its report, and the log directory gets one line per step in
 // run-<time>.jsonl, besides the Verdicts, reviews and Gate logs the CLI keeps.
+//
+// Its summary ends with what the Run gave verkstad:reflect to learn from, per
+// Ticket: a Park, a failed Landing, a session wrapped up or read from its
+// branch, a Resume, a Fix round, a Verifier rerun, a session with more than
+// FAILED_CALLS failed tool calls in its transcript, or a stop; or that it was clean.
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -49,6 +54,7 @@ import {
 } from "./prompts.ts";
 import { missingReview } from "./review.ts";
 import { branchPoint, touchedSurfaces } from "./surfaces.ts";
+import { failedToolCalls, sessionDirs } from "./transcripts.ts";
 import { checkVerdict, type Verdict } from "./verdict.ts";
 
 const USAGE = "usage: verkstad run [--max <n>] [--budget <usd>] [--dry-run]";
@@ -80,6 +86,12 @@ const LIMITS: Record<string, Limits> = {
  * to reload a large context, whose first turn alone can cost several dollars.
  */
 const WRAP_UP: Limits = { usd: 10, turns: 15, hours: 0.5 };
+
+/**
+ * Failed tool calls a session may have before the summary names it for reflect: a Ticket worked test-first
+ * fails some commands on purpose, so only a session well past that is worth reading.
+ */
+const FAILED_CALLS = 20;
 
 /** Steps one Ticket may take before the Run gives up on it: far more than every budget allows. */
 const MAX_STEPS = 30;
@@ -148,10 +160,12 @@ interface Run {
   handoff: string;
   sessions: number;
   cost: number;
+  /** What each Ticket gave reflect to learn from, in the order it happened. */
+  lessons: Map<number, string[]>;
 }
 
 /** Checks the main checkout is one a Run may start from, and brings it level with origin. */
-function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff"> {
+function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "lessons"> {
   const main = worktreeRoot(process.cwd());
   if (inLinkedWorktree(main)) throw new Failure(`${main} is a worktree; run from the Project's main checkout`);
   const base = readContract(main).baseBranch;
@@ -179,6 +193,34 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff"> {
 
 function log(run: Run, event: Record<string, unknown>): void {
   appendFileSync(run.events, JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
+}
+
+/** Notes something Ticket #n gave reflect to learn from, once. */
+function learn(run: Run, n: number, what: string): void {
+  const lessons = run.lessons.get(n) ?? [];
+  if (!lessons.includes(what)) lessons.push(what);
+  run.lessons.set(n, lessons);
+}
+
+/** The summary's last line: what the Run gave reflect to learn from, per Ticket, or that it was clean. */
+function reflectLine(run: Run): string {
+  if (run.lessons.size === 0) {
+    return (
+      "The Run was clean: no Park, failed Landing, wrap-up, Resume, Fix round, Verifier rerun or session with more than " +
+      `${FAILED_CALLS} failed tool calls.`
+    );
+  }
+  const tickets = [...run.lessons].map(([n, lessons]) => `#${n} ${lessons.join(", ")}`);
+  return `Something for /verkstad:reflect to learn from: ${tickets.join("; ")}.`;
+}
+
+/** Notes each of Ticket #n's sessions whose transcript has more than FAILED_CALLS failed tool calls. */
+function learnFailedCalls(run: Run, t: Ticket): void {
+  const dirs = sessionDirs(run.main);
+  for (const [id, role] of t.sessions) {
+    const total = failedToolCalls(id, dirs)?.total ?? 0;
+    if (total > FAILED_CALLS) learn(run, t.n, `${/^[aeiou]/i.test(role) ? "an" : "a"} ${role} session with ${total} failed tool calls`);
+  }
 }
 
 /** Prints a line about Ticket #n and logs it. */
@@ -278,6 +320,8 @@ interface Ticket {
   reviewAsked: boolean;
   verifierRerun: boolean;
   landedAgain: boolean;
+  /** Its sessions' ids and roles, a resumed session once. */
+  sessions: Map<string, string>;
 }
 
 /**
@@ -354,6 +398,7 @@ function runSession(run: Run, t: Ticket, role: Role, cwd: string, prompt: string
 function counted(run: Run, t: Ticket, role: Role, result: SessionResult): SessionResult {
   run.sessions++;
   run.cost += result.costUsd;
+  if (result.sessionId) t.sessions.set(result.sessionId, role.name);
   const status = result.report?.status ?? result.report?.verdict;
   log(run, { ticket: t.n, session: role.name, id: result.sessionId, subtype: result.subtype, cost: result.costUsd, turns: result.turns, status });
   return result;
@@ -372,6 +417,7 @@ function wrapUp(run: Run, t: Ticket, role: Role, result: SessionResult, options:
     success: "ended",
   };
   say(run, t.n, `${role.name} ${how[result.subtype]} without a report; asking it to commit and report.`);
+  learn(run, t.n, `${role.name} asked to wrap up`);
   const wrapping: SessionOptions = {
     ...options,
     prompt: role.walks ? WRAP_UP_VERIFIER : WRAP_UP_IMPLEMENTER,
@@ -446,13 +492,23 @@ function runTicket(run: Run, entry: Entry): Outcome {
     reviewAsked: false,
     verifierRerun: false,
     landedAgain: false,
+    sessions: new Map(),
   };
   gh(["issue", "edit", String(n), "--add-assignee", "@me"]);
   say(run, n, `${entry.title}: claimed, ${describeTier(t.tier, run.budget)}.`);
   log(run, { ticket: n, claimed: entry.title, tier: t.tier });
-  let step: Step = hasBranch(run, n)
+  const step: Step = hasBranch(run, n)
     ? { to: "implement", why: { kind: "resume", reason: `an earlier Run or a Park left the branch issue-${n}; continue it from where it is.` } }
     : { to: "implement" };
+  try {
+    return work(run, t, step);
+  } finally {
+    learnFailedCalls(run, t);
+  }
+}
+
+function work(run: Run, t: Ticket, first: Step): Outcome {
+  let step = first;
   for (let steps = 0; steps < MAX_STEPS; steps++) {
     switch (step.to) {
       case "implement":
@@ -476,7 +532,7 @@ function runTicket(run: Run, entry: Entry): Outcome {
         return step.outcome;
     }
   }
-  throw new Failure(`#${n} took ${MAX_STEPS} steps without landing or Parking; it stays claimed`);
+  throw new Failure(`#${t.n} took ${MAX_STEPS} steps without landing or Parking; it stays claimed`);
 }
 
 function implement(run: Run, t: Ticket, why?: { kind: "resume" | "fix"; reason: string }): Step {
@@ -532,6 +588,7 @@ function fromGit(run: Run, t: Ticket): Step {
   const done = commits.status === 0 ? commits.stdout.trim() : "";
   const what = done ? `it gave no report, even when asked; its branch has\n${done}` : "it gave no report, even when asked, and committed nothing";
   say(run, t.n, `implementer gave no report; ${done ? "its commits make it partial" : "it committed nothing"}.`);
+  learn(run, t.n, "read from its branch");
   return resumeOrPark(run, t, `partial: ${what}`, `Resumed once, and ${what}`, true);
 }
 
@@ -540,6 +597,7 @@ function resumeOrPark(run: Run, t: Ticket, reason: string, parkWhy: string, up =
   if (t.resumed) return { to: "park", why: parkWhy };
   t.resumed = true;
   if (up) t.tier = TIERS[Math.min(TIERS.indexOf(t.tier) + 1, TIERS.length - 1)];
+  learn(run, t.n, "Resumed");
   say(run, t.n, `Resuming on the ${t.tier} Tier: ${firstLine(reason)}`);
   log(run, { ticket: t.n, resumed: firstLine(reason), tier: t.tier });
   return { to: "implement", why: { kind: "resume", reason } };
@@ -620,6 +678,7 @@ function routeVerdict(run: Run, t: Ticket, touched: boolean, cost: string): Step
     say(run, t.n, `the Verifier recorded no Verdict for this patch${cost}.`);
     if (t.verifierRerun) return { to: "park", why: `The Verifier recorded no Verdict, twice.\n\n${theReport}` };
     t.verifierRerun = true;
+    learn(run, t.n, "the Verifier rerun");
     return { to: "verify" };
   }
   say(run, t.n, `Verdict: ${verdict.state}${cost}.`);
@@ -630,6 +689,7 @@ function routeVerdict(run: Run, t: Ticket, touched: boolean, cost: string): Step
       if (t.fixRound) return { to: "park", why: `The Verdict is failed after the Fix round.\n\n${theReport}` };
       t.fixRound = true;
       t.failedVerdict = criteriaLines(verdict);
+      learn(run, t.n, "a Fix round");
       say(run, t.n, `Fix round on the ${t.tier} Tier.`);
       return { to: "implement", why: { kind: "fix", reason: `${t.verifierReport}\nEvidence: ${verdict.evidence}` } };
     case "blocked":
@@ -666,6 +726,7 @@ function land(run: Run, t: Ticket): Step {
   const reason = /^reason: (\S+)\s*$/m.exec(r.stderr)?.[1] ?? "unknown";
   const message = landingMessage(r.stderr);
   say(run, t.n, `Landing failed: ${reason}.`);
+  learn(run, t.n, `Landing failed (${reason})`);
   switch (reason) {
     case "review-missing":
       return { to: "review" };
@@ -678,6 +739,7 @@ function land(run: Run, t: Ticket): Step {
       // A second conflict is the Ticket's Resume.
       if (t.resumed) return { to: "park", why: `Resumed once, and Landing conflicted again.\n\n${message}` };
       t.resumed = true;
+      learn(run, t.n, "Resumed");
       return { to: "conflict", files };
     }
     case "gate-failed":
@@ -740,6 +802,7 @@ function park(run: Run, t: Ticket, why: string): Outcome {
   writeFileSync(file, why.trim() + "\n");
   const r = verkstad(run, ["land", "--park", String(t.n), t.worktree, file]);
   if (r.code !== 0) throw new Failure(`#${t.n} could not be Parked: ${landingMessage(r.stderr)}`);
+  learn(run, t.n, "Parked");
   const line = `parked: ${firstLine(why)}`;
   say(run, t.n, line);
   log(run, { ticket: t.n, parked: why.trim() });
@@ -821,14 +884,15 @@ export function run(args: string[]): void {
     repo: `${owner}/${name}`,
     events: join(prepared.logDir, `run-${stamp}.jsonl`),
     handoff: mkdtempSync(join(tmpdir(), "verkstad-run-")),
+    lessons: new Map(),
   };
   log(r, { run: "started", main: r.main, base: r.base, ready: ready.map((e) => e.number) });
 
   const finished: Array<{ n: number; line: string }> = [];
   const tried = new Set<number>();
   let stopped: Failure | null = null;
+  let next: Entry | undefined = ready[0];
   try {
-    let next: Entry | undefined = ready[0];
     // The Tickets filed to declare a new Surface, which go before the rest of the Frontier.
     const filed: Entry[] = [];
     while (next && (options.max === null || finished.length < options.max)) {
@@ -856,12 +920,13 @@ export function run(args: string[]): void {
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
     stopped = error;
+    if (next) learn(r, next.number, "stopped the Run");
   } finally {
     rmSync(r.handoff, { recursive: true, force: true });
   }
   const sessions = `${r.sessions} session${r.sessions === 1 ? "" : "s"}, ${usd(r.cost)}`;
   process.stdout.write(
-    `Run ${stopped ? "stopped" : "finished"}: ${sessions}.\n` + finished.map((f) => `  #${f.n} ${f.line}\n`).join(""),
+    `Run ${stopped ? "stopped" : "finished"}: ${sessions}.\n` + finished.map((f) => `  #${f.n} ${f.line}\n`).join("") + `${reflectLine(r)}\n`,
   );
   log(r, { run: stopped ? "stopped" : "finished", sessions: r.sessions, cost: r.cost, finished, error: stopped?.message });
   if (stopped) throw stopped;

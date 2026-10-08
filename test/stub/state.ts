@@ -84,6 +84,8 @@ export interface StubSession {
   subtype?: string;
   /** What the session cost, in USD; 0.25 by default. */
   cost?: number;
+  /** How many of its tool calls failed, as its transcript records them; none by default. */
+  failedToolCalls?: number;
 }
 
 /** A call the stub `claude` received: its argv, where it ran, and the prompt it read on stdin. */

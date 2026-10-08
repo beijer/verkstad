@@ -5,25 +5,19 @@
 // a Ticket claimed on its Tier, each session (role, id, ending, cost, turns, status), a Resume and its Tier,
 // each CLI call (what a failed one said), each Landing and each Park, and the Run's start and end. The digest
 // reads the last one, or the one `--run` names, and for each session finds its transcript by its id among
-// Claude Code's transcripts for the Project's main checkout and worktrees (`<config>/projects/<cwd>/<id>.jsonl`,
-// `<config>` being $CLAUDE_CONFIG_DIR or ~/.claude and `<cwd>` the directory the session ran in with every
-// character but letters and digits made `-`) and counts the tool calls that failed there, by kind.
+// Claude Code's transcripts for the Project's main checkout and worktrees (src/transcripts.ts) and counts the
+// tool calls that failed there, by kind.
 
-import { existsSync, readdirSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
+import { existsSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { isObject } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { logDirectory, mainCheckout } from "./git.ts";
+import { FAILURE_KINDS, failedToolCalls, readJsonLines, sessionDirs } from "./transcripts.ts";
 
 const USAGE = "usage: verkstad run-log [--run <file>]";
 
-type Json = Record<string, unknown>;
-
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number => (typeof v === "number" ? v : 0);
-const obj = (v: unknown): Json => (isObject(v) ? v : {});
-const arr = (v: unknown): unknown[] => (Array.isArray(v) ? v : []);
 
 const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
@@ -43,21 +37,6 @@ function firstLine(text: string): string {
   return clip(text.split("\n").map((l) => l.trim()).find(Boolean) ?? "", 200);
 }
 
-/** A file's JSON lines, skipping a partial last line of a file still being written. */
-function readLines(path: string): Json[] {
-  const lines: Json[] = [];
-  for (const text of readFileSync(path, "utf8").split("\n")) {
-    if (!text.trim()) continue;
-    try {
-      const json: unknown = JSON.parse(text);
-      if (isObject(json)) lines.push(json);
-    } catch {
-      // A Run or a session still going can end in a partial line.
-    }
-  }
-  return lines;
-}
-
 /** How a session ended, from Claude Code's result subtype (or verkstad's own `error_timeout`). */
 const ENDINGS: Record<string, string> = {
   success: "ended",
@@ -66,56 +45,14 @@ const ENDINGS: Record<string, string> = {
   error_timeout: "ran out of time",
 };
 
-/** Claude Code's name for the project directory of sessions run in `dir`. */
-function encode(dir: string): string {
-  return dir.replace(/[^A-Za-z0-9]/g, "-");
-}
-
-/** The directories holding the transcripts of sessions run in the main checkout `main` or one of its worktrees. */
-function sessionDirs(main: string): string[] {
-  const root = join(process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME || homedir(), ".claude"), "projects");
-  if (!existsSync(root)) return [];
-  const own = encode(main);
-  const worktrees = encode(join(main, ".claude", "worktrees")) + "-";
-  return readdirSync(root)
-    .filter((name) => name === own || name.startsWith(worktrees))
-    .map((name) => join(root, name));
-}
-
-/** What a failed tool call was: refused by a hook, denied by the permission system, or a call that ran and failed. */
-function failureKind(text: string): "hook refusal" | "permission denial" | "failed command" {
-  const head = text.replace(/<\/?tool_use_error>/g, "").trim().slice(0, 400);
-  if (/^PreToolUse:\S+ hook\b/.test(head)) return "hook refusal";
-  if (/permission[^\n]*denied|denied by|requested permissions? to use|doesn't want to proceed|rejected by the user/i.test(head)) return "permission denial";
-  return "failed command";
-}
-
-function resultText(block: Json): string {
-  const content = block.content;
-  if (typeof content === "string") return content;
-  return arr(content)
-    .map(obj)
-    .map((b) => str(b.text))
-    .join("\n");
-}
-
 /** The transcript line for session `id`: where it is and its failed tool calls by kind, or that it is gone. */
 function transcriptLine(id: string, dirs: string[]): string {
   if (!id) return "no session id: the session did not start";
-  const path = dirs.map((dir) => join(dir, `${id}.jsonl`)).find(existsSync);
-  if (!path) return `transcript gone: no ${id}.jsonl among the Project's sessions`;
-  const kinds = new Map<string, number>();
-  for (const line of readLines(path)) {
-    if (line.type !== "user") continue;
-    for (const block of arr(obj(line.message).content).map(obj)) {
-      if (block.type !== "tool_result" || block.is_error !== true) continue;
-      const kind = failureKind(resultText(block));
-      kinds.set(kind, (kinds.get(kind) ?? 0) + 1);
-    }
-  }
-  const total = [...kinds.values()].reduce((a, b) => a + b, 0);
+  const found = failedToolCalls(id, dirs);
+  if (!found) return `transcript gone: no ${id}.jsonl among the Project's sessions`;
+  const { path, kinds, total } = found;
   if (!total) return `${path}: no failed tool calls`;
-  const parts = ["hook refusal", "permission denial", "failed command"].filter((k) => kinds.has(k)).map((k) => plural(kinds.get(k)!, k));
+  const parts = FAILURE_KINDS.filter((k) => kinds.has(k)).map((k) => plural(kinds.get(k)!, k));
   return `${path}: ${plural(total, "failed tool call")}: ${parts.join(", ")}`;
 }
 
@@ -165,7 +102,7 @@ export function runLog(args: string[]): void {
     return;
   }
   const transcriptDirs = sessionDirs(mainCheckout(cwd));
-  const events = readLines(file);
+  const events = readJsonLines(file);
 
   const tickets = new Map<number, Ticket>();
   let current: Ticket | undefined;

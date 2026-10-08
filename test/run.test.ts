@@ -98,6 +98,7 @@ test("run implements the one ready Ticket in a worktree of its own, lands it and
       `#7 landed on main in ${sha}.`,
       "Run finished: 1 session, $0.25.",
       `  #7 landed on main in ${sha}`,
+      "The Run was clean: no Park, failed Landing, wrap-up, Resume, Fix round, Verifier rerun or session with more than 20 failed tool calls.",
       "",
     ].join("\n"),
   );
@@ -169,7 +170,7 @@ test("run --max 1 starts one Ticket and leaves the rest of the Frontier", (t) =>
   const r = p.run("run", "--max", "1");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\nRun finished: 1 session, \$0\.25\.\n  #7 landed on main in [0-9a-f]+\n$/);
+  assert.match(r.stdout, /\nRun finished: 1 session, \$0\.25\.\n  #7 landed on main in [0-9a-f]+\nThe Run was clean: /);
   assert.equal(p.state().issues[1].state, "open");
   assert.deepEqual(p.state().issues[1].assignees, []);
 });
@@ -195,7 +196,7 @@ test("run Parks a Ticket whose implementer reports blocked, with its question, a
 
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /^#7 implementer reported blocked \(\$0\.25\)\.\n#7 parked: blocked: Which unit do feeds use\? I would pick mm\/min\.\n/m);
-  assert.match(r.stdout, /\n  #7 parked: blocked: Which unit do feeds use\? I would pick mm\/min\.\n  #9 landed on main in [0-9a-f]+\n$/);
+  assert.match(r.stdout, /\n  #7 parked: blocked: Which unit do feeds use\? I would pick mm\/min\.\n  #9 landed on main in [0-9a-f]+\nSomething for \/verkstad:reflect to learn from: #7 Parked\.\n$/);
   const seven = p.state().issues[0];
   assert.deepEqual(seven.labels, ["needs-info"]);
   assert.deepEqual(seven.assignees, []);
@@ -233,6 +234,7 @@ test("run nudges a session stopped at its turn limit to commit and report, and r
   assert.equal(flag(second.args, "--max-turns"), "15");
   assert.equal(flag(second.args, "--max-budget-usd"), "10");
   assert.match(second.prompt, /^Your session hit its limit\. Do no new work\. Commit what passes as it stands/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 implementer asked to wrap up\.\n$/);
   assert.equal(p.state().issues[0].state, "closed");
 });
 
@@ -251,6 +253,7 @@ test("run reads a session that gave no report even when asked once more from its
   const third = p.claudeCalls()[2];
   assert.equal(flag(third.args, "--effort"), "high");
   assert.match(third.prompt, /Why it came back: partial: it gave no report, even when asked; its branch has\n[0-9a-f]+ Adds a\.txt\. Refs #7\n/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 implementer asked to wrap up, read from its branch, Resumed\.\n$/);
   assert.equal(p.state().issues[0].state, "closed");
 });
 
@@ -285,6 +288,7 @@ test("run Resumes a Ticket whose Landing's Gate failed, and Parks it when the Ga
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /\n#7 Landing failed: gate-failed\.\n#7 Resuming on the standard Tier: Landing failed \(gate-failed\): /);
   assert.match(r.stdout, /\n#7 parked: Resumed once, and Landing failed again \(gate-failed\)\.\n/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 Landing failed \(gate-failed\), Resumed, Parked\.\n$/);
   assert.match(p.claudeCalls()[1].prompt, /^Resume: .*Why it came back: Landing failed \(gate-failed\): #7 did not land: the Gate failed: /m);
   const seven = p.state().issues[0];
   assert.deepEqual(seven.labels, ["needs-info"]);
@@ -352,10 +356,35 @@ test("run sends a failed Verdict back to the implementer as its Fix round, Walks
 
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /\n#7 Verdict: failed \(\$0\.25\)\.\n#7 Fix round on the standard Tier\.\n/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 a Fix round\.\n$/);
   const [, , fix, verifier] = p.claudeCalls();
   assert.match(fix.prompt, /^Fix round: this Ticket is implemented on issue-7, .*Its findings: verdict: failed\nCriteria: It works: saw it\./m);
   assert.match(verifier.prompt, /^Fix round: this branch was Walked before, and its Verdict was failed\. .*It works: saw it \(evidence: it\.png\)/m);
   assert.equal(p.state().issues[0].state, "closed");
+});
+
+test("run has the Verifier Walk once more when it records no Verdict, and names the rerun for reflect", (t) => {
+  const silent: StubSession = { report: { verdict: "live-verified", worktree: "(the worktree)", question: "none", report: "verdict: live-verified" } };
+  const p = runProject(t, [ready(7)], [implemented(7, "ui/panel.txt"), silent, verifies(7, "live-verified")], { surfaces: [UI], verify: "verify-app" });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\n#7 the Verifier recorded no Verdict for this patch \(\$0\.25\)\.\n#7 touches ui; the Verifier Walks it\.\n/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 the Verifier rerun\.\n$/);
+  assert.equal(p.state().issues[0].state, "closed");
+});
+
+test("run names for reflect a session with more than 20 failed tool calls, and not one with 20", (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [
+    { ...implemented(7, "a.txt"), failedToolCalls: 20 },
+    { ...implemented(9, "b.txt"), failedToolCalls: 21 },
+  ]);
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\n  #9 landed on main in [0-9a-f]+\nSomething for \/verkstad:reflect to learn from: #9 an implementer session with 21 failed tool calls\.\n$/);
 });
 
 test("run has the conflict prompt finish a Ticket whose Landing conflicted with what landed meanwhile, then lands it", (t) => {
@@ -379,6 +408,7 @@ test("run has the conflict prompt finish a Ticket whose Landing conflicted with 
 
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /\n#7 Landing failed: conflict\.\n#7 conflicts with main in a\.txt; finishing it on the light Tier\.\n#7 conflict finisher reported done \(\$0\.25\)\.\n/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 Landing failed \(conflict\)\.\n$/);
   const finisher = p.claudeCalls()[1];
   assert.equal(flag(finisher.args, "--model"), "sonnet");
   assert.match(finisher.prompt, /^You are finishing Ticket #7 of owner\/project\. /);
@@ -432,7 +462,7 @@ test("run files a Ticket to declare a Surface a landed Ticket added, under its S
     r.stdout,
   );
   assert.match(r.stdout, /\n#10 touches cli; the Verifier Walks it\.\n#10 Verdict: live-verified \(\$0\.25\)\.\n#10 landed on main in [0-9a-f]+\.\n#9 Ticket 9: claimed, /);
-  assert.match(r.stdout, /\nRun finished: 4 sessions, \$1\.00\.\n  #7 landed on main in [0-9a-f]+\n  #10 landed on main in [0-9a-f]+\n  #9 landed on main in [0-9a-f]+\n$/);
+  assert.match(r.stdout, /\nRun finished: 4 sessions, \$1\.00\.\n  #7 landed on main in [0-9a-f]+\n  #10 landed on main in [0-9a-f]+\n  #9 landed on main in [0-9a-f]+\nThe Run was clean: /);
 
   const filed = p.state().issues.find((i) => i.number === 10);
   assert.ok(filed);
@@ -544,6 +574,7 @@ test("run stops, leaving the Ticket claimed, when a session fails without a repo
 
   assert.equal(r.code, 1);
   assert.match(r.stderr, /^verkstad run: #7's implementing session failed \(error_during_execution\) without a report; /);
+  assert.match(r.stdout, /\nRun stopped: 1 session, \$0\.25\.\nSomething for \/verkstad:reflect to learn from: #7 stopped the Run\.\n$/);
   assert.deepEqual(p.state().issues[0].assignees, ["owner"]);
   assert.deepEqual(p.state().issues[1].assignees, []);
 });

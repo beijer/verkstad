@@ -4,11 +4,13 @@
 // session's commands in its working directory as an agent would, and prints a
 // result as `claude -p --output-format json` does. It accepts exactly the flags
 // verkstad passes, checks the report against --json-schema, and fails loudly on
-// anything else, as on a call no session was scripted for.
+// anything else, as on a call no session was scripted for. Like Claude Code, it
+// appends the session's tool calls to its transcript, under
+// `<$CLAUDE_CONFIG_DIR or ~/.claude>/projects/<cwd, every character but letters and digits made ->/<id>.jsonl`.
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { StubSession } from "./state.ts";
@@ -64,6 +66,22 @@ function check(value: unknown, schema: Schema, at: string): void {
   if (type === "array" && schema.items) (value as unknown[]).forEach((v, i) => check(v, schema.items as Schema, `${at}[${i}]`));
 }
 
+/** Appends a tool call per command, and `failed` failing ones, to session `id`'s transcript. */
+function transcribe(id: string, commands: string[], failed: number): void {
+  const config = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME ?? "", ".claude");
+  const dir = join(config, "projects", process.cwd().replace(/[^A-Za-z0-9]/g, "-"));
+  mkdirSync(dir, { recursive: true });
+  const results: Array<[string, boolean]> = [...commands.map((c): [string, boolean] => [c, false]), ...Array.from({ length: failed }, (): [string, boolean] => ["Exit code 1", true])];
+  const lines = results.flatMap(([text, isError]) => {
+    const use = randomUUID();
+    return [
+      { type: "assistant", sessionId: id, message: { role: "assistant", content: [{ type: "tool_use", id: use, name: "Bash", input: { command: text } }] } },
+      { type: "user", sessionId: id, message: { role: "user", content: [{ type: "tool_result", tool_use_id: use, content: isError ? text : "", is_error: isError }] } },
+    ];
+  });
+  appendFileSync(join(dir, `${id}.jsonl`), lines.map((l) => JSON.stringify(l) + "\n").join(""));
+}
+
 function main(): number {
   const dir = process.env.VERKSTAD_CLAUDE_STUB_DIR;
   if (!dir) {
@@ -96,11 +114,13 @@ function main(): number {
       check(session.report, JSON.parse(schema) as Schema, "the report");
     }
     const subtype = session.subtype ?? "success";
+    const id = flags.get("--resume") ?? flags.get("--session-id") ?? randomUUID();
+    transcribe(id, session.run ?? [], session.failedToolCalls ?? 0);
     const result = {
       type: "result",
       subtype,
       is_error: subtype !== "success",
-      session_id: flags.get("--resume") ?? flags.get("--session-id") ?? randomUUID(),
+      session_id: id,
       num_turns: 12,
       total_cost_usd: session.cost ?? 0.25,
       result: subtype === "success" ? "Reported." : "",

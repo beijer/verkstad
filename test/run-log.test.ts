@@ -195,6 +195,7 @@ test("run-log reads the event log verkstad run writes", (t) => {
     sessions: [
       {
         run: ["verkstad start 7", "printf 'built\\n' > a.txt", "git add -A", 'git commit -q -m "Adds a.txt. Refs #7"', "verkstad review record"],
+        failedToolCalls: 2,
         report: {
           status: "done",
           worktree: "(the worktree)",
@@ -229,7 +230,7 @@ test("run-log reads the event log verkstad run writes", (t) => {
         "",
         "#7 Ticket 7: standard Tier",
         "  implementer: ended, \\$0\\.25, 12 turns, status done",
-        `    transcript gone: no ${id}\\.jsonl among the Project's sessions`,
+        `    ${transcriptPath(p, worktree(p, 7), id).replace(/[.]/g, "\\.")}: 2 failed tool calls: 2 failed commands`,
         `  landed on main in ${sha}`,
         "",
         "Totals: 1 Ticket \\(1 landed, 0 parked\\), 1 session, \\$0\\.25, 12 turns",
