@@ -36,7 +36,7 @@ function report(status: "done" | "blocked" | "partial", more: Record<string, unk
     what_was_built: "The feature.",
     acceptance_criteria: [{ criterion: "It works", verified_by: "a test" }],
     surfaces: [],
-    new_surface: "none",
+    new_surfaces: [],
     uncertain: [],
     known_bug: false,
     reviewed: true,
@@ -388,18 +388,102 @@ test("run has the conflict prompt finish a Ticket whose Landing conflicted with 
   assert.match(p.state().issues[0].comments[0].body, /\n\nRebasing onto main conflicted; the conflict finisher reported:\nstatus: done\nResolved: a\.txt, both lines kept\.\n/);
 });
 
-test("run stops after landing a Ticket that adds a Surface the Contract lacks", (t) => {
-  const p = runProject(t, [ready(7), ready(9)], [implemented(7, "cli.txt", { new_surface: "the first CLI command, in cli.txt" })]);
+const CLI_SURFACE = { name: "cli", globs: ["cli.txt", "bin/**"], observes: "the first CLI command and what it prints" };
+
+test("run stops after landing a Ticket that adds a Surface, in a Project whose Contract names no Verify skill", (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [implemented(7, "cli.txt", { new_surfaces: [CLI_SURFACE] })]);
 
   const r = p.run("run");
 
   assert.equal(r.code, 0, r.stderr);
   assert.match(
     r.stdout,
-    /\n#7 added a Surface the Contract lacks: the first CLI command, in cli\.txt\. Stopping: run \/verkstad:setup to declare it, then \/verkstad:create-verify\.\n/,
+    /\n#7 added a Surface the Contract lacks: cli \(the first CLI command and what it prints\)\. Stopping: the Project has no Verify skill yet; run \/verkstad:setup to declare it, then \/verkstad:create-verify\.\n/,
   );
+  assert.equal(p.state().issues.length, 2);
   assert.equal(p.state().issues[1].state, "open");
   assert.equal(p.claudeCalls().length, 1);
+});
+
+test("run files a Ticket to declare a Surface a landed Ticket added, under its Spec, and works it next, Walked on the new Surface", (t) => {
+  const declared = JSON.stringify(contract({ surfaces: [UI, { name: "cli", globs: ["cli.txt", "bin/**"] }], verify: "verify-app" }));
+  const declaring: StubSession = {
+    run: [
+      "verkstad start 10",
+      `printf '%s\\n' '${declared}' > .claude/harness.json`,
+      "git commit -q -am 'Declares the Surface cli. Refs #10'",
+      "verkstad review record",
+    ],
+    report: report("done"),
+  };
+  const p = runProject(
+    t,
+    [{ number: 3, title: "The Spec", labels: [] }, ready(7, { parent: 3 }), ready(9)],
+    [implemented(7, "cli.txt", { new_surfaces: [CLI_SURFACE] }), declaring, verifies(10, "live-verified"), implemented(9, "b.txt")],
+    { surfaces: [UI], verify: "verify-app" },
+  );
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  const title = "Declare the cli Surface and teach the Verify skill to drive it";
+  assert.ok(
+    r.stdout.includes(`\n#7 added a Surface the Contract lacks: cli (the first CLI command and what it prints); filed #10 to declare it, next.\n#10 ${title}: claimed, `),
+    r.stdout,
+  );
+  assert.match(r.stdout, /\n#10 touches cli; the Verifier Walks it\.\n#10 Verdict: live-verified \(\$0\.25\)\.\n#10 landed on main in [0-9a-f]+\.\n#9 Ticket 9: claimed, /);
+  assert.match(r.stdout, /\nRun finished: 4 sessions, \$1\.00\.\n  #7 landed on main in [0-9a-f]+\n  #10 landed on main in [0-9a-f]+\n  #9 landed on main in [0-9a-f]+\n$/);
+
+  const filed = p.state().issues.find((i) => i.number === 10);
+  assert.ok(filed);
+  assert.equal(filed.title, title);
+  assert.deepEqual(filed.labels, ["ready-for-agent"]);
+  assert.equal(filed.parent, 3);
+  assert.equal(filed.state, "closed");
+  assert.equal(
+    filed.body,
+    [
+      "## Parent",
+      "",
+      "#3",
+      "",
+      "## What to build",
+      "",
+      "#7 added a Surface the Contract does not declare: the first CLI command and what it prints. Declare it as the Surface cli, " +
+        "with the globs whose changes can alter it, and teach the Project's Verify skill to drive it, so that the Verifier Walks " +
+        "every later Ticket that changes it.",
+      "",
+      "## Acceptance criteria",
+      "",
+      "- [ ] The Contract declares the Surface cli with the globs `cli.txt`, `bin/**`",
+      "- [ ] The Verify skill's Feature map has an entry for cli, and its driving tool a command for it where one is needed",
+      "- [ ] The Verifier Walks cli with the Verify skill as this branch changed it",
+      "",
+      "## Blocked by",
+      "",
+      "None - can start immediately",
+      "",
+    ].join("\n"),
+  );
+  const implementing = p.claudeCalls()[1];
+  assert.match(implementing.prompt, /^You are implementing Ticket #10 of owner\/project\. /);
+  assert.match(implementing.prompt, /The Ticket's Spec is #3;/);
+  assert.match(p.claudeCalls()[2].prompt, /^The Surfaces to Walk are cli: /m);
+});
+
+test("run files the declaring Ticket with no Parent when the landed Ticket has no Spec", (t) => {
+  const p = runProject(t, [ready(7)], [implemented(7, "cli.txt", { new_surfaces: [CLI_SURFACE] })], { verify: "verify-app" }, {});
+
+  const r = p.run("run", "--max", "1");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\n#7 added a Surface the Contract lacks: cli \(the first CLI command and what it prints\); filed #8 to declare it, next\.\n/);
+  const filed = p.state().issues.find((i) => i.number === 8);
+  assert.ok(filed);
+  assert.equal(filed.parent, null);
+  assert.match(filed.body, /^## What to build\n\n#7 added a Surface/);
+  assert.deepEqual(filed.assignees, []);
+  assert.ok(!p.calls().some((c) => c.join(" ").includes("sub_issues")));
 });
 
 test("run stops, leaving the Ticket claimed, when a session fails without a report", (t) => {

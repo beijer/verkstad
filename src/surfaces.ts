@@ -3,8 +3,10 @@
 // it left <base> (`git diff <base>...HEAD`), deleted paths and both sides of a
 // rename included (ADR 0004), and no `!` glob of the Surface's matching it.
 // Uncommitted and untracked files are not part of the branch, so they never count.
+// A Surface the branch adds to the Contract is touched too, through the Contract:
+// it is new, and its Verdict is what proves the Verify skill can drive it.
 
-import { readSurfaces, type Surface } from "./contract.ts";
+import { committedChecking, CONTRACT_PATH, readSurfaces, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { tryGit, worktreeRoot } from "./git.ts";
 
@@ -25,10 +27,18 @@ export function branchPoint(root: string, base: string): string {
   return r.stdout.trim();
 }
 
-/** The Surfaces, in the Contract's order, whose globs match a path committed since `since`. */
+/**
+ * The Surfaces, in the Contract's order, whose globs match a path committed since `since`, and those the
+ * Contract committed at `since` lacks. A `since` with no Contract, or a malformed one, adds none.
+ */
 export function touchedSurfaces(root: string, surfaces: Surface[], since: string): TouchedSurface[] {
+  const before = committedChecking(root, since)?.surfaces;
   const touched: TouchedSurface[] = [];
   for (const surface of surfaces) {
+    if (before && !before.some((s) => s.name === surface.name)) {
+      touched.push({ name: surface.name, files: [CONTRACT_PATH] });
+      continue;
+    }
     const pathspecs = surface.globs.map((glob) => (glob.startsWith("!") ? `:(exclude,glob)${glob.slice(1)}` : `:(glob)${glob}`));
     const r = tryGit(root, ["diff", "-z", "--name-only", "--no-renames", "--no-relative", since, "HEAD", "--", ...pathspecs]);
     if (r.status !== 0) throw new Failure(`could not match the Surface ${surface.name}'s globs: ${r.stderr.trim()}`);

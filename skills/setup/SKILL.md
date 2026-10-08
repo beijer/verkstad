@@ -142,7 +142,7 @@ Setup is a check as well as a start, and the loop tells the owner when it is due
 
 | When | What then |
 | --- | --- |
-| A Run stops because a Ticket's report named a `new surface:` (the first UI, a CLI's first command, an HTTP route) | Run setup: it drafts the Surface from the code that now exists, then offers `/verkstad:create-verify`, which the next Run needs before it dispatches anything. |
+| A Run stops because a Ticket's report named a `new surface:` (the first UI, a CLI's first command, an HTTP route) in a Project with no Verify skill yet; with one, the Run files a Ticket to declare it instead | Run setup: it drafts the Surface from the code that now exists, then offers `/verkstad:create-verify`, which the next Run needs before it dispatches anything. |
 | A Run's report says the Gate has no steps, or you added CI or checks the Gate lacks | Run setup: it drafts the Gate from CI and the package scripts. |
 | The base branch is renamed or protected | Run setup, and answer the Landing mode question. |
 | `verify` is set but Walks find the Feature map out of date | Not setup: `/verkstad:maintain-verify`. |

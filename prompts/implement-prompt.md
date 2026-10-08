@@ -50,7 +50,7 @@ commits: <short hashes>
 What was built: <two or three sentences>
 Acceptance criteria: one line each, how it was verified: the test, and what you saw where a user would see it
 surfaces: <the Surfaces in .claude/harness.json your change can alter, by name, comma-separated, whether or not the diff touches their globs; or none. The Verifier Walks each one named here or touched by the diff, so name one the globs miss>
-new surface: <what your change lets a user or another system observe that no Surface in .claude/harness.json covers (the first UI, a CLI's first command, an HTTP route, a file written for someone else), with the paths behind it; or none. Files the Project keeps for itself (its own data or state) are not a Surface.>
+new surface: <what your change lets a user or another system observe that no Surface in .claude/harness.json covers (the first UI, a CLI's first command, an HTTP route, a file written for someone else): a short name for it, the path globs whose changes can alter it, and one line on what a user observes; or none. Files the Project keeps for itself (its own data or state) are not a Surface. A Run files a Ticket to declare each one and teach the Verify skill to drive it.>
 Uncertain or undone: <or "none">
 tier: ok | too low (too low if you had to guess at a design or ran out of room)
 

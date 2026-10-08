@@ -898,7 +898,7 @@ test("a branch that narrows the Contract's Surfaces or changes verify exits with
   }
 });
 
-test("a branch that adds a Surface, a glob to one and verify where there was none lands as before", (t) => {
+test("a branch that adds a Surface, a glob to one and verify where there was none is not narrowed: the new Surface needs its Verdict, then it lands", (t) => {
   const before = { surfaces: [{ name: "ui", globs: ["src/ui/**", "!src/ui/**/*.test.ts"] }] };
   const after = {
     surfaces: [
@@ -910,6 +910,12 @@ test("a branch that adds a Surface, a glob to one and verify where there was non
   const p = project(t, { issues: [claimed(7)], contract: contract([COUNTED], before) });
   const wt = ticket(p, 7, { ".claude/harness.json": JSON.stringify(contract([COUNTED], after), null, 2) }, { "src/core/time.ts": "time\n" });
 
+  const unverified = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(reason(unverified.stderr), "reason: verdict-missing");
+  assert.match(unverified.stderr, /^verkstad land: #7 did not land: #7 touches the Surface api, and has no Verdict: /);
+
+  recordVerdict(p, 7, wt, "live-verified");
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
   assert.equal(r.code, 0, r.stderr);

@@ -149,7 +149,7 @@ export function conflictPrompt(v: ConflictValues): string {
 export const IMPLEMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "worktree", "commits", "what_was_built", "acceptance_criteria", "surfaces", "new_surface", "uncertain", "known_bug", "reviewed", "tier", "report"],
+  required: ["status", "worktree", "commits", "what_was_built", "acceptance_criteria", "surfaces", "new_surfaces", "uncertain", "known_bug", "reviewed", "tier", "report"],
   properties: {
     status: { enum: ["done", "blocked", "partial"] },
     worktree: { type: "string" },
@@ -165,7 +165,20 @@ export const IMPLEMENT_SCHEMA = {
       },
     },
     surfaces: { type: "array", items: { type: "string" } },
-    new_surface: { type: "string" },
+    new_surfaces: {
+      type: "array",
+      description: "Each new surface the report names, as its name, the path globs whose changes can alter it, and what a user observes; [] for none",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["name", "globs", "observes"],
+        properties: {
+          name: { type: "string" },
+          globs: { type: "array", items: { type: "string" } },
+          observes: { type: "string", description: "One line on what a user or another system observes" },
+        },
+      },
+    },
     uncertain: { type: "array", items: { type: "string" } },
     known_bug: { type: "boolean" },
     reviewed: { type: "boolean" },

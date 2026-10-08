@@ -7,8 +7,10 @@
 // one touching a Surface goes to a Verifier session; a finished one goes to
 // `verkstad land`; what cannot finish is Parked with `verkstad land --park`.
 // When the Ticket is closed or Parked it reads the Frontier again, so a Landing
-// that unblocks a Ticket starts it next, and stops when nothing is ready, after
-// --max Tickets, or when a Ticket adds a Surface the Contract lacks.
+// that unblocks a Ticket starts it next, and stops when nothing is ready or after
+// --max Tickets. A landed Ticket that adds a Surface the Contract lacks makes it
+// file a Ticket to declare the Surface and teach the Verify skill to drive it,
+// which it works next; in a Project with no Verify skill yet it stops instead.
 //
 // Every routing rule and every budget is here, in code (docs/contract.md lists
 // them): a Ticket gets one Resume, one Fix round and one finished conflict, a
@@ -33,7 +35,7 @@ import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from
 import { readContract, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { type Entry, readFrontier } from "./frontier.ts";
-import { currentRepo, gh, ghJsonUnlessMissing } from "./gh.ts";
+import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
 import { ensureLogDirectory, git, inLinkedWorktree, tryGit, worktreeRoot } from "./git.ts";
 import {
   CONFLICT_SCHEMA,
@@ -220,11 +222,19 @@ function landingMessage(stderr: string): string {
     .trim();
 }
 
+/** A Surface an implementer's report says its change added, which no Surface in the Contract covers. */
+interface NewSurface {
+  name: string;
+  globs: string[];
+  /** One line on what a user or another system observes. */
+  observes: string;
+}
+
 /** The implementer's report, as far as the Run routes on it. */
 interface Report {
   status: "done" | "blocked" | "partial";
   surfaces: string[];
-  newSurface: string | null;
+  newSurfaces: NewSurface[];
   uncertain: string[];
   knownBug: boolean;
   text: string;
@@ -232,11 +242,16 @@ interface Report {
 
 function toReport(value: Record<string, unknown>): Report {
   const strings = (v: unknown): string[] => (Array.isArray(v) ? v.filter((s): s is string => typeof s === "string") : []);
-  const newSurface = typeof value.new_surface === "string" ? value.new_surface.trim() : "";
+  const newSurfaces = (Array.isArray(value.new_surfaces) ? value.new_surfaces : []).flatMap((s: unknown): NewSurface[] => {
+    if (typeof s !== "object" || s === null) return [];
+    const { name, globs, observes } = s as Record<string, unknown>;
+    if (typeof name !== "string" || !name.trim()) return [];
+    return [{ name: name.trim(), globs: strings(globs), observes: typeof observes === "string" ? observes.trim().replace(/\.$/, "") : "" }];
+  });
   return {
     status: value.status === "blocked" || value.status === "partial" ? value.status : "done",
     surfaces: strings(value.surfaces),
-    newSurface: newSurface && !/^none\b/i.test(newSurface) ? newSurface.replace(/\.$/, "") : null,
+    newSurfaces,
     uncertain: strings(value.uncertain),
     knownBug: value.known_bug === true,
     text: typeof value.report === "string" ? value.report.trim() : JSON.stringify(value, null, 2),
@@ -265,10 +280,10 @@ interface Ticket {
   landedAgain: boolean;
 }
 
-/** How a Ticket ended this Run: the line the summary shows, and the Surface it added that the Contract lacks. */
+/** How a Ticket ended this Run: the line the summary shows, and the Surfaces it landed that the Contract lacks. */
 interface Outcome {
   line: string;
-  newSurface: string | null;
+  newSurfaces: NewSurface[];
 }
 
 type Step =
@@ -542,21 +557,32 @@ function review(run: Run, t: Ticket): Step {
   return reported(run, t, runSession(run, t, implementer(t), t.worktree, prompt, IMPLEMENT_SCHEMA, t.session));
 }
 
-/** The Verifier Walks a branch that touches a Surface, after rebasing it onto origin, so that its Verdict is for the patch Landing pushes. */
+/**
+ * The Verifier Walks a branch that touches a Surface, after rebasing it onto origin, so that its Verdict is for
+ * the patch Landing pushes. The Surfaces are the branch's Contract's, as Landing reads them, so a Surface the
+ * branch declares is Walked too.
+ */
 function verify(run: Run, t: Ticket): Step {
-  if (run.surfaces.length === 0) {
+  if (run.surfaces.length === 0 && readSurfaces(t.worktree).length === 0) {
     say(run, t.n, "touches no Surface; landing.");
     return { to: "land" };
   }
   const rebase = verkstad(run, ["conflicts", String(t.n), "--rebase", t.worktree]);
   if (rebase.code === 1 && rebase.stdout.trim()) return { to: "conflict", files: rebase.stdout.trim().split("\n").join(", ") };
   if (rebase.code !== 0) throw new Failure(`#${t.n}: rebasing it before the Verifier failed: ${rebase.stderr.trim()}`);
-  const touched = touchedSurfaces(t.worktree, run.surfaces, branchPoint(t.worktree, run.upstream)).map((s) => s.name);
-  const named = (t.report?.surfaces ?? []).filter((name) => run.surfaces.some((s) => s.name === name));
+  const surfaces = readSurfaces(t.worktree);
+  const touched = touchedSurfaces(t.worktree, surfaces, branchPoint(t.worktree, run.upstream)).map((s) => s.name);
+  const named = (t.report?.surfaces ?? []).filter((name) => surfaces.some((s) => s.name === name));
   const walk = [...new Set([...touched, ...named])];
   if (walk.length === 0) {
     say(run, t.n, "touches no Surface; landing.");
     return { to: "land" };
+  }
+  if (run.verify === null) {
+    return {
+      to: "park",
+      why: `It declares ${walk.join(", ")}, but the Contract names no Verify skill to Walk it with: the first one is the owner's, through verkstad:create-verify.`,
+    };
   }
   say(run, t.n, `touches ${walk.join(", ")}; the Verifier Walks it.`);
   const prompt = verifyPrompt({
@@ -565,7 +591,7 @@ function verify(run: Run, t: Ticket): Step {
     base: run.base,
     logDir: run.logDir,
     worktree: t.worktree,
-    verify: run.verify as string,
+    verify: run.verify,
     surfaces: walk,
     findings: t.failedVerdict,
   });
@@ -630,7 +656,7 @@ function land(run: Run, t: Ticket): Step {
     const line = landed ? `landed on ${run.base} in ${landed[1]}` : opened ? `waits on the owner to merge ${opened[1]}` : "landed";
     say(run, t.n, `${line}.`);
     log(run, { ticket: t.n, landed: line, ...(landed ? { commit: landed[1] } : {}) });
-    return { to: "done", outcome: { line, newSurface: t.report?.newSurface ?? null } };
+    return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [] } };
   }
   const reason = /^reason: (\S+)\s*$/m.exec(r.stderr)?.[1] ?? "unknown";
   const message = landingMessage(r.stderr);
@@ -672,7 +698,7 @@ function land(run: Run, t: Ticket): Step {
     case "github-failed": {
       const line = `landed, but updating #${t.n} failed: ${firstLine(message)}`;
       log(run, { ticket: t.n, landed: line });
-      return { to: "done", outcome: { line, newSurface: t.report?.newSurface ?? null } };
+      return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [] } };
     }
     default:
       throw new Failure(`#${t.n} did not land (${reason}): ${message}`);
@@ -712,7 +738,47 @@ function park(run: Run, t: Ticket, why: string): Outcome {
   const line = `parked: ${firstLine(why)}`;
   say(run, t.n, line);
   log(run, { ticket: t.n, parked: why.trim() });
-  return { line, newSurface: null };
+  return { line, newSurfaces: [] };
+}
+
+/** The Ticket that declares a Surface #n landed and teaches the Verify skill to drive it, in the Ticket format. */
+function surfaceTicket(n: number, spec: number | undefined, surface: NewSurface): { title: string; body: string } {
+  const what = surface.observes ? `: ${surface.observes}` : "";
+  const globs = surface.globs.length ? ` with the globs ${surface.globs.map((g) => `\`${g}\``).join(", ")}` : "";
+  const body = [
+    ...(spec === undefined ? [] : ["## Parent", "", `#${spec}`, ""]),
+    "## What to build",
+    "",
+    `#${n} added a Surface the Contract does not declare${what}. Declare it as the Surface ${surface.name}, with the globs whose ` +
+      "changes can alter it, and teach the Project's Verify skill to drive it, so that the Verifier Walks every later Ticket that changes it.",
+    "",
+    "## Acceptance criteria",
+    "",
+    `- [ ] The Contract declares the Surface ${surface.name}${globs}`,
+    `- [ ] The Verify skill's Feature map has an entry for ${surface.name}, and its driving tool a command for it where one is needed`,
+    `- [ ] The Verifier Walks ${surface.name} with the Verify skill as this branch changed it`,
+    "",
+    "## Blocked by",
+    "",
+    "None - can start immediately",
+    "",
+  ].join("\n");
+  return { title: `Declare the ${surface.name} Surface and teach the Verify skill to drive it`, body };
+}
+
+/** Files the Ticket that declares `surface`, a sub-issue of #n's Spec when it has one, ready for an agent. */
+function fileSurfaceTicket(run: Run, n: number, surface: NewSurface): Entry {
+  const spec = specOf(n);
+  const { title, body } = surfaceTicket(n, spec, surface);
+  const url = gh(["issue", "create", "--title", title, "--body", body, "--label", "ready-for-agent"]).trim();
+  const number = Number(/\/issues\/(\d+)$/.exec(url)?.[1]);
+  if (!number) throw new Failure(`gh issue create printed no issue URL: ${url}`);
+  if (spec !== undefined) {
+    const { id } = ghJson<{ id: number }>(["api", `repos/{owner}/{repo}/issues/${number}`]);
+    gh(["api", "--method", "POST", `repos/{owner}/{repo}/issues/${spec}/sub_issues`, "-F", `sub_issue_id=${id}`]);
+  }
+  log(run, { ticket: n, filed: number, surface: surface.name, globs: surface.globs });
+  return { number, title, labels: ["ready-for-agent"], assignees: [], open_blockers: [] };
 }
 
 function plan(ready: Entry[], budget: number | undefined): string {
@@ -751,19 +817,28 @@ export function run(args: string[]): void {
   let stopped: Failure | null = null;
   try {
     let next: Entry | undefined = ready[0];
+    // The Tickets filed to declare a new Surface, which go before the rest of the Frontier.
+    const filed: Entry[] = [];
     while (next && (options.max === null || finished.length < options.max)) {
       tried.add(next.number);
       const outcome = runTicket(r, next);
       finished.push({ n: next.number, line: outcome.line });
-      if (outcome.newSurface) {
+      const added = outcome.newSurfaces.map((s) => `${s.name}${s.observes ? ` (${s.observes})` : ""}`);
+      if (added.length && r.verify === null) {
         say(
           r,
           next.number,
-          `added a Surface the Contract lacks: ${outcome.newSurface}. Stopping: run /verkstad:setup to declare it, then /verkstad:create-verify.`,
+          `added a Surface the Contract lacks: ${added.join(", ")}. Stopping: the Project has no Verify skill yet; ` +
+            "run /verkstad:setup to declare it, then /verkstad:create-verify.",
         );
         break;
       }
-      next = readFrontier().ready.find((e) => !tried.has(e.number));
+      for (const [i, surface] of outcome.newSurfaces.entries()) {
+        const entry = fileSurfaceTicket(r, next.number, surface);
+        say(r, next.number, `added a Surface the Contract lacks: ${added[i]}; filed #${entry.number} to declare it, next.`);
+        filed.push(entry);
+      }
+      next = filed.shift() ?? readFrontier().ready.find((e) => !tried.has(e.number));
     }
   } catch (error) {
     if (!(error instanceof Failure)) throw error;

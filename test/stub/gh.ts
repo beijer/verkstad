@@ -64,6 +64,21 @@ const commands: Record<string, Command> = {
     issue.assignees = [...new Set([...assignees, ...values("--add-assignee")])];
     return { stdout: `https://github.com/${state.repo}/issues/${issue.number}\n` };
   },
+  // Opens an issue with --title, --body and any --label; prints its URL, as gh does.
+  "issue create": (args, state) => {
+    const { positionals, flags } = parse(args, { value: ["--title", "--body", "--label"] });
+    if (positionals.length) throw new Error(`unexpected arguments ${JSON.stringify(positionals)}`);
+    const [title, body] = ["--title", "--body"].map((flag) => {
+      const value = flags.get(flag)?.[0];
+      if (value === undefined) throw new Error(`${flag} is required: without it gh would prompt`);
+      return value;
+    });
+    const labels = (flags.get("--label") ?? []).flatMap((v) => v.split(","));
+    // Issues and pull requests share one sequence of numbers.
+    const number = Math.max(0, ...state.issues.map((i) => i.number), ...state.pullRequests.map((pr) => pr.number)) + 1;
+    state.issues.push({ number, id: 1_000_000 + number, title, body, state: "open", labels, assignees: [], comments: [], parent: null, blockedBy: [] });
+    return { stdout: `https://github.com/${state.repo}/issues/${number}\n` };
+  },
   "issue comment": (args, state) => {
     const { positionals, flags } = parse(args, { value: ["--body"] });
     const issue = issueArg(state, positionals);

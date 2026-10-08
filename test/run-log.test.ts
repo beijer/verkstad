@@ -202,7 +202,7 @@ test("run-log reads the event log verkstad run writes", (t) => {
           what_was_built: "The feature.",
           acceptance_criteria: [{ criterion: "It works", verified_by: "a test" }],
           surfaces: [],
-          new_surface: "none",
+          new_surfaces: [],
           uncertain: [],
           known_bug: false,
           reviewed: true,

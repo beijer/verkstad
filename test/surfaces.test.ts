@@ -120,6 +120,17 @@ test("a glob starting with ! takes the paths it matches out of the Surface, whic
   assert.equal(none.stdout, "");
 });
 
+test("a Surface the branch adds to the Contract is touched, through the Contract, though no path it matches changed", (t) => {
+  const p = project(t, { contract: contract(SURFACES.slice(0, 1)), files: BASE_FILES });
+  p.git("checkout", "--quiet", "-b", "issue-7");
+  commit(p, { ".claude/harness.json": JSON.stringify(contract([...SURFACES.slice(0, 1), { name: "cli", globs: ["bin/**"] }])) });
+
+  const r = p.run("surfaces", "main", "--json");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), [{ name: "cli", files: [".claude/harness.json"] }]);
+});
+
 test("a Project with no Surfaces touches none, whatever the branch changed", (t) => {
   const p = project(t, { contract: contract([]), files: BASE_FILES });
   p.git("checkout", "--quiet", "-b", "issue-7");
