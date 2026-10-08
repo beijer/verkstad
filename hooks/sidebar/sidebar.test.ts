@@ -43,7 +43,7 @@ const TRANSCRIPT_DIR = `${HOME}/.claude/projects/-home-owner-code-project--claud
 const TAIL = line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } })
 
 /** A verkstad Project on disk and on GitHub, in memory; `verkstad` records what the controls ran. */
-function world(on: On, logs: Record<string, string>, options: { alive?: boolean; runProcess?: boolean; desktop?: boolean } = {}) {
+function world(on: On, logs: Record<string, string>, options: { alive?: boolean; runProcess?: boolean; desktop?: boolean; brokenCli?: boolean } = {}) {
   const ran: string[][] = []
   const launched: string[][] = []
   const clock = mock.clock(on, { now: NOW })
@@ -78,6 +78,7 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean;
       ran.push(args)
       if (args[0] === 'frontier') return ok(FRONTIER)
       if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
+      if (args.join(' ') === 'run --stop' && options.brokenCli) return { deny: 'could not start: permission denied' }
       if (args.join(' ') === 'run --stop') return ok('The Run stops after #49.\n')
       if (args.join(' ') === 'run --abort') return ok('The Run aborts #49 and discards its work.\n')
     }
@@ -302,4 +303,14 @@ test("without the desktop's task tool, Triage puts the command in the prompt", a
   expect(w.spawned).toEqual([])
   expect(w.filled).toEqual(['/verkstad:triage owner/project#39'])
   expect(await text(ui, /in the prompt/)).toBe('/verkstad:triage owner/project#39 is in the prompt: send it to start triage here.')
+})
+
+test('a Stop whose command cannot run says so, in place of nothing', async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T17-50-00-000Z.jsonl': LIVE }, { brokenCli: true })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  await ui.press({ key: 'stop' })
+  expect(await text(ui, /failed/)).toBe('verkstad run --stop failed: verkstad: $.process.run: could not start: permission denied')
 })

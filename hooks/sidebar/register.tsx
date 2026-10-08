@@ -271,16 +271,24 @@ async function poll($: EngineInterface): Promise<void> {
 async function start($: EngineInterface, p: Project, max: number | null): Promise<void> {
   await update($, isConfirmingAbort, () => false)
   await say($, 'Reading the Frontier…')
+  try {
+    await launch($, p, max)
+  } catch (err) {
+    await failed($, 'Start', err)
+  }
+}
+
+async function launch($: EngineInterface, p: Project, max: number | null): Promise<void> {
   const extra = max === null ? [] : ['--max', String(max)]
   const plan = await verkstad($, p, ['run', '--dry-run', ...extra])
   if (plan.exitCode !== 0) return say($, firstLine(plan.stderr, 300) || `verkstad run --dry-run exited ${plan.exitCode}`, true)
   if (!/^Next: /m.test(plan.stdout)) return say($, firstLine(plan.stdout, 300))
   const next = /^Next: (.*)$/m.exec(plan.stdout)?.[1] ?? ''
-  const launch = await $.process.run(
+  const started = await $.process.run(
     ['sh', '-c', 'out=$1; shift; setsid -f "$@" >"$out" 2>&1 </dev/null', 'sh', outputFile(p), `${$.plugin.root}/bin/verkstad`, 'run', ...extra],
     { cwd: p.main },
   )
-  if (launch.exitCode !== 0) return say($, firstLine(launch.stderr, 300) || 'could not start verkstad run', true)
+  if (started.exitCode !== 0) return say($, firstLine(started.stderr, 300) || 'could not start verkstad run', true)
   const now = await $.clock.now()
   await update($, startingAt, () => now)
   await update($, tick, () => now)
@@ -289,9 +297,14 @@ async function start($: EngineInterface, p: Project, max: number | null): Promis
 
 async function control($: EngineInterface, p: Project, what: 'stop' | 'abort'): Promise<void> {
   await update($, isConfirmingAbort, () => false)
-  const r = await verkstad($, p, ['run', `--${what}`])
-  const text = r.exitCode === 0 ? firstLine(r.stdout, 300) : firstLine(r.stderr, 300) || `verkstad run --${what} exited ${r.exitCode}`
-  await say($, text, r.exitCode !== 0)
+  await say($, what === 'stop' ? 'Asking the Run to stop after its Ticket…' : 'Asking the Run to abort…')
+  try {
+    const r = await verkstad($, p, ['run', `--${what}`])
+    const text = r.exitCode === 0 ? firstLine(r.stdout, 300) : firstLine(r.stderr, 300) || `verkstad run --${what} exited ${r.exitCode}`
+    await say($, text, r.exitCode !== 0)
+  } catch (err) {
+    await failed($, `verkstad run --${what}`, err)
+  }
   aliveAt = 0
 }
 
@@ -300,6 +313,15 @@ async function control($: EngineInterface, p: Project, what: 'stop' | 'abort'): 
  * session (the app's `spawn_task` tool); elsewhere, the command put in the prompt for the owner to send.
  */
 async function triage($: EngineInterface, p: Project, n: number): Promise<void> {
+  await say($, `Starting triage of #${n}…`)
+  try {
+    await offerTriage($, p, n)
+  } catch (err) {
+    await failed($, `Triage of #${n}`, err)
+  }
+}
+
+async function offerTriage($: EngineInterface, p: Project, n: number): Promise<void> {
   const command = `/verkstad:triage ${p.repo ? `${p.repo}#${n}` : `#${n}`}`
   const spawn = (await $.tool.list()).find(t => t.name === SPAWN_TASK)
   if (spawn) {
@@ -316,8 +338,18 @@ async function triage($: EngineInterface, p: Project, n: number): Promise<void> 
 }
 
 async function refresh($: EngineInterface, p: Project): Promise<void> {
-  await say($, '')
-  await readGithub($, p)
+  await say($, 'Reading the Frontier and GitHub…')
+  try {
+    await readGithub($, p)
+    await say($, '')
+  } catch (err) {
+    await failed($, 'Refresh', err)
+  }
+}
+
+/** Shows that a control failed, with why, so that no press ends in silence. */
+async function failed($: EngineInterface, what: string, err: unknown): Promise<void> {
+  await say($, `${what} failed: ${firstLine(err instanceof Error ? err.message : String(err), 300)}`, true)
 }
 
 export const register: Register = on => {
