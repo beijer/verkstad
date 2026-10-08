@@ -231,7 +231,7 @@ test("run nudges a session stopped at its turn limit to commit and report, and r
   const second = p.claudeCalls()[1];
   assert.equal(flag(second.args, "--resume"), flag(p.claudeCalls()[0].args, "--session-id"));
   assert.equal(flag(second.args, "--max-turns"), "15");
-  assert.equal(flag(second.args, "--max-budget-usd"), "3");
+  assert.equal(flag(second.args, "--max-budget-usd"), "10");
   assert.match(second.prompt, /^Your session hit its limit\. Do no new work\. Commit what passes as it stands/);
   assert.equal(p.state().issues[0].state, "closed");
 });

@@ -74,8 +74,11 @@ const LIMITS: Record<string, Limits> = {
   verifier: { usd: 10, turns: 120, hours: 1 },
 };
 
-/** A session resumed once to report after it ended without one gets a small budget of its own. */
-const WRAP_UP: Limits = { usd: 3, turns: 15, hours: 0.5 };
+/**
+ * A session resumed once to report after it ended without one gets a budget of its own: few turns, but enough
+ * to reload a large context, whose first turn alone can cost several dollars.
+ */
+const WRAP_UP: Limits = { usd: 10, turns: 15, hours: 0.5 };
 
 /** Steps one Ticket may take before the Run gives up on it: far more than every budget allows. */
 const MAX_STEPS = 30;
