@@ -1,7 +1,7 @@
 // The verkstad sidebar: a pane for a Project's Runs, a hooks module of the plugin (hooks/hooks.json).
 //
 // It reads what verkstad leaves behind (the Runs' event logs, `verkstad frontier --json`, the issues and CI on
-// GitHub, the current session's transcript) and draws one pane, `/verkstad-run`: the Run going and its
+// GitHub, the current session's transcript) and draws one pane, opened by `/verkstad:sidebar`: the Run going and its
 // controls, what waits on the owner, the Tickets up next, and past Runs. The controls only run verkstad's own
 // commands: Start launches `verkstad run` detached, so it outlives this session; Stop asks it to stop after its
 // Ticket (`verkstad run --stop`); Abort, once confirmed, ends it and discards the Ticket's work
@@ -287,14 +287,14 @@ export const register: Register = on => {
     const p = await findProject($, e.cwd)
     await update($, project, () => p)
     if (!p) return started
-    await $.command.register({ name: 'verkstad-run', description: "Show the verkstad sidebar: the Run and its controls, what needs you, what's next and past Runs" })
     $.clock.every(POLL_MS, () => void poll($))
     void poll($)
     void $.ui.open({ id: PANE, title: 'verkstad' })
     return started
   })
 
-  on('command.run', { command: 'verkstad-run' }, async $ => {
+  // `/verkstad:sidebar` is the plugin's skill skills/sidebar; answered here, it opens the pane and starts no turn.
+  on('command.run', { command: 'verkstad:sidebar' }, async $ => {
     const opened = await $.ui.open({ id: PANE, title: 'verkstad' })
     return { text: opened.isPlaced ? 'verkstad sidebar opened.' : `verkstad sidebar waits: ${opened.reason}` }
   })

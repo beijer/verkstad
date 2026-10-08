@@ -85,9 +85,12 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean 
     ),
   )
   on('fs.read', (_$, e) => value(files[e.path] ?? ''))
-  on('ui.open', () => value({ isPlaced: true as const }))
-  on('command.register', () => value(undefined) as never)
-  return { clock, ran, launched }
+  const opened: string[] = []
+  on('ui.open', (_$, e) => {
+    opened.push(e.id)
+    return value({ isPlaced: true as const })
+  })
+  return { clock, ran, launched, opened }
 }
 
 const PANE = {
@@ -206,4 +209,23 @@ test('a past Run opens to show its Tickets, and closes again', async ($, on) => 
 
   await ui.press({ key: toggle })
   expect(await text(ui, /Landing refuses/)).toBeUndefined()
+})
+
+test('/verkstad:sidebar opens the pane and answers for itself, starting no turn', async ($, on) => {
+  const w = world(on, {})
+  on('command.run', () => {
+    throw new Error('the command reached the engine, which would start a turn')
+  })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  expect(w.opened).toEqual(['verkstad-run'])
+
+  const answer = await $.command.run({
+    command: 'verkstad:sidebar',
+    args: '',
+    origin: { kind: 'composer' },
+    presentation: { isFullscreen: false, columns: 160 },
+  })
+  expect(answer.text).toBe('verkstad sidebar opened.')
+  expect(w.opened).toEqual(['verkstad-run', 'verkstad-run'])
 })
