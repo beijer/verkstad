@@ -42,7 +42,7 @@ const TRANSCRIPT_DIR = `${HOME}/.claude/projects/-home-owner-code-project--claud
 const TAIL = line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } })
 
 /** A verkstad Project on disk and on GitHub, in memory; `verkstad` records what the controls ran. */
-function world(on: On, logs: Record<string, string>, options: { alive?: boolean } = {}) {
+function world(on: On, logs: Record<string, string>, options: { alive?: boolean; runProcess?: boolean } = {}) {
   const ran: string[][] = []
   const launched: string[][] = []
   const clock = mock.clock(on, { now: NOW })
@@ -66,6 +66,10 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean 
       return ok('')
     }
     if (cmd === 'sh' && script.includes('grep -c')) return ok(`12\n${TAIL}`)
+    if (cmd === 'sh' && script.includes('pgrep')) {
+      expect(e.argv.at(-1)).toBe(MAIN)
+      return ok(options.runProcess ? '777\n' : '')
+    }
     if (cmd?.endsWith('/bin/verkstad')) {
       const args = rest
       ran.push(args)
@@ -228,4 +232,29 @@ test('/verkstad:sidebar opens the pane and answers for itself, starting no turn'
   })
   expect(answer.text).toBe('verkstad sidebar opened.')
   expect(w.opened).toEqual(['verkstad-run', 'verkstad-run'])
+})
+
+// A log from before the Run logged its pid: whether it is going is asked of the processes, not guessed.
+const OLD_LOG = LIVE.replace(',"pid":4242', '')
+if (OLD_LOG.includes('pid')) throw new Error('OLD_LOG still names a pid')
+
+test('a log without a pid and no verkstad run in the Project is not shown as running', async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T17-50-00-000Z.jsonl': OLD_LOG })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect(await text(ui, /Idle/)).toBe('○ Idle')
+  expect(await text(ui, /last Run/)).toBe('last Run did not end (no event for 9m)')
+  expect((await ui.find({ key: 'stop' }))).toBeUndefined()
+})
+
+test('a log without a pid whose verkstad run still works in the Project is shown as running', async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T17-50-00-000Z.jsonl': OLD_LOG }, { runProcess: true })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect(await text(ui, /Running/)).toBe('● Running')
+  expect((await ui.find({ key: 'stop' }))?.text).toBe('■ Stop after #49')
 })

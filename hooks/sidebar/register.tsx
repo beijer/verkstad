@@ -36,8 +36,6 @@ const POLL_MS = 2000
 const ALIVE_MS = 10_000
 const ACTIVITY_MS = 5000
 const GITHUB_MS = 5 * 60_000
-/** A Run whose log has been quiet this long without ending, and names no process to ask, was killed. */
-const STALE_MS = 4 * 60 * 60_000
 /** How long a Start waits for its Run's event log before showing what the Run printed. */
 const START_MS = 30_000
 const HISTORY = 6
@@ -109,9 +107,25 @@ async function findProject($: EngineInterface, cwd: string): Promise<Project | n
   return { main, logDir: `${main}/.claude/verkstad`, repo: nameWithOwner, base, name: main.split('/').pop() ?? 'project' }
 }
 
-function isGoing(r: RunView | null, alive: boolean | null, now: number): boolean {
-  if (!r || r.ended) return false
-  return alive ?? now - Date.parse(r.lastAt) < STALE_MS
+/** A Run is going while its log has no end line and its process is there; until that is asked, it is not. */
+function isGoing(r: RunView | null, alive: boolean | null): boolean {
+  return r !== null && !r.ended && alive === true
+}
+
+/**
+ * Whether the Run that writes `r`'s log is still there: its `pid`, or, for a log from before the Run logged one,
+ * any `verkstad run` working in the Project's main checkout (verkstad runs on Linux, which has /proc).
+ */
+async function isRunAlive($: EngineInterface, p: Project, r: RunView): Promise<boolean> {
+  if (r.pid !== null) return (await $.process.run(['kill', '-0', String(r.pid)])).exitCode === 0
+  const found = await $.process.run([
+    'sh',
+    '-c',
+    'for pid in $(pgrep -f "src/cli.ts run"); do [ "$(readlink "/proc/$pid/cwd")" = "$1" ] && echo "$pid"; done; true',
+    'sh',
+    p.main,
+  ])
+  return found.stdout.trim() !== ''
 }
 
 async function readGithub($: EngineInterface, p: Project): Promise<void> {
@@ -141,7 +155,7 @@ async function readGithub($: EngineInterface, p: Project): Promise<void> {
       await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url']),
     ]
     const r = await read($, run)
-    const working = isGoing(r, await read($, isAlive), now) ? (r?.current ?? null) : null
+    const working = isGoing(r, await read($, isAlive)) ? (r?.current ?? null) : null
     view = { items: attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working }), at: now, error: '' }
   } catch (err) {
     view = { items: (await read($, owner))?.items ?? [], at: now, error: (err as Error).message }
@@ -219,15 +233,14 @@ async function poll($: EngineInterface): Promise<void> {
     await readRuns($, p, now)
 
     const r = await read($, run)
-    if (r && !r.ended && r.pid !== null && now - aliveAt > ALIVE_MS) {
+    if (r && !r.ended && now - aliveAt > ALIVE_MS) {
       aliveAt = now
-      const probe = await $.process.run(['kill', '-0', String(r.pid)])
-      const alive = probe.exitCode === 0
+      const alive = await isRunAlive($, p, r)
       if ((await read($, isAlive)) !== alive) await update($, isAlive, () => alive)
-    } else if (r && (r.ended || r.pid === null) && (await read($, isAlive)) !== null) {
+    } else if (r?.ended && (await read($, isAlive)) !== null) {
       await update($, isAlive, () => null)
     }
-    const going = isGoing(r, await read($, isAlive), now)
+    const going = isGoing(r, await read($, isAlive))
     if (going && r && now - activityAt > ACTIVITY_MS) {
       activityAt = now
       await readActivity($, p, r)
@@ -370,7 +383,7 @@ export const register: Register = on => {
     )
 
     // The Run: its state, the controls, and the Ticket it is on.
-    const going = isGoing(r, alive, now)
+    const going = isGoing(r, alive)
     const current = going ? r?.tickets.find(t => t.n === r.current) : undefined
     let state: JSX.Element
     if (starting) {
