@@ -37,6 +37,8 @@ verkstad convert-links             # add the links; a second run adds nothing
 
 In a Project, a Run works the Frontier: in Claude Code, from the Project's main checkout, `/verkstad:start-run` shows its plan once, then starts `verkstad run`, which hands the ready Tickets to the Tier agents (`ticket-light`, `ticket-standard`, `ticket-hard`), one at a time. When a Ticket's change touches one of the Project's Surfaces, the `verifier` agent, which never sees the implementer's report, Walks its acceptance criteria with the Project's Verify skill and records a Verdict; each Ticket lands with `verkstad land` once it is done and, where its diff touches a Surface, `live-verified`.
 
+In Claude Code, the verkstad sidebar opens beside the transcript in a Project (`/verkstad-run` opens it again): the Run going, with the Ticket it is on, its stage and its session's last tool call; what needs you (a red CI, a pull request to merge, issues labelled for you, Tickets to triage); the Tickets up next; and past Runs, each opening to its Tickets. Its buttons start a Run (detached, so it outlives the session), stop it after the Ticket it is on (`verkstad run --stop`), or abort it, discarding that Ticket's work so the next Run starts it afresh (`verkstad run --abort`).
+
 After a Run, `/verkstad:reflect` reads it (its event log and its sessions' transcripts through `verkstad run-log`, its Gate logs and Verdicts) and proposes changes to the loop, each with its evidence; it applies only those you approve.
 
 ## Develop

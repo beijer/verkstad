@@ -1,3 +1,4 @@
 node_modules/
 .claude/verkstad/
 .claude/worktrees/
+.claude-plugin/types/

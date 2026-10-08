@@ -11,9 +11,10 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 - `src/cli.ts` dispatches to one module per subcommand (`src/frontier.ts`, …). `src/gh.ts` is the only way to GitHub, `src/claude.ts` the only way to Claude Code (a headless `claude -p` session), `src/git.ts` the way to git, and `src/contract.ts` reads and checks the Contract.
 - `test/*.test.ts`: run by `node --test`. `test/project.ts` builds a throwaway Project; `test/stub/` holds the stub `gh` and the stub `claude`.
 - `skills/<name>/SKILL.md`, `agents/<name>.md`, and `prompts/*-prompt.md`: the implementing, verifying and conflict prompts `verkstad run` fills in (`src/prompts.ts`).
-- `hooks/hooks.json`: the plugin's one hook, PreToolUse, the `verkstad hook pre-tool-use` subcommand (`src/hook.ts`) run as `"${CLAUDE_PLUGIN_ROOT}"/bin/verkstad`, so that tests reach it through the CLI.
+- `hooks/hooks.json`: the plugin's one command hook, PreToolUse, the `verkstad hook pre-tool-use` subcommand (`src/hook.ts`) run as `"${CLAUDE_PLUGIN_ROOT}"/bin/verkstad`, so that tests reach it through the CLI.
+- `hooks/sidebar/`: the verkstad sidebar, the hooks module `hooks/hooks.json` names under `modules`. A pane (`/verkstad-run`) that reads the Runs' event logs, `verkstad frontier --json`, the issues and CI on GitHub and the current session's transcript, and whose Start, Stop and Abort buttons run this plugin copy's own `bin/verkstad` (`verkstad run`, `--stop`, `--abort`): every decision stays in the CLI. It runs in Claude Code's function-hooks environment, not under node: it imports only `claude-code` and its own files, and its state is declared in `types/index.d.ts`, which `plugin.json` names.
 - `docs/`: the Contract (`docs/contract.md`), the Verdict file (`docs/verdict.md`) and, in `docs/formats/`, the formats a Project's files and issues are written in; in `docs/research/`, the dated research an ADR cites as its evidence.
-- `scripts/`: verkstad's own Gate checks that are not tests, such as `check-borrowed.sh`.
+- `scripts/`: verkstad's own Gate checks that are not node's tests: `check-borrowed.sh`, and `test-sidebar.sh`, which runs the sidebar's tests.
 
 ## The CLI
 
@@ -33,6 +34,8 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 ## Tests
 
 One seam: a test runs `bin/verkstad` as a process and observes exit code, stdout, stderr, the bare origin's git state, the stub's state and the `gh` and `claude` calls it recorded. Tests never import from `src/`.
+
+The sidebar is the one exception: its tests, `hooks/sidebar/*.test.ts`, use Claude Code's own kit (`claude-code/testing`), which loads the plugin's hooks module, answers its `$` calls (`process.run`, `fs.*`) from the test, and draws its pane on the terminal and desktop surfaces. The Gate's `sidebar` step runs them with `scripts/test-sidebar.sh`, skipped where `claude` is not installed, as in CI.
 
 - `project(t, seed)` (test/project.ts) builds a throwaway Project in a temp dir: a git repo with a Contract whose `origin` is a local bare repo, the stub `gh` and the stub `claude` first on the PATH, and a clean environment, so nothing reaches GitHub, Claude or the owner's git config.
 - The stub `claude` (test/stub/claude.ts) plays the headless sessions a test scripts, in order: commands run in the session's working directory, as an agent would, and written to the session's transcript with the failed tool calls a test scripts, then the report it prints, checked against the call's `--json-schema`. It accepts only the flags verkstad passes.
