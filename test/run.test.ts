@@ -726,7 +726,8 @@ test("run --abort kills the implementer session and what it started, discards th
       "verkstad start 7",
       ...commitFile(7, "a.txt", "half"),
       "verkstad review record",
-      `sleep 60 & echo "$PPID $$ $!" > "$TMPDIR/pids"; ${WAIT_FOR_GO}`,
+      // An orphan: its parent, the subshell, ends at once, so only the session's process group still holds it.
+      `(sleep 60 & echo $! > "$TMPDIR/orphan"); sleep 60 & echo "$PPID $$ $! $(cat "$TMPDIR/orphan")" > "$TMPDIR/pids"; ${WAIT_FOR_GO}`,
     ],
     report: report("done"),
   };
@@ -734,7 +735,7 @@ test("run --abort kills the implementer session and what it started, discards th
   const running = p.start(p.dir, "run");
   await waitFor("the implementer to start", () => existsSync(sign(p, "working")));
   const pids = readFileSync(sign(p, "pids"), "utf8").trim().split(" ").map(Number);
-  assert.equal(pids.length, 3);
+  assert.equal(pids.length, 4);
   assert.ok(pids.every(isAlive));
 
   const s = p.run("run", "--abort");

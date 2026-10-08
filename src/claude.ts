@@ -83,9 +83,18 @@ function descendants(pid: number): number[] {
   return found;
 }
 
-/** Kills `pid` and every process it started, found before any is killed, so that none is orphaned first. */
+/**
+ * Kills the session `pid`, the leader of its own process group, with every process it started: its group, which
+ * holds what was orphaned since, and its descendants, found before any is killed, which holds what left the group.
+ */
 function killTree(pid: number): void {
-  for (const p of [pid, ...descendants(pid)]) {
+  const tree = descendants(pid);
+  try {
+    process.kill(-pid, "SIGKILL");
+  } catch {
+    // The group has ended already.
+  }
+  for (const p of [pid, ...tree]) {
     try {
       process.kill(p, "SIGKILL");
     } catch {
@@ -123,7 +132,9 @@ export async function session(options: SessionOptions): Promise<SessionResult> {
 
   const r = await new Promise<{ stdout: string; stderr: string; status: number | null; ended: "timeout" | "aborted" | null }>(
     (done, failed) => {
-      const child = spawn("claude", args, { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"] });
+      // In a process group of its own, so that killing it kills what it started; the owner's Ctrl-C, which no
+      // longer reaches it, is passed on.
+      const child = spawn("claude", args, { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
       let stdout = "";
       let stderr = "";
       let ended: "timeout" | "aborted" | null = null;
@@ -133,6 +144,17 @@ export async function session(options: SessionOptions): Promise<SessionResult> {
       };
       const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => kill("timeout"), options.timeoutMs);
       const onAbort = () => kill("aborted");
+      const passOn = (signal: NodeJS.Signals) => {
+        if (child.pid !== undefined) killTree(child.pid);
+        process.kill(process.pid, signal);
+      };
+      const signals: NodeJS.Signals[] = ["SIGINT", "SIGTERM", "SIGHUP"];
+      for (const signal of signals) process.once(signal, passOn);
+      const settle = () => {
+        clearTimeout(timer);
+        options.signal?.removeEventListener("abort", onAbort);
+        for (const signal of signals) process.removeListener(signal, passOn);
+      };
       if (options.signal?.aborted) onAbort();
       options.signal?.addEventListener("abort", onAbort);
       child.stdout.setEncoding("utf8").on("data", (chunk: string) => (stdout += chunk));
@@ -141,13 +163,16 @@ export async function session(options: SessionOptions): Promise<SessionResult> {
       child.stdin.on("error", () => {});
       child.stdin.end(options.prompt);
       child.on("error", (error) => {
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", onAbort);
+        settle();
         failed(new Failure(`could not run claude: ${error.message}`));
       });
+      // A killed session's output is not read, so a process that escaped the kill holding its stdout cannot hang the Run.
+      child.on("exit", (status) => {
+        if (ended) settle();
+        if (ended) done({ stdout, stderr, status, ended });
+      });
       child.on("close", (status) => {
-        clearTimeout(timer);
-        options.signal?.removeEventListener("abort", onAbort);
+        settle();
         done({ stdout, stderr, status, ended });
       });
     },

@@ -60,7 +60,7 @@ import {
   VERIFY_SCHEMA,
   verifyPrompt,
 } from "./prompts.ts";
-import { deleteReview, reviewPath, missingReview } from "./review.ts";
+import { deleteReview, missingReview, reviewPath } from "./review.ts";
 import { branchPoint, touchedSurfaces } from "./surfaces.ts";
 import { failedToolCalls, readJsonLines, sessionDirs } from "./transcripts.ts";
 import { checkVerdict, type Verdict } from "./verdict.ts";
@@ -568,7 +568,8 @@ async function runTicket(run: Run, entry: Entry): Promise<Outcome> {
 async function work(run: Run, t: Ticket, first: Step): Promise<Outcome> {
   let step = first;
   for (let steps = 0; steps < MAX_STEPS; steps++) {
-    if (step.to !== "done") abortIfAsked(run);
+    // A Park decided on goes ahead, as one running would.
+    if (step.to !== "done" && step.to !== "park") abortIfAsked(run);
     switch (step.to) {
       case "implement":
         step = await implement(run, t, step.why);
@@ -957,6 +958,11 @@ function discard(run: Run, n: number): string {
   return what;
 }
 
+/** Whether an event-log line is a Run's end line. */
+function isEndLine(e: Record<string, unknown>): boolean {
+  return typeof e.run === "string" && e.run !== "started";
+}
+
 /** Whether process `pid` is alive; one we may not signal is. */
 function alive(pid: number): boolean {
   try {
@@ -976,10 +982,15 @@ function ask(what: Ask): void {
   const newest = existsSync(dir) ? readdirSync(dir).filter((name) => /^run-.*\.jsonl$/.test(name)).sort().pop() : undefined;
   const events = newest ? readJsonLines(join(dir, newest)) : [];
   const pid = events.find((e) => e.run === "started")?.pid;
-  if (!newest || events.some((e) => typeof e.run === "string" && e.run !== "started") || typeof pid !== "number" || !alive(pid)) {
+  if (!newest || events.some(isEndLine) || typeof pid !== "number" || !alive(pid)) {
     throw new Failure("no Run is going", 1);
   }
-  appendFileSync(join(dir, newest), JSON.stringify({ at: new Date().toISOString(), asked: what }) + "\n");
+  const file = join(dir, newest);
+  appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), asked: what }) + "\n");
+  // The Run may have ended between the reading and the asking.
+  const after = readJsonLines(file);
+  const end = after.findIndex(isEndLine);
+  if (end !== -1 && end < after.findLastIndex((e) => e.asked === what)) throw new Failure("no Run is going", 1);
   // The Ticket the Run is on: the last one claimed, unless it has landed or been Parked since.
   let n: number | null = null;
   for (const e of events) {
