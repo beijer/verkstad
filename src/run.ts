@@ -280,10 +280,14 @@ interface Ticket {
   landedAgain: boolean;
 }
 
-/** How a Ticket ended this Run: the line the summary shows, and the Surfaces it landed that the Contract lacks. */
+/**
+ * How a Ticket ended this Run: the line the summary shows, the Surfaces it landed that the Contract lacks, and
+ * whether its Landing waits on the owner to merge its pull request.
+ */
 interface Outcome {
   line: string;
   newSurfaces: NewSurface[];
+  awaitsMerge: boolean;
 }
 
 type Step =
@@ -578,10 +582,11 @@ function verify(run: Run, t: Ticket): Step {
     say(run, t.n, "touches no Surface; landing.");
     return { to: "land" };
   }
-  if (run.verify === null) {
+  const verifySkill = readVerify(t.worktree);
+  if (verifySkill === null) {
     return {
       to: "park",
-      why: `It declares ${walk.join(", ")}, but the Contract names no Verify skill to Walk it with: the first one is the owner's, through verkstad:create-verify.`,
+      why: `It touches ${walk.join(", ")}, but the Contract names no Verify skill to Walk it with: the first one is the owner's, through verkstad:create-verify.`,
     };
   }
   say(run, t.n, `touches ${walk.join(", ")}; the Verifier Walks it.`);
@@ -591,7 +596,7 @@ function verify(run: Run, t: Ticket): Step {
     base: run.base,
     logDir: run.logDir,
     worktree: t.worktree,
-    verify: run.verify,
+    verify: verifySkill,
     surfaces: walk,
     findings: t.failedVerdict,
   });
@@ -656,7 +661,7 @@ function land(run: Run, t: Ticket): Step {
     const line = landed ? `landed on ${run.base} in ${landed[1]}` : opened ? `waits on the owner to merge ${opened[1]}` : "landed";
     say(run, t.n, `${line}.`);
     log(run, { ticket: t.n, landed: line, ...(landed ? { commit: landed[1] } : {}) });
-    return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [] } };
+    return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [], awaitsMerge: !landed && opened !== null } };
   }
   const reason = /^reason: (\S+)\s*$/m.exec(r.stderr)?.[1] ?? "unknown";
   const message = landingMessage(r.stderr);
@@ -698,7 +703,7 @@ function land(run: Run, t: Ticket): Step {
     case "github-failed": {
       const line = `landed, but updating #${t.n} failed: ${firstLine(message)}`;
       log(run, { ticket: t.n, landed: line });
-      return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [] } };
+      return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [], awaitsMerge: false } };
     }
     default:
       throw new Failure(`#${t.n} did not land (${reason}): ${message}`);
@@ -738,11 +743,11 @@ function park(run: Run, t: Ticket, why: string): Outcome {
   const line = `parked: ${firstLine(why)}`;
   say(run, t.n, line);
   log(run, { ticket: t.n, parked: why.trim() });
-  return { line, newSurfaces: [] };
+  return { line, newSurfaces: [], awaitsMerge: false };
 }
 
 /** The Ticket that declares a Surface #n landed and teaches the Verify skill to drive it, in the Ticket format. */
-function surfaceTicket(n: number, spec: number | undefined, surface: NewSurface): { title: string; body: string } {
+function surfaceTicket(n: number, spec: number | undefined, surface: NewSurface, blockedBy: boolean): { title: string; body: string } {
   const what = surface.observes ? `: ${surface.observes}` : "";
   const globs = surface.globs.length ? ` with the globs ${surface.globs.map((g) => `\`${g}\``).join(", ")}` : "";
   const body = [
@@ -760,22 +765,29 @@ function surfaceTicket(n: number, spec: number | undefined, surface: NewSurface)
     "",
     "## Blocked by",
     "",
-    "None - can start immediately",
+    blockedBy ? `- #${n}` : "None - can start immediately",
     "",
   ].join("\n");
   return { title: `Declare the ${surface.name} Surface and teach the Verify skill to drive it`, body };
 }
 
-/** Files the Ticket that declares `surface`, a sub-issue of #n's Spec when it has one, ready for an agent. */
-function fileSurfaceTicket(run: Run, n: number, surface: NewSurface): Entry {
+/**
+ * Files the Ticket that declares `surface`, a sub-issue of #n's Spec when it has one, ready for an agent; blocked
+ * by #n when #n's pull request waits on the owner, since the Surface is not on the base branch until it merges.
+ */
+function fileSurfaceTicket(run: Run, n: number, surface: NewSurface, awaitsMerge: boolean): Entry {
   const spec = specOf(n);
-  const { title, body } = surfaceTicket(n, spec, surface);
+  const { title, body } = surfaceTicket(n, spec, surface, awaitsMerge);
   const url = gh(["issue", "create", "--title", title, "--body", body, "--label", "ready-for-agent"]).trim();
   const number = Number(/\/issues\/(\d+)$/.exec(url)?.[1]);
   if (!number) throw new Failure(`gh issue create printed no issue URL: ${url}`);
   if (spec !== undefined) {
     const { id } = ghJson<{ id: number }>(["api", `repos/{owner}/{repo}/issues/${number}`]);
     gh(["api", "--method", "POST", `repos/{owner}/{repo}/issues/${spec}/sub_issues`, "-F", `sub_issue_id=${id}`]);
+  }
+  if (awaitsMerge) {
+    const { id } = ghJson<{ id: number }>(["api", `repos/{owner}/{repo}/issues/${n}`]);
+    gh(["api", "--method", "POST", `repos/{owner}/{repo}/issues/${number}/dependencies/blocked_by`, "-F", `issue_id=${id}`]);
   }
   log(run, { ticket: n, filed: number, surface: surface.name, globs: surface.globs });
   return { number, title, labels: ["ready-for-agent"], assignees: [], open_blockers: [] };
@@ -823,20 +835,21 @@ export function run(args: string[]): void {
       tried.add(next.number);
       const outcome = runTicket(r, next);
       finished.push({ n: next.number, line: outcome.line });
-      const added = outcome.newSurfaces.map((s) => `${s.name}${s.observes ? ` (${s.observes})` : ""}`);
-      if (added.length && r.verify === null) {
+      const named = (s: NewSurface): string => `${s.name}${s.observes ? ` (${s.observes})` : ""}`;
+      if (outcome.newSurfaces.length && r.verify === null) {
         say(
           r,
           next.number,
-          `added a Surface the Contract lacks: ${added.join(", ")}. Stopping: the Project has no Verify skill yet; ` +
+          `added a Surface the Contract lacks: ${outcome.newSurfaces.map(named).join(", ")}. Stopping: the Project has no Verify skill yet; ` +
             "run /verkstad:setup to declare it, then /verkstad:create-verify.",
         );
         break;
       }
-      for (const [i, surface] of outcome.newSurfaces.entries()) {
-        const entry = fileSurfaceTicket(r, next.number, surface);
-        say(r, next.number, `added a Surface the Contract lacks: ${added[i]}; filed #${entry.number} to declare it, next.`);
-        filed.push(entry);
+      for (const surface of outcome.newSurfaces) {
+        const entry = fileSurfaceTicket(r, next.number, surface, outcome.awaitsMerge);
+        const when = outcome.awaitsMerge ? `blocked by #${next.number} until its pull request is merged` : "next";
+        say(r, next.number, `added a Surface the Contract lacks: ${named(surface)}; filed #${entry.number} to declare it, ${when}.`);
+        if (!outcome.awaitsMerge) filed.push(entry);
       }
       next = filed.shift() ?? readFrontier().ready.find((e) => !tried.has(e.number));
     }

@@ -486,6 +486,57 @@ test("run files the declaring Ticket with no Parent when the landed Ticket has n
   assert.ok(!p.calls().some((c) => c.join(" ").includes("sub_issues")));
 });
 
+test("run files the declaring Ticket blocked by a Ticket whose pull request waits on the owner, and does not work it yet", (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [implemented(7, "cli.txt", { new_surfaces: [CLI_SURFACE] }), implemented(9, "b.txt")], {
+    verify: "verify-app",
+    landing: "pull-request",
+  });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(
+    r.stdout.includes("\n#7 added a Surface the Contract lacks: cli (the first CLI command and what it prints); filed #11 to declare it, blocked by #7 until its pull request is merged.\n#9 Ticket 9: claimed, "),
+    r.stdout,
+  );
+  const filed = p.state().issues.find((i) => i.number === 11);
+  assert.ok(filed);
+  assert.deepEqual(filed.blockedBy, [7]);
+  assert.equal(filed.state, "open");
+  assert.match(filed.body, /\n## Blocked by\n\n- #7\n$/);
+  assert.equal(p.claudeCalls().length, 2);
+});
+
+test("run Parks a branch that declares a Surface in a Project whose Contract names no Verify skill", (t) => {
+  const declared = JSON.stringify(contract({ surfaces: [UI] }));
+  const declaring: StubSession = {
+    run: ["verkstad start 7", `printf '%s\\n' '${declared}' > .claude/harness.json`, "git commit -q -am 'Declares the Surface ui. Refs #7'", "verkstad review record"],
+    report: report("done"),
+  };
+  const p = runProject(t, [ready(7)], [declaring]);
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(
+    r.stdout.includes(
+      "\n#7 parked: It touches ui, but the Contract names no Verify skill to Walk it with: the first one is the owner's, through verkstad:create-verify.\n",
+    ),
+    r.stdout,
+  );
+  assert.deepEqual(p.state().issues[0].labels, ["needs-info"]);
+  assert.equal(p.claudeCalls().length, 1);
+});
+
+test("the stub claude refuses a new Surface reported without a glob", (t) => {
+  const p = runProject(t, [ready(7)], [implemented(7, "cli.txt", { new_surfaces: [{ ...CLI_SURFACE, globs: [] }] })], { verify: "verify-app" });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /stub claude: the report\.new_surfaces\[0\]\.globs has fewer than 1 items/);
+});
+
 test("run stops, leaving the Ticket claimed, when a session fails without a report", (t) => {
   const p = runProject(t, [ready(7), ready(9)], [{ subtype: "error_during_execution" }]);
 

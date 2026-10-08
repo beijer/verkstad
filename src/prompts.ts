@@ -174,7 +174,7 @@ export const IMPLEMENT_SCHEMA = {
         required: ["name", "globs", "observes"],
         properties: {
           name: { type: "string" },
-          globs: { type: "array", items: { type: "string" } },
+          globs: { type: "array", minItems: 1, items: { type: "string" } },
           observes: { type: "string", description: "One line on what a user or another system observes" },
         },
       },

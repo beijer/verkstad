@@ -44,7 +44,7 @@ function parse(args: string[]): Map<string, string> {
   return flags;
 }
 
-type Schema = { type?: string; enum?: unknown[]; required?: string[]; properties?: Record<string, Schema>; items?: Schema };
+type Schema = { type?: string; enum?: unknown[]; required?: string[]; properties?: Record<string, Schema>; items?: Schema; minItems?: number };
 
 /** Checks `value` against the parts of JSON Schema verkstad's schemas use; throws naming the first mismatch. */
 function check(value: unknown, schema: Schema, at: string): void {
@@ -60,6 +60,7 @@ function check(value: unknown, schema: Schema, at: string): void {
       check(v, property, `${at}.${key}`);
     }
   }
+  if (type === "array" && (value as unknown[]).length < (schema.minItems ?? 0)) throw new Error(`${at} has fewer than ${schema.minItems} items`);
   if (type === "array" && schema.items) (value as unknown[]).forEach((v, i) => check(v, schema.items as Schema, `${at}[${i}]`));
 }
 
