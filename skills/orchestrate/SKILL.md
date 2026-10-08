@@ -54,7 +54,7 @@ Every Ticket and Spec you show the user, in a table or in a sentence, is written
 
 5. **Route each completion.** Write the implementing agent's report to `<log>/report-<n>.md` with the Write tool. Run every command from the main checkout: reach a worktree with `git -C <worktree>` or a subshell `(cd <worktree> && …)`, never a bare `cd`, which leaves your shell inside it. Then act on its `status`. Its `worktree:` line is the worktree the commands below take.
    - **done**: Verify it, then land it, as below.
-   - **partial** (ran out of turns or context): Resume one Tier up, with the report as the reason. There is no Tier above hard; Park it.
+   - **partial** (ran out of turns or context): Resume one Tier up, with the report as the reason; a partial on hard is Resumed on hard. This is the Ticket's Resume, so a second partial is Parked.
    - **No report, turn limit reached** (the notification says the agent stopped at its turn limit): SendMessage the agent to do no new work, commit what is there as it stands, leave the worktree clean and report with the status that fits what is left. Route on that report. A second stop without a report is partial.
    - **blocked**: Park it. When the blocker is a decision question, put it in the final report with the agent's suggested option; when the user answers, Resume on the kept branch with the answer as the reason.
 
