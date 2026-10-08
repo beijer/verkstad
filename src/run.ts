@@ -33,7 +33,7 @@
 // FAILED_CALLS failed tool calls in its transcript, or a stop; or that it was clean.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
@@ -456,6 +456,8 @@ function freshWorktree(run: Run, t: Ticket): string {
   git(run.main, ["worktree", "prune"]);
   git(run.main, ["fetch", "--quiet", "origin", run.base]);
   git(run.main, ["worktree", "add", "--quiet", "--detach", wt, run.upstream]);
+  // Gitignored, so a fresh checkout lacks it; the session's scratch files go here.
+  mkdirSync(join(wt, ".claude", "verkstad"), { recursive: true });
   t.worktree = wt;
   return wt;
 }

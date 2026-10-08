@@ -590,3 +590,50 @@ test("run refuses a main checkout with uncommitted changes, starting nothing", (
   assert.equal(r.code, 1);
   assert.deepEqual(p.calls(), []);
 });
+
+/** Shell commands that record in `seen.txt`, committed on the Ticket's branch, whether the scratch directory is there. */
+function seesScratch(n: number): string[] {
+  return ['printf "%s\\n" "$(test -d .claude/verkstad && echo present || echo missing)" > seen.txt', "git add -A", `git commit -q -m "Records the scratch directory. Refs #${n}"`];
+}
+
+test("run makes the Ticket's worktree with its scratch directory before the implementer starts", (t) => {
+  const p = runProject(t, [ready(7)], [
+    { run: ["verkstad start 7", ...seesScratch(7), "verkstad review record"], report: report("done") },
+  ]);
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(p.git("--git-dir", p.origin, "show", "main:seen.txt"), "present");
+});
+
+test("run makes the scratch directory in the fresh worktree of a Resume and of a Fix round", (t) => {
+  const partial: StubSession = { run: ["verkstad start 7", ...commitFile(7, "a.txt", "half")], report: report("partial") };
+  const resumed: StubSession = { run: ["verkstad start 7 --resume", ...seesScratch(7), "verkstad review record"], report: report("done") };
+  const p = runProject(t, [ready(7)], [partial, resumed]);
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(p.git("--git-dir", p.origin, "show", "main:seen.txt"), "present");
+
+  const fixing: StubSession = { run: ["verkstad start 8 --resume", ...seesScratch(8), "verkstad review record"], report: report("done") };
+  const q = runProject(t, [ready(8)], [implemented(8, "ui/panel.txt"), verifies(8, "failed"), fixing, verifies(8, "live-verified")], { surfaces: [UI], verify: "verify-app" });
+
+  const s = q.run("run");
+
+  assert.equal(s.code, 0, s.stderr);
+  assert.equal(q.git("--git-dir", q.origin, "show", "main:seen.txt"), "present");
+});
+
+test("run refuses a Project that does not gitignore .claude/verkstad/, making no worktree", (t) => {
+  const p = runProject(t, [ready(7)], [], {}, { ".gitignore": ".claude/worktrees/\n" });
+
+  const r = p.run("run");
+
+  assert.equal(r.stdout, "");
+  assert.equal(r.stderr, "verkstad run: .claude/verkstad/ is not gitignored; add it to the Project's .gitignore\n");
+  assert.equal(r.code, 1);
+  assert.equal(existsSync(join(p.dir, ".claude", "worktrees")), false);
+  assert.deepEqual(p.calls(), []);
+});
