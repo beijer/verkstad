@@ -28,8 +28,10 @@ const subcommands: Record<string, Subcommand> = {
     run: frontier,
   },
   conflicts: {
-    usage: "verkstad conflicts <n>",
-    summary: "Fetches and prints the files a rebase of issue-<n> onto origin's base branch would conflict in, exiting 1 if any",
+    usage: "verkstad conflicts <n> [--rebase <worktree>]",
+    summary:
+      "Fetches and prints the files a rebase of issue-<n> onto origin's base branch would conflict in, exiting 1 if any; " +
+      "--rebase rebases a clean <worktree> on issue-<n> onto it when there are none",
     run: conflicts,
   },
   "convert-links": {
