@@ -1,0 +1,116 @@
+// A stub `claude`: plays the headless sessions a test scripts, in order. Each
+// call takes the next StubSession from $VERKSTAD_CLAUDE_STUB_DIR/sessions.json,
+// appends its argv, working directory and prompt to calls.jsonl, runs the
+// session's commands in its working directory as an agent would, and prints a
+// result as `claude -p --output-format json` does. It accepts exactly the flags
+// verkstad passes, checks the report against --json-schema, and fails loudly on
+// anything else, as on a call no session was scripted for.
+
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import type { StubSession } from "./state.ts";
+
+const VALUE_FLAGS = [
+  "--model",
+  "--effort",
+  "--max-turns",
+  "--append-system-prompt",
+  "--json-schema",
+  "--permission-mode",
+  "--permission-prompts",
+  "--output-format",
+  "--session-id",
+  "--resume",
+  "--max-budget-usd",
+  "--disallowedTools",
+  "--add-dir",
+];
+const BOOLEAN_FLAGS = ["-p"];
+
+/** The verkstad checkout this stub belongs to, whose `bin/` the session's commands find `verkstad` in. */
+const root = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
+
+function parse(args: string[]): Map<string, string> {
+  const flags = new Map<string, string>();
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (BOOLEAN_FLAGS.includes(arg)) flags.set(arg, "");
+    else if (VALUE_FLAGS.includes(arg) && i + 1 < args.length) flags.set(arg, args[++i]);
+    else throw new Error(`unsupported argument ${JSON.stringify(arg)}`);
+  }
+  return flags;
+}
+
+type Schema = { type?: string; enum?: unknown[]; required?: string[]; properties?: Record<string, Schema>; items?: Schema };
+
+/** Checks `value` against the parts of JSON Schema verkstad's schemas use; throws naming the first mismatch. */
+function check(value: unknown, schema: Schema, at: string): void {
+  if (schema.enum && !schema.enum.includes(value)) throw new Error(`${at} is ${JSON.stringify(value)}, not one of ${JSON.stringify(schema.enum)}`);
+  const type = Array.isArray(value) ? "array" : value === null ? "null" : typeof value;
+  if (schema.type && schema.type !== type) throw new Error(`${at} is ${type}, not ${schema.type}`);
+  if (type === "object") {
+    const object = value as Record<string, unknown>;
+    for (const key of schema.required ?? []) if (!(key in object)) throw new Error(`${at} lacks ${key}`);
+    for (const [key, v] of Object.entries(object)) {
+      const property = schema.properties?.[key];
+      if (!property) throw new Error(`${at} has ${key}, which the schema does not`);
+      check(v, property, `${at}.${key}`);
+    }
+  }
+  if (type === "array" && schema.items) (value as unknown[]).forEach((v, i) => check(v, schema.items as Schema, `${at}[${i}]`));
+}
+
+function main(): number {
+  const dir = process.env.VERKSTAD_CLAUDE_STUB_DIR;
+  if (!dir) {
+    process.stderr.write("stub claude: VERKSTAD_CLAUDE_STUB_DIR is not set; the stub runs only inside a test\n");
+    return 1;
+  }
+  const args = process.argv.slice(2);
+  const prompt = readFileSync(0, "utf8");
+  appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), prompt }) + "\n");
+  try {
+    const flags = parse(args);
+    for (const [flag, wanted] of [["-p", ""], ["--output-format", "json"], ["--permission-prompts", "none"]]) {
+      if (flags.get(flag) !== wanted) throw new Error(`verkstad must pass ${flag}${wanted ? ` ${wanted}` : ""}`);
+    }
+    if (!prompt.trim()) throw new Error("no prompt on stdin");
+    const queuePath = join(dir, "sessions.json");
+    const queue = JSON.parse(readFileSync(queuePath, "utf8")) as StubSession[];
+    const session = queue.shift();
+    if (!session) throw new Error(`no session is scripted for the prompt starting ${JSON.stringify(prompt.slice(0, 80))}`);
+    writeFileSync(queuePath, JSON.stringify(queue, null, 2) + "\n");
+
+    const env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}` };
+    for (const command of session.run ?? []) {
+      const r = spawnSync("sh", ["-c", command], { env, encoding: "utf8" });
+      if (r.status !== 0) throw new Error(`the session's command ${JSON.stringify(command)} failed: ${r.stderr.trim() || r.stdout.trim()}`);
+    }
+    if (session.report) {
+      const schema = flags.get("--json-schema");
+      if (!schema) throw new Error("a report needs --json-schema");
+      check(session.report, JSON.parse(schema) as Schema, "the report");
+    }
+    const subtype = session.subtype ?? "success";
+    const result = {
+      type: "result",
+      subtype,
+      is_error: subtype !== "success",
+      session_id: flags.get("--resume") ?? flags.get("--session-id") ?? randomUUID(),
+      num_turns: 12,
+      total_cost_usd: session.cost ?? 0.25,
+      result: subtype === "success" ? "Reported." : "",
+      ...(session.report ? { structured_output: session.report } : {}),
+    };
+    process.stdout.write(JSON.stringify(result) + "\n");
+    return 0;
+  } catch (error) {
+    process.stderr.write(`stub claude: ${(error as Error).message}\n`);
+    return 1;
+  }
+}
+
+process.exitCode = main();

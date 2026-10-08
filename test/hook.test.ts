@@ -440,3 +440,19 @@ test("in the main checkout and outside git, the hook lets a cd into the checkout
     }
   }
 });
+
+test("in a verkstad run session, which Claude Code does not isolate, the hook lets a heredoc edit, a cd into the worktree and an expanded variable through, and still refuses a zsh =word", (t) => {
+  const p = project(t);
+  const wt = agentWorktree(p);
+  const bin = resolve(dirname(fileURLToPath(import.meta.url)), "..", "bin", "verkstad");
+  const hookRun = (command: string, shell: string) => {
+    const env = { ...p.env, VERKSTAD_RUN: "1", SHELL: shell };
+    const r = spawnSync(bin, ["hook", "pre-tool-use"], { cwd: wt, env, input: bashEvent(wt, command), encoding: "utf8" });
+    return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+  };
+
+  for (const command of [pythonEdit, `cd ${wt} && git status --short`, 'F=a.ts; grep git "$F"']) {
+    assert.deepEqual(hookRun(command, "/bin/bash"), { code: 0, stdout: "", stderr: "" }, command);
+  }
+  assert.deepEqual(hookRun("echo =====", "/usr/bin/zsh"), { code: 0, stdout: zshRefusal("=====", "'====='"), stderr: "" });
+});

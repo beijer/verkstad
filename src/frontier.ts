@@ -57,7 +57,7 @@ interface Blocker {
 }
 
 /** One labelled issue: a Ticket, or a Spec labelled by mistake. */
-interface Entry {
+export interface Entry {
   number: number;
   title: string;
   labels: string[];
@@ -66,7 +66,7 @@ interface Entry {
 }
 
 /** The Frontier (`ready`) and the rest of the labelled issues, by what holds each back. */
-interface Listing {
+export interface Listing {
   ready: Entry[];
   in_progress: Entry[];
   waiting: Entry[];
@@ -80,8 +80,13 @@ export function frontier(args: string[]): void {
 
   const stale = staleCopyWarning();
   if (stale) process.stderr.write(`verkstad frontier: ${stale}\n`);
-  const result = classify(fetchLabelled(READY_LABEL));
+  const result = readFrontier();
   process.stdout.write(json ? JSON.stringify(result, null, 2) + "\n" : render(result));
+}
+
+/** The Frontier and the rest of the issues labelled ready-for-agent, from GitHub, in number order. */
+export function readFrontier(): Listing {
+  return classify(fetchLabelled(READY_LABEL));
 }
 
 function fetchLabelled(label: string): IssueNode[] {

@@ -75,7 +75,7 @@ _Avoid_: artifacts, proof, logs
 ## The loop
 
 **Run**:
-One `verkstad:orchestrate` session that works the Frontier until nothing is ready or in flight.
+One `verkstad:orchestrate` session, or one `verkstad run`, that works the Frontier until nothing is ready or in flight.
 _Avoid_: batch, session, sprint
 
 **Gate**:

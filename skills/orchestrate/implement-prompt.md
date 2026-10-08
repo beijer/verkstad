@@ -3,7 +3,7 @@
 The prompt a Tier agent gets for one Ticket. Replace:
 
 - `{N}`: the Ticket's number. `{REPO}`: the Project's repo, `owner/name` (`gh repo view --json nameWithOwner`).
-- `{BASE}`: the Contract's `baseBranch`. `{LOG_DIR}`: the log directory's absolute path, `<main checkout>/.claude/verkstad`.
+- `{BASE}`: the Contract's `baseBranch`.
 - `{CURRENT_STATE}`: one paragraph on what landed so far this Run, from the reports; on the first dispatch, the last few lines of `git log --oneline`.
 
 Keep these lines only when they apply, and drop them otherwise:
@@ -18,31 +18,31 @@ Keep these lines only when they apply, and drop them otherwise:
 You are implementing Ticket #{N} of {REPO}. Your working directory is a git worktree of your own; stay in it. The `verkstad` command is on your PATH.
 
 Start:
-- `verkstad start {N}`: it fetches, creates issue-{N} from origin/{BASE} and deletes the branch the worktree came on. You now sit on the latest {BASE}.
+- `verkstad start {N}` puts you on a new branch, issue-{N}, from the latest origin/{BASE}.
 - Read the Ticket with `gh issue view {N} --comments`. Where a comment (an Agent Brief or an owner decision) disagrees with the body, the latest comment wins. {COMMENT}
 - Read `docs/agents/project.md`, the Project's prose doc: its stack, its commands, its rules and its references. Where it says something about this Project, it wins over this prompt. Then read CLAUDE.md, CONTEXT.md and the ADRs in docs/adr/ that the Ticket or CONTEXT.md cite. Use CONTEXT.md's terms in code, tests and messages.
 - The Ticket's Spec is #{SPEC}; read it only for the sections the Ticket names.
 
-Resume: this Ticket was started before. Instead of creating the branch, run `verkstad start {N} --resume`: it fetches, switches to issue-{N}, deletes the branch the worktree came on and rebases issue-{N} onto origin/{BASE}. If it stops on conflicts, resolve them with Skill verkstad:merge-conflicts. Why it came back: {RESUME_REASON}
+Resume: this Ticket was started before. Start with `verkstad start {N} --resume` instead, which rebases the existing issue-{N} onto origin/{BASE}; resolve any conflicts with Skill verkstad:merge-conflicts. Why it came back: {RESUME_REASON}
 
-Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it on its Surfaces, found it does not do what the Ticket says. This is not a Resume. Instead of creating the branch, run `verkstad start {N} --resume`: it fetches, switches to issue-{N}, deletes the branch the worktree came on and rebases issue-{N} onto origin/{BASE}. If it stops on conflicts, resolve them with Skill verkstad:merge-conflicts. Fix what it found, test-first, and Walk the criteria it names again yourself before you report; it will Walk every criterion again on your new commits. Its findings: {FINDINGS}
+Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it on its Surfaces, found it does not do what the Ticket says. Start with `verkstad start {N} --resume` instead, which rebases the existing issue-{N} onto origin/{BASE}; resolve any conflicts with Skill verkstad:merge-conflicts. Fix what it found, test-first, and Walk the criteria it names yourself before you report; it Walks every criterion again on your new commits. Its findings: {FINDINGS}
 
 Current state of the Project: {CURRENT_STATE}
 
-Keep notes and Walk evidence under `.claude/verkstad/` in your worktree (gitignored); Landing and Parking move them to the log directory, {LOG_DIR}. You cannot write to the log directory yourself.
+What a later agent or the owner needs to know about the Project goes in its docs, on your branch (CONTEXT.md, an ADR, or `docs/agents/project.md`); what concerns only this Ticket goes in your report, which is posted on the Ticket. Scratch files go under `.claude/verkstad/` in your worktree (gitignored) and are deleted with it.
 
 Work:
 - Implement exactly the Ticket and its acceptance criteria, nothing beyond. Test-first where there is logic (Skill verkstad:tdd), through the seams the prose doc names.
-- When the change alters something a user or another system observes (a UI, a generated file, a device the Project drives), Walk each acceptance criterion on it with the Project's Verify skill (the `verify` field of `.claude/harness.json`) before writing its end-to-end test, as the prose doc says. When you are done, a Verifier that never sees your report Walks the criteria again on your commits; what it finds comes back to you as a Fix round.
+- When the change alters something a user or another system observes (a UI, a generated file, a device the Project drives), Walk each acceptance criterion on it with the Project's Verify skill (the `verify` field of `.claude/harness.json`) before writing its end-to-end test, as the prose doc says. A Verifier, blind to your report, Walks them again after you.
 - When your change adds a check the Gate does not run yet (a test runner, a typecheck, a lint), add it as a step to `gate.steps` in `.claude/harness.json` (`{ "name": "unit tests", "command": "npm test" }`, run from the repo root), so that Landing runs it; run `verkstad gate` to see it pass. Never add or change a Surface or `verify` there: that is the owner's, through setup.
-- Run single tests while you work. Run `verkstad gate --quick` before review: every Gate step, with a slow suite narrowed to the test files your branch adds or changes. It prints a line per step, or the failing step's last lines and its full log's path. After your last commit, run `verkstad gate` in full once, on the clean worktree: Landing reuses that pass when the base has not moved, and runs the Gate again when it has.
+- Run single tests while you work, and `verkstad gate --quick` (every Gate step, a slow suite narrowed to the tests your branch touches) before review. Commit each time it passes, so that a stop loses little. After your last commit, run the full `verkstad gate` once on the clean worktree: Landing reuses that pass when the base has not moved.
 - When the Gate passes, run `git merge-base HEAD origin/{BASE}` on its own and review the branch with Skill verkstad:review against the commit it prints. Fix the real findings and run the Gate again.
 - Commit on issue-{N}, in the style of `git log --oneline`, each message ending with `Refs #{N}`. Leave the worktree clean.
-- Do not push, merge, close or comment on the Ticket; the orchestrator lands your branch and posts your report. {OTHER_AGENT}
+- Leave pushing, merging, closing and commenting to Landing: it lands your branch and posts your report. {OTHER_AGENT}
 - If the Ticket needs something only a human can give (hardware, an account, a decision neither the Ticket, CONTEXT.md nor an ADR settles), stop and report blocked. Do not guess and do not work around it.
 - Never report something as working that you did not run.
 
-Final report, under 250 words. The orchestrator reads it and posts it on the Ticket when it closes, so write it for the owner of the repo:
+Final report, under 250 words. It is posted on the Ticket, so write it for the owner of the repo:
 
 status: done | blocked | partial
 worktree: <absolute path>
@@ -57,5 +57,5 @@ tier: ok | too low (too low if you had to guess at a design or ran out of room)
 Pick the status by what is left, not by how long it took:
 - done: every acceptance criterion is met and the Gate passes. Uncertain lists your guesses and what you could not run, never a known bug.
 - blocked: you know of a bug or gap you cannot fix without a decision from the owner, or the Ticket needs something only a human can give. Put the question under Uncertain, one line, with the option you would pick. Commit what works first.
-- partial: work is left that you could do but ran out of turns or context for. Say exactly what is left. Going over the token guideline alone is not partial.
+- partial: work is left that you could do but ran out of budget, turns or context for. Say exactly what is left.
 ```

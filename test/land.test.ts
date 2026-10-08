@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { project, type Project } from "./project.ts";
@@ -599,7 +599,7 @@ test("--park refuses a worktree with uncommitted changes, which removing it woul
   assert.deepEqual(p.calls(), []);
 });
 
-/** Leaves, as an implementing agent does, notes and Walk evidence under the worktree's gitignored .claude/verkstad/. */
+/** Leaves, as an implementing agent may, scratch notes and Walk evidence under the worktree's gitignored .claude/verkstad/. */
 function leaveNotes(wt: string, files: Record<string, string>): void {
   for (const [path, content] of Object.entries(files)) {
     const file = join(wt, ".claude", "verkstad", path);
@@ -608,102 +608,41 @@ function leaveNotes(wt: string, files: Record<string, string>): void {
   }
 }
 
-/** A file in the main checkout's log directory, or null when there is none. */
-function logFile(p: Project, path: string): string | null {
-  const file = join(p.dir, ".claude", "verkstad", path);
-  return existsSync(file) ? readFileSync(file, "utf8") : null;
-}
-
-/** An agent's notes and evidence in its worktree, and a notes-7.md and evidence/7/ an earlier agent left in the log directory. */
-function notesScenario(p: Project, wt: string): void {
-  leaveNotes(wt, { "notes-7.md": "this agent's notes\n", "evidence/7/walk.txt": "what the Walk saw\n" });
-  mkdirSync(join(p.dir, ".claude", "verkstad", "evidence", "7"), { recursive: true });
-  writeFileSync(join(p.dir, ".claude", "verkstad", "notes-7.md"), "an earlier agent's notes\n");
-  writeFileSync(join(p.dir, ".claude", "verkstad", "evidence", "7", "shot.txt"), "an earlier Walk\n");
-}
-
-function assertNotesMoved(p: Project, stdout: string): void {
+/** The log directory's entries, sorted; none when it does not exist. */
+function logEntries(p: Project): string[] {
   const dir = join(p.dir, ".claude", "verkstad");
-  const moved = `Moved 2 entries from the worktree's .claude/verkstad/ into ${dir}:\n  evidence/7/walk.txt\n  notes-7.md, as notes-7-2.md\n`;
-  assert.ok(stdout.includes(moved), stdout);
-  assert.equal(logFile(p, "notes-7.md"), "an earlier agent's notes\n", "the file already there is kept");
-  assert.equal(logFile(p, "notes-7-2.md"), "this agent's notes\n", "the moved one is renamed beside it");
-  assert.equal(logFile(p, "evidence/7/walk.txt"), "what the Walk saw\n");
-  assert.equal(logFile(p, "evidence/7/shot.txt"), "an earlier Walk\n");
+  return existsSync(dir) ? readdirSync(dir).sort() : [];
 }
 
-test("a Landing moves what the agent left under the worktree's .claude/verkstad/ into the log directory, renaming a file whose name is taken", (t) => {
+test("a Landing removes the worktree with what the agent left under its .claude/verkstad/, keeping none of it", (t) => {
   const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
   const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
-  notesScenario(p, wt);
+  leaveNotes(wt, { "notes-7.md": "this agent's notes\n", "evidence/7/walk.txt": "what the Walk saw\n" });
 
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
   assert.equal(r.stderr, "");
   assert.equal(r.code, 0);
+  assert.match(r.stdout, /\nLanded #7 on main in [0-9a-f]+ and closed it\.\n$/);
+  assert.doesNotMatch(r.stdout, /Moved/);
   assert.equal(existsSync(wt), false, "the worktree is removed");
-  assertNotesMoved(p, r.stdout);
+  assert.deepEqual(logEntries(p).filter((e) => /notes|evidence/.test(e)), []);
 });
 
-test("--park moves what the agent left under the worktree's .claude/verkstad/ into the log directory, renaming a file whose name is taken", (t) => {
-  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
-  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
-  notesScenario(p, wt);
+test("--park and a failed Landing remove the worktree with what the agent left there too", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([{ name: "unit tests", command: "test ! -e broken.txt" }]) });
+  const parked = ticket(p, 7, { "feature.txt": "a feature\n" });
+  leaveNotes(parked, { "notes-7.md": "notes\n" });
+  const failed = ticket(p, 8, { "broken.txt": "x\n" });
+  leaveNotes(failed, { "notes-8.md": "notes\n" });
 
-  const r = p.run("land", "--park", "7", wt, tmpFile(p, "park-7.md", "Stuck.\n"));
+  const park = p.run("land", "--park", "7", parked, tmpFile(p, "park-7.md", "Stuck.\n"));
+  const land = p.run("land", "8", failed, tmpFile(p, "report-8.md", REPORT));
 
-  assert.equal(r.stderr, "");
-  assert.equal(r.code, 0);
-  assert.equal(existsSync(wt), false, "the worktree is removed");
-  assertNotesMoved(p, r.stdout);
-  assert.match(r.stdout, /\nParked #7: branch issue-7 pushed to origin, worktree removed, labelled needs-info\.\n$/);
-});
-
-test("--park keeps the worktree when what the agent left there cannot all be moved, and says what it moved", (t) => {
-  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
-  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
-  leaveNotes(wt, { "a-notes.md": "notes\n", "evidence/walk.txt": "what the Walk saw\n" });
-  const evidence = join(p.dir, ".claude", "verkstad", "evidence");
-  mkdirSync(evidence, { recursive: true });
-  chmodSync(evidence, 0o555);
-
-  const r = p.run("land", "--park", "7", wt, tmpFile(p, "park-7.md", "Stuck.\n"));
-
-  assert.equal(r.stderr, "");
-  assert.equal(r.code, 0);
-  const lines = r.stdout.split("\n");
-  assert.deepEqual(lines.slice(0, 2), [`Moved 1 entry from the worktree's .claude/verkstad/ into ${join(p.dir, ".claude", "verkstad")}:`, "  a-notes.md"]);
-  assert.match(lines[2], /^Could not move all of .*\/wt-7\/\.claude\/verkstad into the log directory: EACCES/);
-  assert.deepEqual(lines.slice(3), [`The worktree ${wt} is kept.`, "Parked #7: branch issue-7 pushed to origin, labelled needs-info.", ""]);
-  assert.equal(existsSync(join(wt, ".claude", "verkstad", "evidence", "walk.txt")), true, "what was not moved is still in the worktree");
-  assert.equal(logFile(p, "a-notes.md"), "notes\n");
-});
-
-test("a file the agent left with an old date is not pruned by the Landing that moves it", (t) => {
-  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "build", command: "true" }]) });
-  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
-  leaveNotes(wt, { "evidence/old.txt": "copied with its date\n" });
-  const old = new Date(Date.now() - 40 * DAY);
-  utimesSync(join(wt, ".claude", "verkstad", "evidence", "old.txt"), old, old);
-  utimesSync(join(wt, ".claude", "verkstad", "evidence"), old, old);
-
-  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
-
-  assert.equal(r.code, 0, r.stderr);
-  assert.doesNotMatch(r.stdout, /Pruned/);
-  assert.equal(logFile(p, "evidence/old.txt"), "copied with its date\n");
-});
-
-test("a failed Landing that removes the worktree moves what the agent left there into the log directory too", (t) => {
-  const p = project(t, { issues: [claimed(7)], contract: contract([{ name: "unit tests", command: "exit 1" }]) });
-  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
-  leaveNotes(wt, { "notes-7.md": "this agent's notes\n" });
-
-  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
-
-  assert.equal(reason(r.stderr), "reason: gate-failed");
-  assert.equal(existsSync(wt), false);
-  assert.equal(logFile(p, "notes-7.md"), "this agent's notes\n");
+  assert.equal(park.stdout, "Parked #7: branch issue-7 pushed to origin, worktree removed, labelled needs-info.\n");
+  assert.equal(reason(land.stderr), "reason: gate-failed");
+  assert.equal(existsSync(parked) || existsSync(failed), false, "both worktrees are removed");
+  assert.deepEqual(logEntries(p).filter((e) => e.startsWith("notes")), []);
 });
 
 const UI = [{ name: "ui", globs: ["src/ui/**"] }];

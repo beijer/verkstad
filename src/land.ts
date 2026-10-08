@@ -36,7 +36,6 @@ import { Failure } from "./fail.ts";
 import { recordedPass, recordedPassLog, runGate, StepFailure } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
-import { moveWorktreeLogs } from "./move-logs.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
 import { deleteReview, missingReview } from "./review.ts";
 import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
@@ -122,22 +121,21 @@ function readFile(path: string, what: string): string {
   return text;
 }
 
-/** What removing a worktree did: the lines saying what it moved and what it could not do, and whether it is gone. */
+/** What removing a worktree did: a line saying what it could not do, and whether it is gone. */
 interface Removal {
   notes: string;
   removed: boolean;
 }
 
 /**
- * Removes the worktree, even one Claude Code locked, keeping its branch, once what the agent left under its
- * .claude/verkstad/ is in the log directory. A worktree whose files could not all be moved is kept.
+ * Removes the worktree, even one Claude Code locked, keeping its branch. What an agent left in it, its scratch
+ * notes under .claude/verkstad/ included, goes with it: what matters is in the report, on the Ticket, or in
+ * the Project's docs on the branch.
  */
 function removeWorktree(main: string, root: string): Removal {
-  const moved = moveWorktreeLogs(root, logDirectory(main));
-  if (!moved.complete) return { notes: `${moved.notes}The worktree ${root} is kept.\n`, removed: false };
   const r = tryGit(main, ["worktree", "remove", "--force", "--force", root]);
-  if (r.status === 0) return { notes: moved.notes, removed: true };
-  return { notes: `${moved.notes}Could not remove the worktree ${root}: ${r.stderr.trim()}\n`, removed: false };
+  if (r.status === 0) return { notes: "", removed: true };
+  return { notes: `Could not remove the worktree ${root}: ${r.stderr.trim()}\n`, removed: false };
 }
 
 /**

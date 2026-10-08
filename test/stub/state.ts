@@ -70,3 +70,25 @@ export function subIssues(state: StubState, parent: number): StubIssue[] {
 export function findIssue(state: StubState, number: number): StubIssue | undefined {
   return state.issues.find((issue) => issue.number === number);
 }
+
+/**
+ * One headless session the stub `claude` plays (test/stub/claude.ts), in the order the CLI starts or resumes
+ * them: the shell commands it runs in its working directory, as an agent would, then the result it prints.
+ */
+export interface StubSession {
+  /** Commands run with `sh -c` in the session's working directory, in order; one that fails fails the stub. */
+  run?: string[];
+  /** The structured output, checked against the call's --json-schema; none when left out. */
+  report?: Record<string, unknown>;
+  /** The result's subtype: `success` by default, or e.g. `error_max_turns` for a session stopped at its limit. */
+  subtype?: string;
+  /** What the session cost, in USD; 0.25 by default. */
+  cost?: number;
+}
+
+/** A call the stub `claude` received: its argv, where it ran, and the prompt it read on stdin. */
+export interface StubClaudeCall {
+  args: string[];
+  cwd: string;
+  prompt: string;
+}

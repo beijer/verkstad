@@ -50,17 +50,18 @@ const commands: Record<string, Command> = {
     issue.state = "closed";
     return { stderr: `✓ Closed issue ${state.repo}#${issue.number}\n` };
   },
-  // Adds and removes labels and removes assignees; `@me` is the viewer.
+  // Adds and removes labels and assignees; `@me` is the viewer.
   "issue edit": (args, state) => {
     const { positionals, flags } = parse(args, {
-      value: ["--add-label", "--remove-label", "--remove-assignee"],
+      value: ["--add-label", "--remove-label", "--add-assignee", "--remove-assignee"],
     });
     const issue = issueArg(state, positionals);
     const values = (flag: string) =>
       (flags.get(flag) ?? []).flatMap((v) => v.split(",")).map((v) => (v === "@me" ? state.viewer : v));
     const labels = issue.labels.filter((l) => !values("--remove-label").includes(l));
     issue.labels = [...new Set([...labels, ...values("--add-label")])];
-    issue.assignees = issue.assignees.filter((a) => !values("--remove-assignee").includes(a));
+    const assignees = issue.assignees.filter((a) => !values("--remove-assignee").includes(a));
+    issue.assignees = [...new Set([...assignees, ...values("--add-assignee")])];
     return { stdout: `https://github.com/${state.repo}/issues/${issue.number}\n` };
   },
   "issue comment": (args, state) => {
@@ -212,6 +213,16 @@ const rest: RestRoute[] = [
     method: "GET",
     path: /^repos\/[^/]+\/[^/]+\/issues\/(\d+)$/,
     handle: ([, number], _fields, state) => restIssue(state, Number(number)),
+  },
+  // The issue's parent, whose sub-issue it is; 404 when it has none.
+  {
+    method: "GET",
+    path: /^repos\/[^/]+\/[^/]+\/issues\/(\d+)\/parent$/,
+    handle: ([, number], _fields, state) => {
+      const { parent } = issueOr404(state, Number(number));
+      if (parent === null) throw new HttpError(404, "No parent issue found");
+      return restIssue(state, parent);
+    },
   },
   // Adds the issue whose database id is `sub_issue_id` as a sub-issue; an issue has one parent at most.
   {

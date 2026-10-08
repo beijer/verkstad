@@ -10,6 +10,7 @@ import { labels } from "./labels.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
 import { review } from "./review.ts";
+import { run } from "./run.ts";
 import { runLog } from "./run-log.ts";
 import { start } from "./start.ts";
 import { surfaces } from "./surfaces.ts";
@@ -70,6 +71,13 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad review record",
     summary: "Records that the branch here was reviewed, at the commit HEAD is on, for Landing to check",
     run: review,
+  },
+  run: {
+    usage: "verkstad run [--max <n>] [--budget <usd>] [--dry-run]",
+    summary:
+      "Works the Frontier one Ticket at a time: a headless session implements each in its own worktree, " +
+      "the Verifier Walks it when it touches a Surface, and it lands or is Parked",
+    run,
   },
   "run-log": {
     usage: "verkstad run-log [--session <id>] [--log-dir <dir>]",

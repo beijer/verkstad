@@ -16,6 +16,9 @@
 // assigns a shell variable and expands it later, outside single quotes, whose reason says to
 // write the value out in its place.
 //
+// None of the three applies in a `verkstad run` session (VERKSTAD_RUN=1, set by src/claude.ts): it is a
+// plain `claude -p` in a worktree the Run made, which Claude Code does not isolate, so the guard never fires.
+//
 // When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it also
 // refuses a Bash command with an unquoted word that starts with =, or an assignment (before the
 // command, or an argument of export and its kin) whose value does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
@@ -340,6 +343,8 @@ export function hook(args: string[]): void {
   const change = CHANGE_DIRECTORY.exec(command);
   const variable = parsed.flatMap((segment) => segment.expansions)[0];
   if (!heredoc && !change && !variable) return;
+  // A `verkstad run` session is plain `claude -p` in a worktree the Run made, which Claude Code does not isolate.
+  if (process.env.VERKSTAD_RUN === "1") return;
   const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
   if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
   if (heredoc) return deny(REASON);

@@ -1,6 +1,7 @@
 // The throwaway Project every test runs the CLI against: a temp dir holding a
 // git repo with a Contract, whose `origin` is a local bare repo, and a stub `gh`
-// (test/stub/gh.ts) first on the PATH. Nothing reaches GitHub.
+// (test/stub/gh.ts) and a stub `claude` (test/stub/claude.ts) first on the PATH.
+// Nothing reaches GitHub or Claude.
 //
 //   const p = project(t, { issues: [{ number: 2, labels: ["ready-for-agent"] }] });
 //   const r = p.run("frontier", "--json");
@@ -14,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { StubFailure, StubIssue, StubLabel, StubPullRequest, StubState } from "./stub/state.ts";
+import type { StubClaudeCall, StubFailure, StubIssue, StubLabel, StubPullRequest, StubSession, StubState } from "./stub/state.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const verkstad = join(root, "bin", "verkstad");
@@ -32,6 +33,8 @@ export interface Seed {
   contract?: object | null;
   /** More files to commit in the Project, path → content. */
   files?: Record<string, string>;
+  /** The headless sessions the stub `claude` plays, in order (test/stub/claude.ts). */
+  sessions?: StubSession[];
 }
 
 export interface Result {
@@ -61,6 +64,10 @@ export interface Project {
   state(): StubState;
   /** Every `gh` call so far, as argv arrays. */
   calls(): string[][];
+  /** Every `claude` call so far: argv, working directory and prompt. */
+  claudeCalls(): StubClaudeCall[];
+  /** The scripted sessions the stub `claude` has not played yet. */
+  sessionsLeft(): StubSession[];
 }
 
 export const defaultContract = {
@@ -87,10 +94,12 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   const tmp = mkdtempSync(join(tmpdir(), "verkstad-test-"));
   t.after(() => rmSync(tmp, { recursive: true, force: true }));
   const stubDir = join(tmp, "gh");
+  const claudeDir = join(tmp, "claude");
   const home = join(tmp, "home");
   const dir = join(tmp, "project");
   const origin = join(tmp, "origin.git");
   mkdirSync(stubDir);
+  mkdirSync(claudeDir);
   mkdirSync(home);
 
   const state: StubState = {
@@ -104,6 +113,8 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   };
   writeFileSync(join(stubDir, "state.json"), JSON.stringify(state, null, 2) + "\n");
   writeFileSync(join(stubDir, "calls.jsonl"), "");
+  writeFileSync(join(claudeDir, "sessions.json"), JSON.stringify(seed.sessions ?? [], null, 2) + "\n");
+  writeFileSync(join(claudeDir, "calls.jsonl"), "");
   writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n");
 
   const env: NodeJS.ProcessEnv = {
@@ -112,6 +123,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
     GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
     GIT_CONFIG_NOSYSTEM: "1",
     VERKSTAD_GH_STUB_DIR: stubDir,
+    VERKSTAD_CLAUDE_STUB_DIR: claudeDir,
     TMPDIR: tmp,
     LANG: "C",
   };
@@ -174,5 +186,11 @@ export function project(t: TestContext, seed: Seed = {}): Project {
         .split("\n")
         .filter(Boolean)
         .map((line) => JSON.parse(line) as string[]),
+    claudeCalls: () =>
+      readFileSync(join(claudeDir, "calls.jsonl"), "utf8")
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as StubClaudeCall),
+    sessionsLeft: () => JSON.parse(readFileSync(join(claudeDir, "sessions.json"), "utf8")) as StubSession[],
   };
 }

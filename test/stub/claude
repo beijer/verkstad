@@ -1,0 +1,4 @@
+#!/bin/sh
+# The stub `claude` tests put first on the PATH; see test/stub/claude.ts.
+self=$(readlink -f "$0" 2>/dev/null || realpath "$0")
+exec node --no-warnings "$(dirname "$self")/claude.ts" "$@"

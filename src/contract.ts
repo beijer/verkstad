@@ -1,6 +1,6 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
 // checked here. Only the fields the CLI reads so far are checked (baseBranch,
-// gate, landing and surfaces), each by its reader; a malformed one fails naming
+// gate, landing, surfaces and verify), each by its reader; a malformed one fails naming
 // the field (docs/contract.md describes them all).
 
 import { existsSync, readFileSync } from "node:fs";
@@ -173,6 +173,12 @@ export function readSurfaces(root: string): Surface[] {
     if (first !== i) throw malformed(`surfaces[${i}].name '${s.name}' is already the name of surfaces[${first}]`);
   });
   return result;
+}
+
+/** The Contract's `verify`, the Project's Verify skill, or null when it has none. Only `run` reads it. */
+export function readVerify(root: string): string | null {
+  const { verify } = readJson(root);
+  return verify === undefined ? null : nonEmptyString(verify, "verify");
 }
 
 function readJson(root: string): JsonObject {

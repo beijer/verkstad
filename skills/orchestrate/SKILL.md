@@ -4,7 +4,7 @@ description: "Run a Project's Frontier: dispatch one Tier agent per ready Ticket
 disable-model-invocation: true
 ---
 
-Drive the Project's Frontier to closed Tickets, one background agent per Ticket, in dependency order. This is a Run, and you are the orchestrator. You never write code; you dispatch, wait, land and route. Keep your own context small: a Ticket's detail lives in its agent, not in you. The token figure in the Tier agents is a guideline for quality, not a limit: past it results tend to degrade, so treat an agent that ran far over as a sign the Ticket was too large, not as a failure.
+Drive the Project's Frontier to closed Tickets, one background agent per Ticket, in dependency order. This is a Run, and you are the orchestrator. You never write code; you dispatch, wait, land and route. Keep your own context small: a Ticket's detail lives in its agent, not in you.
 
 Run from the Project's main checkout. Every Ticket starts from the latest base branch and lands on it before anything that depends on it starts. The agents never push, merge, close or comment; every change to the tracker and the base branch is yours, made through the `verkstad` CLI (on the Bash tool's PATH while the plugin is enabled):
 
