@@ -1,9 +1,9 @@
 #!/bin/sh
 # The Gate's `borrowed` step (ADR 0002): only a Borrowed skill names a mattpocock-skills skill.
 #
-# It reads what agents read as instructions: skills/, agents/, docs/ (except docs/adr/, whose
+# It reads what agents read as instructions: skills/, agents/, prompts/, docs/ (except docs/adr/, whose
 # decisions tell the history), CLAUDE.md and .claude/, tracked or not, ignored files left out.
-# There it fails on the plugin's name, and in skills/ and agents/ also on a counterpart skill's
+# There it fails on the plugin's name, and in skills/, agents/ and prompts/ also on a counterpart skill's
 # bare slash name (`/to-tickets`). A Borrowed skill is a skills/<name>/SKILL.md with the line
 #   This is a Borrowed skill: follow `mattpocock-skills:<skill>`.
 # It may name that one skill and nothing else of the plugin, in at most max_lines lines.
@@ -47,9 +47,9 @@ done
 
 # $exempt is split on purpose: one pathspec per Borrowed skill. Paths hold no spaces.
 # shellcheck disable=SC2086
-hits=$(search -i "$plugin" -- skills agents docs CLAUDE.md .claude ':(exclude)docs/adr' $exempt)
+hits=$(search -i "$plugin" -- skills agents prompts docs CLAUDE.md .claude ':(exclude)docs/adr' $exempt)
 # shellcheck disable=SC2086
-slashes=$(search "$slash" -- skills agents $exempt)
+slashes=$(search "$slash" -- skills agents prompts $exempt)
 if [ -n "$hits$slashes" ]; then
   echo "Only a Borrowed skill may name a mattpocock-skills skill (ADR 0002); name the verkstad skill instead:"
   [ -z "$hits" ] || printf '%s\n' "$hits"

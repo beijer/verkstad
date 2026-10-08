@@ -22,7 +22,7 @@ function contract(steps: Step[], fields: Record<string, unknown> = {}): object {
   return { baseBranch: "main", gate: { steps }, surfaces: [], ...fields };
 }
 
-/** An open Ticket the orchestrator has claimed. */
+/** An open Ticket a Run has claimed. */
 function claimed(number: number): Partial<StubIssue> & { number: number } {
   return { number, labels: ["ready-for-agent"], assignees: ["owner"] };
 }
@@ -105,7 +105,7 @@ function issueOf(p: Project, n: number): StubIssue {
   return issue;
 }
 
-/** The last line of a failed Landing's stderr: the reason the orchestrator routes on. */
+/** The last line of a failed Landing's stderr: the reason a Run routes on. */
 function reason(stderr: string): string {
   return stderr.trimEnd().split("\n").at(-1) ?? "";
 }

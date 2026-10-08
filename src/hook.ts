@@ -2,45 +2,20 @@
 // sends it the event as JSON on stdin; it prints a decision as JSON on stdout, or nothing to
 // leave the call to the permission system.
 //
-// In an agent worktree, it refuses a Bash command that feeds a heredoc into `python3 -`,
-// `node -` or `cat >` (or `>>`), and names the Edit and Write tools: Claude Code's worktree
-// guard refuses such a command when its text mentions git, with a message that says nothing
-// about what to do instead. A command whose text does not mention git (`git` at the start of a
-// word, anywhere in the text, case-insensitive) passes, as the guard lets it run. In the main
-// checkout, outside git, and for any other command or tool, it prints nothing.
-//
-// In an agent worktree it also refuses two shapes of command that Claude Code's worktree
-// isolation refuses with a message that says nothing about what passes instead: one that starts
-// by changing into the worktree (`cd <the worktree or a path inside it> && …`, or `; …`), whose
-// reason names the rest of the command with the worktree's paths made relative; and one that
-// assigns a shell variable and expands it later, outside single quotes, whose reason says to
-// write the value out in its place.
-//
-// None of the three applies in a `verkstad run` session (VERKSTAD_RUN=1, set by src/claude.ts): it is a
-// plain `claude -p` in a worktree the Run made, which Claude Code does not isolate, so the guard never fires.
-//
-// When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it also
+// When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it
 // refuses a Bash command with an unquoted word that starts with =, or an assignment (before the
 // command, or an argument of export and its kin) whose value does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
-// none, abandons the rest of the command line. The reason says how to quote the word.
-//
-// `verkstad hook subagent-stop`, the plugin's SubagentStop hook, is in src/subagent-stop.ts.
+// none, abandons the rest of the command line. The reason says how to quote the word. For any
+// other command, shell or tool, it prints nothing.
 //
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.
 
-import { existsSync, readFileSync, realpathSync } from "node:fs";
-import { basename, relative, resolve } from "node:path";
+import { readFileSync } from "node:fs";
+import { basename } from "node:path";
 import { Failure } from "./fail.ts";
-import { inLinkedWorktree, worktreeRoot } from "./git.ts";
-import { subagentStop, type StopEvent } from "./subagent-stop.ts";
 
-const USAGE = "usage: verkstad hook pre-tool-use|subagent-stop";
-
-const REASON =
-  "verkstad: in an agent worktree, change a file with the Edit tool and create one with the Write tool, " +
-  "not with a heredoc fed to python3 -, node - or cat >: Claude Code's worktree guard refuses such a command " +
-  "when its text mentions git.";
+const USAGE = "usage: verkstad hook pre-tool-use";
 
 function zshReason(word: string, quoted: string): string {
   return (
@@ -49,47 +24,13 @@ function zshReason(word: string, quoted: string): string {
   );
 }
 
-function cdReason(worktree: string, rest: string, sub: string): string {
-  const moved = sub === "" ? "" : `it ran in ${sub}, so start a path relative to there with ${sub}/, and `;
-  return (
-    `verkstad: the Bash tool already runs in the agent worktree ${worktree}, and Claude Code's worktree isolation refuses ` +
-    `a command that starts by changing into it; ${moved}run this on its own instead, with paths relative to the worktree: ${rest}`
-  );
-}
-
-function variableReason({ name, value }: Variable): string {
-  return (
-    "verkstad: Claude Code's worktree isolation refuses a command that sets a shell variable and expands it later; " +
-    `write the value of ${name} out in place of $${name}: ${value}`
-  );
-}
-
-/** A shell variable a command line assigns, with the value it assigns. */
-interface Variable {
-  name: string;
-  value: string;
-}
-
-/**
- * One simple command of a Bash command line: its words, whether it reads a heredoc, the files
- * its stdout goes to, the words zsh would expand as a command path, each with the way to quote it,
- * and the variables it expands that an earlier assignment in the command line set.
- */
+/** One simple command of a Bash command line: its words, and the words zsh would expand as a command path, each with the way to quote it. */
 interface Segment {
   words: string[];
-  heredoc: boolean;
-  outputs: string[];
   equals: Array<{ word: string; quoted: string }>;
-  expansions: Variable[];
 }
 
-/** A variable's expansion, `$name`, `${name…` or `${#name}`, at the start of a text. */
-const EXPANSION = /^\$(?:\{#?)?([A-Za-z_][A-Za-z0-9_]*)/;
-
 const SEPARATORS = ";&|()`";
-
-/** Words that run the command after them, so that it is the one to look at. */
-const PREFIXES = new Set(["env", "command", "exec", "nohup", "time", "then", "do", "else", "!", "{"]);
 
 /** Reserved words after which a word is in command position, so that `[[` opens a test and `a==b` is an assignment. */
 const KEYWORDS = new Set(["if", "elif", "while", "until", "then", "do", "else", "!", "{", "time"]);
@@ -128,13 +69,13 @@ function lineEnd(command: string, i: number): number {
 
 /**
  * Splits a Bash command into its simple commands, the way the shell would closely enough to
- * tell what a heredoc is fed into: quotes and backslashes are removed from words, comments
+ * tell which words zsh would expand as a command path: quotes and backslashes are removed from words, comments
  * and arithmetic dropped, and a heredoc's body skipped, so that text inside a body or a quoted
  * string is never read as shell.
  */
 function segments(command: string): Segment[] {
   const out: Segment[] = [];
-  let segment: Segment = { words: [], heredoc: false, outputs: [], equals: [], expansions: [] };
+  let segment: Segment = { words: [], equals: [] };
   let word = "";
   // The word as written, with each quoted string or escaped character as one \0: what zsh
   // sees unquoted, so that =word is told apart from '=word'.
@@ -142,31 +83,15 @@ function segments(command: string): Segment[] {
   let inWord = false;
   // Inside [[ … ]], where zsh expands no =word.
   let condition = false;
-  // What the next word is the target of: a redirect of stdout, or another one.
-  let redirect: "stdout" | "other" | null = null;
+  // Whether the next word is the target of a redirect.
+  let redirect = false;
   const pending: Array<{ delimiter: string; strip: boolean }> = [];
-  // The variables the command line has assigned so far, by name, with their values.
-  const assigned = new Map<string, string>();
-  // The assignments the simple command being read starts with, which set variables only when no command follows.
-  let prefixes: Variable[] = [];
-  /** Notes the expansion `text` starts with when it is of a variable assigned so far. */
-  const expand = (text: string) => {
-    const name = EXPANSION.exec(text)?.[1];
-    const value = name === undefined ? undefined : assigned.get(name);
-    if (name !== undefined && value !== undefined) segment.expansions.push({ name, value });
-  };
 
   const endWord = () => {
     // Only reserved words and assignments come before it: the word is a command or an assignment.
-    const leading = redirect === null && segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w));
+    const leading = !redirect && segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w));
     const declares = segment.words.find((w) => !KEYWORDS.has(w) && !ASSIGNMENT.test(w));
-    const assignable = redirect === null && (declares === undefined || DECLARATIONS.has(declares));
-    const variable = inWord && !condition && assignable ? ASSIGNMENT.exec(shape) : null;
-    if (variable) {
-      const assignment = { name: variable[1], value: word.slice(variable[1].length + 1) };
-      if (declares === undefined) prefixes.push(assignment);
-      else assigned.set(assignment.name, assignment.value);
-    }
+    const assignable = !redirect && (declares === undefined || DECLARATIONS.has(declares));
     if (inWord && shape === "[[" && leading) condition = true;
     else if (inWord && shape === "]]" && condition) condition = false;
     else if (inWord && !condition) {
@@ -176,23 +101,17 @@ function segments(command: string): Segment[] {
         segment.equals.push({ word, quoted: `${name}=${singleQuoted(word.slice(name.length + 1))}` });
       } else if (/^=./.test(shape)) segment.equals.push({ word, quoted: singleQuoted(word) });
     }
-    if (inWord && redirect === "stdout") segment.outputs.push(word);
-    else if (inWord && redirect === null) segment.words.push(word);
-    if (inWord) redirect = null;
+    if (inWord && !redirect) segment.words.push(word);
+    if (inWord) redirect = false;
     word = "";
     shape = "";
     inWord = false;
   };
   const endSegment = () => {
     endWord();
-    redirect = null;
-    // Assignments before a command set its environment only; without a command they set the variables.
-    if (segment.words.every((w) => KEYWORDS.has(w) || ASSIGNMENT.test(w))) {
-      for (const { name, value } of prefixes) assigned.set(name, value);
-    }
-    prefixes = [];
-    if (segment.words.length || segment.heredoc || segment.equals.length || segment.expansions.length) out.push(segment);
-    segment = { words: [], heredoc: false, outputs: [], equals: [], expansions: [] };
+    redirect = false;
+    if (segment.words.length || segment.equals.length) out.push(segment);
+    segment = { words: [], equals: [] };
   };
   /** Skips the bodies of the heredocs the line just ended opened, returning the index after the last. */
   const skipBodies = (i: number): number => {
@@ -213,9 +132,6 @@ function segments(command: string): Segment[] {
     const c = command[i];
     if (c === "'" || c === '"' || command.startsWith("$'", i)) {
       const { text, end } = readQuoted(command, i);
-      if (c === '"') {
-        for (let j = i + 1; j < end; j++) if (command[j] === "$" && command[j - 1] !== "\\") expand(command.slice(j));
-      }
       word += text;
       shape += "\0";
       inWord = true;
@@ -242,7 +158,7 @@ function segments(command: string): Segment[] {
       i++;
     } else if (command.startsWith("<<<", i)) {
       endWord();
-      redirect = "other";
+      redirect = true;
       i += 3;
     } else if (command.startsWith("<<", i)) {
       endWord();
@@ -262,11 +178,10 @@ function segments(command: string): Segment[] {
         }
       }
       pending.push({ delimiter, strip });
-      segment.heredoc = true;
     } else if (command.startsWith("&>", i)) {
       endWord();
       i += command.startsWith("&>>", i) ? 3 : 2;
-      redirect = "stdout";
+      redirect = true;
     } else if (c === ">") {
       const fd = inWord && /^[0-9]+$/.test(word) ? word : "";
       if (fd) {
@@ -279,16 +194,15 @@ function segments(command: string): Segment[] {
       const duplicates = command[i] === "&" && /[0-9-]/.test(command[i + 1] ?? "");
       if (command[i] === "&") i++;
       if (duplicates) while (/[0-9-]/.test(command[i] ?? "")) i++;
-      else redirect = fd === "" || fd === "1" ? "stdout" : "other";
+      else redirect = true;
     } else if (c === "<") {
       endWord();
-      redirect = "other";
+      redirect = true;
       i++;
     } else if (SEPARATORS.includes(c)) {
       endSegment();
       i++;
     } else {
-      if (c === "$") expand(command.slice(i));
       word += c;
       shape += c;
       inWord = true;
@@ -299,85 +213,32 @@ function segments(command: string): Segment[] {
   return out;
 }
 
-/** Whether a simple command feeds a heredoc into `python3 -`, `node -` or `cat >`. */
-function heredocEdit(segment: Segment): boolean {
-  if (!segment.heredoc) return false;
-  const words = [...segment.words];
-  while (words.length && (PREFIXES.has(words[0]) || ASSIGNMENT.test(words[0]))) words.shift();
-  const [command, ...args] = words;
-  if (command === undefined) return false;
-  const name = basename(command);
-  if (name === "python3" || name === "node") return args.includes("-");
-  return name === "cat" && segment.outputs.some((file) => file !== "/dev/null");
-}
-
 interface ToolEvent {
-  cwd?: unknown;
   tool_name?: unknown;
   tool_input?: { command?: unknown };
 }
 
-/** The hook event `name` Claude Code sends as JSON on stdin. */
-function readEvent<Event extends object>(name: string): Event {
+/** The PreToolUse event Claude Code sends as JSON on stdin. */
+function readEvent(): ToolEvent {
   const text = readFileSync(0, "utf8");
   try {
     const event: unknown = JSON.parse(text);
-    if (typeof event === "object" && event !== null && !Array.isArray(event)) return event as Event;
+    if (typeof event === "object" && event !== null && !Array.isArray(event)) return event as ToolEvent;
   } catch {
     // Reported below.
   }
-  throw new Failure(`stdin is not a ${name} event as JSON`);
+  throw new Failure("stdin is not a PreToolUse event as JSON");
 }
 
 export function hook(args: string[]): void {
   if (args.length === 0) throw new Failure(`needs the hook event; ${USAGE}`, 2);
-  if (args.length === 1 && args[0] === "subagent-stop") return subagentStop(readEvent<StopEvent>("SubagentStop"));
   if (args.length !== 1 || args[0] !== "pre-tool-use") throw new Failure(`no hook for '${args.join(" ")}'; ${USAGE}`, 2);
-  const event = readEvent<ToolEvent>("PreToolUse");
+  const event = readEvent();
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
-  const parsed = segments(command);
-  const expanded = parsed.flatMap((segment) => segment.equals)[0];
-  if (basename(process.env.SHELL ?? "") === "zsh" && expanded) return deny(zshReason(expanded.word, expanded.quoted));
-  const heredoc = /\bgit/i.test(command) && parsed.some(heredocEdit);
-  const change = CHANGE_DIRECTORY.exec(command);
-  const variable = parsed.flatMap((segment) => segment.expansions)[0];
-  if (!heredoc && !change && !variable) return;
-  // A `verkstad run` session is plain `claude -p` in a worktree the Run made, which Claude Code does not isolate.
-  if (process.env.VERKSTAD_RUN === "1") return;
-  const cwd = typeof event.cwd === "string" ? event.cwd : process.cwd();
-  if (!existsSync(cwd) || !inLinkedWorktree(cwd)) return;
-  if (heredoc) return deny(REASON);
-  if (change) {
-    const [prefix, inSingleQuotes, inDoubleQuotes, plain] = change;
-    const directory = inSingleQuotes ?? inDoubleQuotes ?? plain;
-    const reason = changeInto(realpathSync(cwd), directory, command.slice(prefix.length).trim());
-    if (reason) return deny(reason);
-  }
-  if (variable) deny(variableReason(variable));
-}
-
-/**
- * `cd <directory>` followed by `&&` or `;` at the start of a command: the directory as one
- * single-quoted, double-quoted or plain word, with nothing in it the shell would expand.
- */
-const CHANGE_DIRECTORY = /^\s*cd\s+(?:'([^']*)'|"([^"$`\\]*)"|([^\s;&|<>()$`'"\\~-][^\s;&|<>()$`'"\\]*))\s*(?:&&|;)/;
-
-/**
- * The reason to refuse a command run in `cwd` that changes into `directory` and then runs
- * `rest`, when the directory is the agent worktree or inside it.
- */
-function changeInto(cwd: string, directory: string, rest: string): string | null {
-  const worktree = worktreeRoot(cwd);
-  const target = resolve(cwd, directory);
-  const real = existsSync(target) ? realpathSync(target) : target;
-  if (rest === "" || (real !== worktree && !real.startsWith(worktree + "/"))) return null;
-  // The worktree's path where a word or a quoted string starts: dropped before a path inside it, `.` on its own.
-  const escaped = worktree.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const path = `[^\\s;&|<>()'"]`;
-  const absolute = new RegExp(`(?<![^\\s'"=])${escaped}(?:(/(?=${path}))|/?(?!${path}))`, "g");
-  const relativeRest = rest.replace(absolute, (_, inside: string | undefined) => (inside ? "" : "."));
-  return cdReason(worktree, relativeRest, relative(worktree, real));
+  if (basename(process.env.SHELL ?? "") !== "zsh") return;
+  const expanded = segments(command).flatMap((segment) => segment.equals)[0];
+  if (expanded) deny(zshReason(expanded.word, expanded.quoted));
 }
 
 function deny(reason: string): void {

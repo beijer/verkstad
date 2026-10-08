@@ -18,7 +18,7 @@
 // branch goes to origin, its worktree (if a failed Landing left one) is
 // removed, it is labelled needs-info, unassigned and told why.
 //
-// Every failure ends in a line `reason: <code>` the orchestrator routes on
+// Every failure ends in a line `reason: <code>` a Run routes on
 // (docs/contract.md says what each leaves behind). A Landing that failed before
 // its push touches no issue and keeps the branch. After a refusal or an error
 // the worktree stays, and after a Verdict check fails too, since the Verifier
@@ -56,7 +56,7 @@ type Reason =
   | "github-failed"
   | "error";
 
-/** A failure the orchestrator routes on: the message, then `reason: <code>`. Refusals exit 2. */
+/** A failure a Run routes on: the message, then `reason: <code>`. Refusals exit 2. */
 class LandingFailure extends Failure {
   constructor(reason: Reason, message: string) {
     super(`${message}\nreason: ${reason}`, reason === "refused" ? 2 : 1);

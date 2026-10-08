@@ -72,7 +72,7 @@ Propose removals too. When a proposal adds a check, the same proposal removes th
 
 Each proposal names one change and where it goes:
 
-- a skill (`skills/<name>/SKILL.md`), a prompt (`skills/orchestrate/*-prompt.md`) or a Tier agent (`agents/<name>.md`) in verkstad;
+- a skill (`skills/<name>/SKILL.md`), a prompt (`prompts/*-prompt.md`) or a Tier agent (`agents/<name>.md`) in verkstad;
 - the CLI or a script: anything that needs code and tests is proposed as a Ticket for verkstad (or the Project), in the format of `${CLAUDE_PLUGIN_ROOT}/docs/formats/ticket.md`, so a Run builds it test-first;
 - the Contract: a field in `.claude/harness.json` (as `${CLAUDE_PLUGIN_ROOT}/docs/contract.md` describes it) or a line in `docs/agents/project.md` (in the format of `${CLAUDE_PLUGIN_ROOT}/docs/formats/agent-docs.md`);
 - a bug in the Project itself: a Ticket in the Project.

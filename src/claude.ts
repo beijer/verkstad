@@ -8,12 +8,11 @@ import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { Failure } from "./fail.ts";
 
-/** How a session runs: an agent's model, effort and turn limit, its system prompt, and the tools it may not use. */
+/** How a session runs: an agent's model and effort, its system prompt, and the tools it may not use. */
 export interface Agent {
   name: string;
   model: string;
   effort: string;
-  maxTurns: number;
   /** The agent file's body, appended to Claude Code's system prompt. */
   body: string;
   disallowedTools: string[];
@@ -26,8 +25,8 @@ export interface SessionOptions {
   schema: object;
   /** The session to continue, instead of starting a new one. */
   resume?: string;
-  /** A turn limit other than the agent's. */
-  maxTurns?: number;
+  /** The most turns the session may take. */
+  maxTurns: number;
   /** The most the session may spend, in USD. */
   budgetUsd?: number;
   /** Directories beyond `cwd` the session may write to without asking, such as the log directory. */
@@ -65,7 +64,7 @@ export function session(options: SessionOptions): SessionResult {
     "--effort",
     agent.effort,
     "--max-turns",
-    String(options.maxTurns ?? agent.maxTurns),
+    String(options.maxTurns),
     "--append-system-prompt",
     agent.body,
     "--json-schema",
@@ -81,13 +80,11 @@ export function session(options: SessionOptions): SessionResult {
   const id = options.resume ?? randomUUID();
   args.push(options.resume ? "--resume" : "--session-id", id);
 
-  // VERKSTAD_RUN tells the plugin's hook the session is a Run's, outside Claude Code's worktree isolation.
   const r = spawnSync("claude", args, {
     cwd: options.cwd,
     input: options.prompt,
     encoding: "utf8",
     maxBuffer: 64 * 1024 * 1024,
-    env: { ...process.env, VERKSTAD_RUN: "1" },
     timeout: options.timeoutMs,
   });
   if ((r.error as NodeJS.ErrnoException | undefined)?.code === "ETIMEDOUT") {

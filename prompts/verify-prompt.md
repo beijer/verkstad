@@ -48,7 +48,7 @@ Record it. Write the criteria with the Write tool to {LOG_DIR}/criteria-{N}.json
 
 It prints the state and the patch-id. It refuses a worktree with uncommitted changes to tracked files: then something you ran changed the worktree. Do not clean it up; report it, with `git -C {WORKTREE} status --short`.
 
-Final report, under 200 words. The orchestrator routes on its first line and posts nothing of it; the Verdict file is what goes on the Ticket.
+Final report, under 200 words. The Run routes on its first line and posts nothing of it; the Verdict file is what goes on the Ticket.
 
 verdict: live-verified | failed | blocked | test-verified | not recorded (and why)
 worktree: {WORKTREE}

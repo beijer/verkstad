@@ -1,9 +1,8 @@
-// `verkstad run [--max <n>] [--budget <usd>] [--dry-run]`: a Run without an
-// orchestrator session. From the Project's main checkout it works the Frontier
-// one Ticket at a time, lowest number first: it claims the Ticket, gives it a
-// worktree under .claude/worktrees/, and has a headless Claude Code session
-// (src/claude.ts) implement it with the orchestrate skill's implementing prompt
-// on the Ticket's Tier. Then it routes on the session's structured report: a
+// `verkstad run [--max <n>] [--budget <usd>] [--dry-run]`: a Run. From the
+// Project's main checkout it works the Frontier one Ticket at a time, lowest
+// number first: it claims the Ticket, gives it a worktree under
+// .claude/worktrees/, and has a headless Claude Code session (src/claude.ts)
+// implement it with the implementing prompt (prompts/) on the Ticket's Tier. Then it routes on the session's structured report: a
 // branch with no recorded review goes back to the same session to review it;
 // one touching a Surface goes to a Verifier session; a finished one goes to
 // `verkstad land`; what cannot finish is Parked with `verkstad land --park`.

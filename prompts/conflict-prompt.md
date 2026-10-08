@@ -13,7 +13,7 @@ Your job is narrow: rebase and keep both sides' behaviour. Do not redesign or ex
 - `verkstad start {N} --resume`: it fetches, switches to issue-{N}, deletes the branch the worktree came on and rebases onto origin/{BASE}. Resolve the conflicts it names with Skill verkstad:merge-conflicts. Read `gh issue view {N}` and the landed Tickets only as far as you need to know what each side must keep.
 - Files can merge without a textual conflict and still break: a switch that must now cover a new case, a union type missing a member, a UI element pushed out of its layout. Check `git diff origin/{BASE}` touches only #{N}'s changes and that {BASE}'s code is intact.
 - Run `verkstad gate` until it passes; every test from {BASE} and from issue-{N} must pass. Fixes the rebase needs beyond the conflict go in a commit ending `Refs #{N}`. Leave the worktree clean.
-- Do not push, merge, close or comment; the orchestrator lands your branch. Never report something as working that you did not run.
+- Do not push, merge, close or comment; Landing lands your branch. Never report something as working that you did not run.
 
 Final report, under 150 words:
 

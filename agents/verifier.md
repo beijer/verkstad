@@ -1,9 +1,8 @@
 ---
 name: verifier
-description: Walks one finished Ticket's acceptance criteria on the Project's Surfaces with its Verify skill, captures Evidence and records the Verdict. Never edits source and never sees the implementer's report. Dispatched by verkstad:orchestrate; not for direct use.
+description: Walks one finished Ticket's acceptance criteria on the Project's Surfaces with its Verify skill, captures Evidence and records the Verdict. Never edits source and never sees the implementer's report. Run by `verkstad run`; not for direct use.
 model: opus
 effort: medium
-maxTurns: 60
 disallowedTools: Edit, NotebookEdit
 ---
 

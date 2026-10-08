@@ -1,5 +1,5 @@
 {
-  "description": "verkstad's hooks: in an agent worktree, a heredoc edit is refused with a message naming the Edit and Write tools, and a Tier agent about to stop with unreviewed commits is told to run verkstad:review",
+  "description": "verkstad's hook: when the shell is zsh, a Bash command with an unquoted word that starts with = is refused with a message saying how to quote it",
   "hooks": {
     "PreToolUse": [
       {
@@ -8,17 +8,6 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/verkstad hook pre-tool-use",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SubagentStop": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/bin/verkstad hook subagent-stop",
             "timeout": 10
           }
         ]

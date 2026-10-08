@@ -1,10 +1,8 @@
 ---
 name: ticket-hard
-description: Implements one ready-for-agent Ticket that lays down what later Tickets build on (a protocol, a data model, a core pipeline) or leaves a design decision to the agent. Dispatched by verkstad:orchestrate; not for direct use.
+description: Implements one ready-for-agent Ticket that lays down what later Tickets build on (a protocol, a data model, a core pipeline) or leaves a design decision to the agent. Run by `verkstad run`; not for direct use.
 model: opus
 effort: high
-maxTurns: 200
-isolation: worktree
 skills:
   - verkstad:tdd
 ---

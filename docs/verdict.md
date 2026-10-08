@@ -62,4 +62,4 @@ On a pass it prints why and exits 0. On a failure it prints why on stderr and a 
 
 Landing runs the same check after its Gate and fails with the same reason (docs/contract.md), keeping the rebased branch in its worktree. A Landing that passes it closes the Ticket with its Verification state after the report, and the Verdict for the landed patch, if there is one, with its Evidence directory and a line per criterion; in the `pull-request` Landing mode the pull request's body carries them instead. Only a `live-verified` Verdict makes it more than `test-verified`.
 
-The check knows only the Surfaces whose globs the diff matches. A Surface the implementer's report names, which the globs miss, is the orchestrator's to add (ADR 0004): it runs the Verifier for it, but `land` does not hold the Ticket to that Verdict.
+The check knows only the Surfaces whose globs the diff matches. A Surface the implementer's report names, which the globs miss, is the Run's to add (ADR 0004): it runs the Verifier for it, but `land` does not hold the Ticket to that Verdict.

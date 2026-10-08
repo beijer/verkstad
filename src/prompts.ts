@@ -1,8 +1,7 @@
 // What a Run's sessions are told: the plugin's agents (agents/<name>.md, whose
-// frontmatter fixes model, effort and turn limit and whose body is the system
-// prompt) and the orchestrate skill's prompt templates
-// (skills/orchestrate/*-prompt.md, the first fenced block of each), filled in
-// here. A template line whose placeholder gets no value is an optional line and
+// frontmatter fixes model and effort and whose body is the system prompt) and
+// the prompt templates (prompts/*-prompt.md, the first fenced block of each),
+// filled in here. A template line whose placeholder gets no value is an optional line and
 // is dropped; a placeholder left over after filling means the template changed
 // under the code, and fails.
 
@@ -12,10 +11,10 @@ import { fileURLToPath } from "node:url";
 import type { Agent } from "./claude.ts";
 import { Failure } from "./fail.ts";
 
-/** The plugin's root: the directory holding agents/, skills/ and bin/. */
+/** The plugin's root: the directory holding agents/, prompts/, skills/ and bin/. */
 export const pluginRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
-/** Reads `agents/<name>.md`: its frontmatter's model, effort, maxTurns and disallowedTools, and its body. */
+/** Reads `agents/<name>.md`: its frontmatter's model, effort and disallowedTools, and its body. */
 export function readAgent(name: string): Agent {
   const path = join(pluginRoot, "agents", `${name}.md`);
   const text = readFileSync(path, "utf8");
@@ -31,22 +30,19 @@ export function readAgent(name: string): Agent {
     if (!value) throw new Failure(`${path} sets no ${key}`);
     return value;
   };
-  const maxTurns = Number(need("maxTurns"));
-  if (!Number.isInteger(maxTurns) || maxTurns < 1) throw new Failure(`${path}'s maxTurns is not a whole number`);
   const disallowed = fields.get("disallowedTools");
   return {
     name,
     model: need("model"),
     effort: need("effort"),
-    maxTurns,
     body: match[2].trim(),
     disallowedTools: disallowed ? disallowed.split(",").map((tool) => tool.trim()).filter(Boolean) : [],
   };
 }
 
-/** The first fenced block of `skills/orchestrate/<file>`. */
+/** The first fenced block of `prompts/<file>`. */
 function template(file: string): string {
-  const path = join(pluginRoot, "skills", "orchestrate", file);
+  const path = join(pluginRoot, "prompts", file);
   const block = /^```\n([\s\S]*?)\n```$/m.exec(readFileSync(path, "utf8"));
   if (!block) throw new Failure(`${path} has no prompt block`);
   return block[1];
