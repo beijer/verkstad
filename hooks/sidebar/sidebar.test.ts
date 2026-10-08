@@ -282,7 +282,7 @@ test('a log without a pid whose verkstad run still works in the Project is shown
   expect((await ui.find({ key: 'stop' }))?.text).toBe('■ Stop after #49')
 })
 
-test('Triage on an issue that needs it offers its triage as a task chip that opens a session of its own, and only there', async ($, on) => {
+test('Triage on an issue that needs it offers its triage as a task chip whose session reads the user-only triage skill, and only there', async ($, on) => {
   const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { desktop: true })
   await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
   await w.clock.settle()
@@ -293,7 +293,9 @@ test('Triage on an issue that needs it offers its triage as a task chip that ope
     expect.objectContaining({
       tool: 'mcp__ccd_session__spawn_task',
       title: 'Triage #52',
-      prompt: '/verkstad:triage owner/project#52',
+      prompt: expect.stringMatching(
+        /^Triage owner\/project#52 with verkstad's triage skill\. It is user-only, so the Skill tool cannot invoke it: read \/.+\/skills\/triage\/SKILL\.md and follow it for this one issue\.$/,
+      ),
     }),
   ])
   expect(await text(ui, /task chip/)).toBe('Triage of #52 is a task chip now: click it to open its session.')

@@ -309,6 +309,8 @@ async function control($: EngineInterface, p: Project, what: 'stop' | 'abort'): 
 /**
  * Starts triage of issue #n in a session of its own: on the desktop, a task chip the owner clicks to open the
  * session (the app's `spawn_task` tool); elsewhere, the command put in the prompt for the owner to send.
+ * The chip's session gets its prompt as a message, not a typed command, and the triage skill is user-only,
+ * so the message tells it to read the skill's SKILL.md from this plugin copy instead.
  */
 async function triage($: EngineInterface, p: Project, n: number): Promise<void> {
   await say($, `Starting triage of #${n}…`)
@@ -320,14 +322,17 @@ async function triage($: EngineInterface, p: Project, n: number): Promise<void> 
 }
 
 async function offerTriage($: EngineInterface, p: Project, n: number): Promise<void> {
-  const command = `/verkstad:triage ${p.repo ? `${p.repo}#${n}` : `#${n}`}`
+  const issue = p.repo ? `${p.repo}#${n}` : `#${n}`
+  const command = `/verkstad:triage ${issue}`
   const spawn = (await $.tool.list()).find(t => t.name === SPAWN_TASK)
   if (spawn) {
     await $.tool.call({
       tool: SPAWN_TASK,
       title: `Triage #${n}`,
       tldr: `Triage ${p.repo}#${n} with verkstad's triage skill, from the verkstad sidebar.`,
-      prompt: command,
+      prompt:
+        `Triage ${issue} with verkstad's triage skill. It is user-only, so the Skill tool cannot invoke it: ` +
+        `read ${$.plugin.root}/skills/triage/SKILL.md and follow it for this one issue.`,
     })
     return say($, `Triage of #${n} is a task chip now: click it to open its session.`)
   }
