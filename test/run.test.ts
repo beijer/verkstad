@@ -371,7 +371,7 @@ test("run has the Verifier Walk once more when it records no Verdict, and names 
 
   assert.equal(r.code, 0, r.stderr);
   assert.match(r.stdout, /\n#7 the Verifier recorded no Verdict for this patch \(\$0\.25\)\.\n#7 touches ui; the Verifier Walks it\.\n/);
-  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 the Verifier rerun\.\n$/);
+  assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 a Verifier rerun\.\n$/);
   assert.equal(p.state().issues[0].state, "closed");
 });
 

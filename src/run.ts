@@ -161,11 +161,11 @@ interface Run {
   sessions: number;
   cost: number;
   /** What each Ticket gave reflect to learn from, in the order it happened. */
-  lessons: Map<number, string[]>;
+  forReflect: Map<number, string[]>;
 }
 
 /** Checks the main checkout is one a Run may start from, and brings it level with origin. */
-function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "lessons"> {
+function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "forReflect"> {
   const main = worktreeRoot(process.cwd());
   if (inLinkedWorktree(main)) throw new Failure(`${main} is a worktree; run from the Project's main checkout`);
   const base = readContract(main).baseBranch;
@@ -196,30 +196,30 @@ function log(run: Run, event: Record<string, unknown>): void {
 }
 
 /** Notes something Ticket #n gave reflect to learn from, once. */
-function learn(run: Run, n: number, what: string): void {
-  const lessons = run.lessons.get(n) ?? [];
-  if (!lessons.includes(what)) lessons.push(what);
-  run.lessons.set(n, lessons);
+function forReflect(run: Run, n: number, what: string): void {
+  const noted = run.forReflect.get(n) ?? [];
+  if (!noted.includes(what)) noted.push(what);
+  run.forReflect.set(n, noted);
 }
 
 /** The summary's last line: what the Run gave reflect to learn from, per Ticket, or that it was clean. */
 function reflectLine(run: Run): string {
-  if (run.lessons.size === 0) {
+  if (run.forReflect.size === 0) {
     return (
       "The Run was clean: no Park, failed Landing, wrap-up, Resume, Fix round, Verifier rerun or session with more than " +
       `${FAILED_CALLS} failed tool calls.`
     );
   }
-  const tickets = [...run.lessons].map(([n, lessons]) => `#${n} ${lessons.join(", ")}`);
+  const tickets = [...run.forReflect].map(([n, noted]) => `#${n} ${noted.join(", ")}`);
   return `Something for /verkstad:reflect to learn from: ${tickets.join("; ")}.`;
 }
 
 /** Notes each of Ticket #n's sessions whose transcript has more than FAILED_CALLS failed tool calls. */
-function learnFailedCalls(run: Run, t: Ticket): void {
+function noteFailedCalls(run: Run, t: Ticket): void {
   const dirs = sessionDirs(run.main);
   for (const [id, role] of t.sessions) {
     const total = failedToolCalls(id, dirs)?.total ?? 0;
-    if (total > FAILED_CALLS) learn(run, t.n, `${/^[aeiou]/i.test(role) ? "an" : "a"} ${role} session with ${total} failed tool calls`);
+    if (total > FAILED_CALLS) forReflect(run, t.n, `${/^[aeiou]/i.test(role) ? "an" : "a"} ${role} session with ${total} failed tool calls`);
   }
 }
 
@@ -417,7 +417,7 @@ function wrapUp(run: Run, t: Ticket, role: Role, result: SessionResult, options:
     success: "ended",
   };
   say(run, t.n, `${role.name} ${how[result.subtype]} without a report; asking it to commit and report.`);
-  learn(run, t.n, `${role.name} asked to wrap up`);
+  forReflect(run, t.n, `${role.name} asked to wrap up`);
   const wrapping: SessionOptions = {
     ...options,
     prompt: role.walks ? WRAP_UP_VERIFIER : WRAP_UP_IMPLEMENTER,
@@ -503,10 +503,11 @@ function runTicket(run: Run, entry: Entry): Outcome {
   try {
     return work(run, t, step);
   } finally {
-    learnFailedCalls(run, t);
+    noteFailedCalls(run, t);
   }
 }
 
+/** Takes Ticket t from `first` from step to step until it lands or is Parked. */
 function work(run: Run, t: Ticket, first: Step): Outcome {
   let step = first;
   for (let steps = 0; steps < MAX_STEPS; steps++) {
@@ -588,7 +589,7 @@ function fromGit(run: Run, t: Ticket): Step {
   const done = commits.status === 0 ? commits.stdout.trim() : "";
   const what = done ? `it gave no report, even when asked; its branch has\n${done}` : "it gave no report, even when asked, and committed nothing";
   say(run, t.n, `implementer gave no report; ${done ? "its commits make it partial" : "it committed nothing"}.`);
-  learn(run, t.n, "read from its branch");
+  forReflect(run, t.n, "read from its branch");
   return resumeOrPark(run, t, `partial: ${what}`, `Resumed once, and ${what}`, true);
 }
 
@@ -597,7 +598,7 @@ function resumeOrPark(run: Run, t: Ticket, reason: string, parkWhy: string, up =
   if (t.resumed) return { to: "park", why: parkWhy };
   t.resumed = true;
   if (up) t.tier = TIERS[Math.min(TIERS.indexOf(t.tier) + 1, TIERS.length - 1)];
-  learn(run, t.n, "Resumed");
+  forReflect(run, t.n, "Resumed");
   say(run, t.n, `Resuming on the ${t.tier} Tier: ${firstLine(reason)}`);
   log(run, { ticket: t.n, resumed: firstLine(reason), tier: t.tier });
   return { to: "implement", why: { kind: "resume", reason } };
@@ -678,7 +679,7 @@ function routeVerdict(run: Run, t: Ticket, touched: boolean, cost: string): Step
     say(run, t.n, `the Verifier recorded no Verdict for this patch${cost}.`);
     if (t.verifierRerun) return { to: "park", why: `The Verifier recorded no Verdict, twice.\n\n${theReport}` };
     t.verifierRerun = true;
-    learn(run, t.n, "the Verifier rerun");
+    forReflect(run, t.n, "a Verifier rerun");
     return { to: "verify" };
   }
   say(run, t.n, `Verdict: ${verdict.state}${cost}.`);
@@ -689,7 +690,7 @@ function routeVerdict(run: Run, t: Ticket, touched: boolean, cost: string): Step
       if (t.fixRound) return { to: "park", why: `The Verdict is failed after the Fix round.\n\n${theReport}` };
       t.fixRound = true;
       t.failedVerdict = criteriaLines(verdict);
-      learn(run, t.n, "a Fix round");
+      forReflect(run, t.n, "a Fix round");
       say(run, t.n, `Fix round on the ${t.tier} Tier.`);
       return { to: "implement", why: { kind: "fix", reason: `${t.verifierReport}\nEvidence: ${verdict.evidence}` } };
     case "blocked":
@@ -726,7 +727,7 @@ function land(run: Run, t: Ticket): Step {
   const reason = /^reason: (\S+)\s*$/m.exec(r.stderr)?.[1] ?? "unknown";
   const message = landingMessage(r.stderr);
   say(run, t.n, `Landing failed: ${reason}.`);
-  learn(run, t.n, `Landing failed (${reason})`);
+  forReflect(run, t.n, `Landing failed (${reason})`);
   switch (reason) {
     case "review-missing":
       return { to: "review" };
@@ -739,7 +740,7 @@ function land(run: Run, t: Ticket): Step {
       // A second conflict is the Ticket's Resume.
       if (t.resumed) return { to: "park", why: `Resumed once, and Landing conflicted again.\n\n${message}` };
       t.resumed = true;
-      learn(run, t.n, "Resumed");
+      forReflect(run, t.n, "Resumed");
       return { to: "conflict", files };
     }
     case "gate-failed":
@@ -802,7 +803,7 @@ function park(run: Run, t: Ticket, why: string): Outcome {
   writeFileSync(file, why.trim() + "\n");
   const r = verkstad(run, ["land", "--park", String(t.n), t.worktree, file]);
   if (r.code !== 0) throw new Failure(`#${t.n} could not be Parked: ${landingMessage(r.stderr)}`);
-  learn(run, t.n, "Parked");
+  forReflect(run, t.n, "Parked");
   const line = `parked: ${firstLine(why)}`;
   say(run, t.n, line);
   log(run, { ticket: t.n, parked: why.trim() });
@@ -884,7 +885,7 @@ export function run(args: string[]): void {
     repo: `${owner}/${name}`,
     events: join(prepared.logDir, `run-${stamp}.jsonl`),
     handoff: mkdtempSync(join(tmpdir(), "verkstad-run-")),
-    lessons: new Map(),
+    forReflect: new Map(),
   };
   log(r, { run: "started", main: r.main, base: r.base, ready: ready.map((e) => e.number) });
 
@@ -920,7 +921,7 @@ export function run(args: string[]): void {
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
     stopped = error;
-    if (next) learn(r, next.number, "stopped the Run");
+    if (next) forReflect(r, next.number, "stopped the Run");
   } finally {
     rmSync(r.handoff, { recursive: true, force: true });
   }
