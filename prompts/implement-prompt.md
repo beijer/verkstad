@@ -29,7 +29,7 @@ Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it
 
 Current state of the Project: {CURRENT_STATE}
 
-What a later agent or the owner needs to know about the Project goes in its docs, on your branch (CONTEXT.md, an ADR, or `docs/agents/project.md`); what concerns only this Ticket goes in your report, which is posted on the Ticket. Scratch files go under `.claude/verkstad/` in your worktree (gitignored) and are deleted with it.
+What a later agent or the owner needs to know about the Project goes in its docs, on your branch (its glossary or an ADR, where `docs/agents/domain.md` puts them, or `docs/agents/project.md`); what concerns only this Ticket goes in your report, which is posted on the Ticket. Scratch files go under `.claude/verkstad/` in your worktree (gitignored) and are deleted with it.
 
 Work:
 - Implement exactly the Ticket and its acceptance criteria, nothing beyond. Test-first where there is logic (Skill verkstad:tdd), through the seams the prose doc names.
