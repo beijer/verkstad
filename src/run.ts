@@ -430,6 +430,7 @@ function runTicket(run: Run, entry: Entry): Outcome {
   };
   gh(["issue", "edit", String(n), "--add-assignee", "@me"]);
   say(run, n, `${entry.title}: claimed, ${describeTier(t.tier, run.budget)}.`);
+  log(run, { ticket: n, claimed: entry.title, tier: t.tier });
   let step: Step = hasBranch(run, n)
     ? { to: "implement", why: { kind: "resume", reason: `an earlier Run or a Park left the branch issue-${n}; continue it from where it is.` } }
     : { to: "implement" };
@@ -521,6 +522,7 @@ function resumeOrPark(run: Run, t: Ticket, reason: string, parkWhy: string, up =
   t.resumed = true;
   if (up) t.tier = TIERS[Math.min(TIERS.indexOf(t.tier) + 1, TIERS.length - 1)];
   say(run, t.n, `Resuming on the ${t.tier} Tier: ${firstLine(reason)}`);
+  log(run, { ticket: t.n, resumed: firstLine(reason), tier: t.tier });
   return { to: "implement", why: { kind: "resume", reason } };
 }
 
@@ -627,6 +629,7 @@ function land(run: Run, t: Ticket): Step {
     const opened = /^(?:Opened|Updated) (\S+) onto/m.exec(r.stdout);
     const line = landed ? `landed on ${run.base} in ${landed[1]}` : opened ? `waits on the owner to merge ${opened[1]}` : "landed";
     say(run, t.n, `${line}.`);
+    log(run, { ticket: t.n, landed: line, ...(landed ? { commit: landed[1] } : {}) });
     return { to: "done", outcome: { line, newSurface: t.report?.newSurface ?? null } };
   }
   const reason = /^reason: (\S+)\s*$/m.exec(r.stderr)?.[1] ?? "unknown";
@@ -658,8 +661,11 @@ function land(run: Run, t: Ticket): Step {
       return { to: "verify" };
     case "verdict-not-live":
       return routeVerdict(run, t, true, "");
-    case "github-failed":
-      return { to: "done", outcome: { line: `landed, but updating #${t.n} failed: ${firstLine(message)}`, newSurface: t.report?.newSurface ?? null } };
+    case "github-failed": {
+      const line = `landed, but updating #${t.n} failed: ${firstLine(message)}`;
+      log(run, { ticket: t.n, landed: line });
+      return { to: "done", outcome: { line, newSurface: t.report?.newSurface ?? null } };
+    }
     default:
       throw new Failure(`#${t.n} did not land (${reason}): ${message}`);
   }

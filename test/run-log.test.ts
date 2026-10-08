@@ -1,564 +1,255 @@
 import assert from "node:assert/strict";
-import { mkdirSync, realpathSync, utimesSync, writeFileSync } from "node:fs";
+import { mkdirSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { project, type Project } from "./project.ts";
 
-// Claude Code's transcripts, as `verkstad run-log` reads them: one JSONL file per session in
-// `~/.claude/projects/<the session's cwd, every character but letters and digits made ->/`, and
-// each subagent's transcript, with a `.meta.json` beside it, in `<session>/subagents/`.
+// `verkstad run-log` reads a Run's event log, `run-<time>.jsonl` in the log directory, and each session's
+// transcript, which Claude Code keeps in `~/.claude/projects/<the session's cwd, every character but letters
+// and digits made ->/<session id>.jsonl`.
+
+type Entry = Record<string, unknown>;
 
 /** A moment of the fixture Run: `min` minutes after 2026-10-01 20:00 UTC. */
 function at(min: number): string {
   return new Date(Date.UTC(2026, 9, 1, 20, 0) + min * 60_000).toISOString();
 }
 
-type Entry = Record<string, unknown>;
-
-const ORCHESTRATE = "<command-message>verkstad:orchestrate</command-message>\n<command-name>/verkstad:orchestrate</command-name>";
-
-function prompt(min: number, text: string, kind = "human"): Entry {
-  return { type: "user", isSidechain: false, timestamp: at(min), origin: { kind }, message: { role: "user", content: text } };
+function logDir(p: Project): string {
+  return join(realpathSync(p.dir), ".claude", "verkstad");
 }
 
-function notification(min: number, taskId: string, status: string): Entry {
-  const text = `<task-notification>\n<task-id>${taskId}</task-id>\n<status>${status}</status>\n<summary>Agent finished</summary>\n</task-notification>`;
-  return prompt(min, text, "task-notification");
+/** Writes an event log into the log directory, each event at the minute it names. */
+function writeRun(p: Project, name: string, events: Array<[number, Entry]>): string {
+  mkdirSync(logDir(p), { recursive: true });
+  const file = join(logDir(p), name);
+  writeFileSync(file, events.map(([min, e]) => JSON.stringify({ at: at(min), ...e })).join("\n") + "\n");
+  return file;
 }
 
-function usage(context: number): Entry {
-  return { input_tokens: 2, cache_read_input_tokens: context, cache_creation_input_tokens: 0, output_tokens: 40 };
+function worktree(p: Project, n: number): string {
+  return join(realpathSync(p.dir), ".claude", "worktrees", `issue-${n}`);
 }
 
-/** One content block of assistant message `msg`; a message with several blocks takes several entries. */
-function assistant(min: number, msg: string, block: Entry, context = 1000): Entry {
-  return { type: "assistant", timestamp: at(min), message: { id: msg, role: "assistant", content: [block], usage: usage(context) } };
+/** The path Claude Code keeps session `id`'s transcript at, when it ran in `cwd`. */
+function transcriptPath(p: Project, cwd: string, id: string): string {
+  return join(p.env.HOME!, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"), `${id}.jsonl`);
 }
 
-function call(min: number, msg: string, id: string, name: string, input: Entry, context?: number): Entry {
-  return assistant(min, msg, { type: "tool_use", id, name, input }, context);
+/** A transcript whose tool calls returned `results`, each `[text, isError]`. */
+function writeTranscript(p: Project, cwd: string, id: string, results: Array<[string, boolean]>): string {
+  const path = transcriptPath(p, cwd, id);
+  mkdirSync(join(path, ".."), { recursive: true });
+  const entries = results.flatMap(([text, isError], i) => [
+    { type: "assistant", sessionId: id, message: { id: `m${i}`, role: "assistant", content: [{ type: "tool_use", id: `t${i}`, name: "Bash", input: { command: "make" } }] } },
+    { type: "user", sessionId: id, message: { role: "user", content: [{ type: "tool_result", tool_use_id: `t${i}`, content: text, is_error: isError }] } },
+  ]);
+  writeFileSync(path, entries.map((e) => JSON.stringify(e)).join("\n") + "\n");
+  return path;
 }
 
-function say(min: number, msg: string, text: string, context?: number): Entry {
-  return assistant(min, msg, { type: "text", text }, context);
-}
-
-function result(min: number, id: string, text: string, isError = false): Entry {
-  return {
-    type: "user",
-    timestamp: at(min),
-    message: { role: "user", content: [{ type: "tool_result", tool_use_id: id, content: text, is_error: isError }] },
-  };
-}
-
-interface Agent {
-  id: string;
-  meta: Entry;
-  entries: Entry[];
-}
-
-/** The project directory Claude Code keeps the sessions run in `cwd` in, under the test's HOME. */
-function sessionDir(p: Project, cwd = realpathSync(p.dir)): string {
-  return join(p.env.HOME!, ".claude", "projects", cwd.replace(/[^A-Za-z0-9]/g, "-"));
-}
-
-function writeSession(p: Project, id: string, entries: Entry[], agents: Agent[] = [], dir = sessionDir(p)): void {
-  mkdirSync(dir, { recursive: true });
-  const jsonl = (es: Entry[]) => es.map((e) => JSON.stringify({ sessionId: id, ...e })).join("\n") + "\n";
-  writeFileSync(join(dir, `${id}.jsonl`), jsonl(entries));
-  if (!agents.length) return;
-  const sub = join(dir, id, "subagents");
-  mkdirSync(sub, { recursive: true });
-  for (const a of agents) {
-    writeFileSync(join(sub, `agent-${a.id}.jsonl`), jsonl(a.entries.map((e) => ({ isSidechain: true, agentId: a.id, ...e }))));
-    writeFileSync(join(sub, `agent-${a.id}.meta.json`), JSON.stringify(a.meta));
-  }
-}
-
-/** A file in the log directory, last written at `min`. */
-function logFile(p: Project, name: string, content: string, min: number): void {
-  const dir = join(p.dir, ".claude", "verkstad");
-  mkdirSync(dir, { recursive: true });
-  writeFileSync(join(dir, name), content);
-  const when = new Date(at(min));
-  utimesSync(join(dir, name), when, when);
-}
-
-const ISOLATED =
-  "This agent is isolated in the worktree /p/.claude/worktrees/agent-a1, but this command is too complex to verify that it stays inside the worktree. Refusing to run it.";
+const HOOK = "PreToolUse:Bash hook error: verkstad: zsh expands =word at the start of a word; quote it.";
 const DENIED = "Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Interfere With Workloads].";
+const FAILED = "Exit code 1\nmake: *** [all] Error 1";
 
-/** A Run with two implementers (one Resumed after a red Gate at Landing, one Parked) and a nested reviewer. */
-function seedRun(p: Project): void {
-  const failedLog = join(realpathSync(p.dir), ".claude", "verkstad", "gate-agent-a1-20261001-214400.log");
-  writeSession(p, "old-run", [prompt(0, ORCHESTRATE), say(1, "m0", "Nothing is ready.")]);
-
-  const agents: Agent[] = [
-    {
-      id: "a1",
-      meta: { agentType: "ticket-standard", description: "Ticket #7 import", spawnDepth: 1 },
-      entries: [
-        prompt(101, "You are implementing Ticket #7 of owner/project."),
-        say(102, "m1", "Reading the Ticket.", 30_000),
-        call(102, "m1", "t1", "Bash", { command: "git -C /elsewhere status\ngit log" }, 30_000),
-        result(103, "t1", ISOLATED, true),
-        call(104, "m2", "t2", "Bash", { command: "verkstad gate --quick" }, 40_600),
-        result(110, "t2", `ok  typecheck\nverkstad gate: unit tests failed (exit 1). The end of its output:\nexpected 2\nFull log: ${failedLog}`, true),
-        call(111, "m3", "t3", "SubagentHandback", { message: "status: done\nworktree: /p/.claude/worktrees/agent-a1\ntier: too low" }, 41_000),
-        say(112, "m4", "I've handed my report back.", 41_000),
-      ],
-    },
-    {
-      id: "a3",
-      meta: { agentType: "general-purpose", description: "Standards review of #7", parentAgentId: "a1", spawnDepth: 2 },
-      entries: [prompt(105, "Review the diff."), say(106, "m1", "No findings.", 12_000)],
-    },
-    {
-      id: "a2",
-      meta: { agentType: "ticket-light", description: "Ticket #9 export", spawnDepth: 1 },
-      entries: [
-        prompt(101, "You are implementing Ticket #9 of owner/project."),
-        call(102, "m1", "t1", "Bash", { command: "cd /p && git status" }, 20_000),
-        result(102, "t1", ISOLATED.replaceAll("a1", "a2"), true),
-        call(103, "m2", "t2", "Bash", { command: "kill 4242" }, 21_000),
-        result(103, "t2", DENIED, true),
-        call(104, "m3", "t3", "Bash", { command: "cd /p/wt && npm test -- export" }, 22_000),
-        result(104, "t3", "Exit code 1\n1 failing", true),
-        say(105, "m4", "status: blocked\nUncertain: the file name.\ntier: ok", 23_000),
-      ],
-    },
-  ];
-  writeSession(
-    p,
-    "new-run",
-    [
-      prompt(100, ORCHESTRATE),
-      { type: "user", isSidechain: false, isMeta: true, timestamp: at(100), message: { role: "user", content: "Base directory for this skill" } },
-      call(100, "m1", "o1", "Bash", { command: "verkstad frontier" }),
-      result(100, "o1", "ready: #7 #9"),
-      prompt(101, "yes, go"),
-      call(101, "m2", "o2", "Agent", { description: "Ticket #7 import", subagent_type: "verkstad:ticket-standard", prompt: "You are implementing Ticket #7" }),
-      call(101, "m2", "o3", "Agent", { description: "Ticket #9 export", subagent_type: "verkstad:ticket-light", prompt: "You are implementing Ticket #9" }),
-      notification(112, "a1", "completed"),
-      call(113, "m3", "o4", "Bash", { command: "verkstad land 7 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-7.md" }),
-      result(120, "o4", "ok  typecheck\nverkstad land: the Gate failed\nreason: gate-failed", true),
-      call(121, "m4", "o5", "Agent", { description: "Resume #7 red gate", subagent_type: "verkstad:ticket-standard", prompt: "Resume: …" }),
-      notification(122, "a2", "completed"),
-      call(123, "m5", "o6", "Bash", { command: "verkstad land --park 9 /p/.claude/worktrees/agent-a2 /p/.claude/verkstad/park-9.md" }),
-      result(124, "o6", "Parked #9."),
-      call(125, "m6", "o7", "Bash", { command: "verkstad land 7 /p/.claude/worktrees/agent-a4 /p/.claude/verkstad/report-7.md" }),
-      result(130, "o7", "Landed #7 on main in abc1234 and closed it."),
-      prompt(131, "next time, two at a time"),
-      say(131, "m7", "Run finished."),
-    ],
-    agents,
-  );
-  writeSession(p, "chat", [prompt(200, "what does verkstad:orchestrate do?"), say(201, "m1", "It runs the Frontier.")]);
-
-  logFile(p, "report-3.md", "status: done\ntier: ok\n", 1);
-  logFile(p, "report-7.md", "status: done\nworktree: /p/.claude/worktrees/agent-a4\n**tier:** too low\n", 121);
-  logFile(p, "verifier-9.md", "verdict: failed\nworktree: /p/.claude/worktrees/agent-a2\n", 122);
-  logFile(p, "park-9.md", "\nThe export needs a decision on the file name.\nMore detail.\n", 123);
-  logFile(
-    p,
-    "verdict-9.json",
-    JSON.stringify({
-      ticket: 9,
-      state: "failed",
-      criteria: [
-        { criterion: "Export opens a dialog", seen: "It opened." },
-        { criterion: "Export saves an SVG", seen: "Clicked Export; nothing was saved." },
-      ],
-    }),
-    122,
-  );
-  logFile(p, "verdict-4.json", JSON.stringify({ ticket: 4, state: "live-verified", criteria: [] }), 126);
-  logFile(p, "gate-agent-a1-20261001-214400.log", "== typecheck\n", 110);
-  logFile(p, "gate-agent-a4-20261001-220500.log", "== typecheck\n", 128);
-  logFile(p, "gate-agent-a0-20261001-200000.log", "== typecheck\n", 2);
+/** A Run of two Tickets: #7 Resumed one Tier up, then landed after a conflict; #8 Parked. */
+function seedRun(p: Project): string {
+  const wt7 = worktree(p, 7);
+  const land7 = ["land", "7", wt7, "/tmp/verkstad-run-x/report-7.md"];
+  return writeRun(p, "run-2026-10-01T20-00-00-000Z.jsonl", [
+    [0, { run: "started", main: realpathSync(p.dir), base: "main", ready: [7, 8] }],
+    [0, { ticket: 7, say: "Add a widget: claimed, standard Tier (opus, medium effort, $25 budget)." }],
+    [0, { ticket: 7, claimed: "Add a widget", tier: "standard" }],
+    [30, { ticket: 7, session: "implementer", id: "s-impl-7", subtype: "error_max_turns", cost: 3.1, turns: 60 }],
+    [32, { ticket: 7, session: "implementer", id: "s-impl-7", subtype: "success", cost: 0.4, turns: 5, status: "partial" }],
+    [32, { ticket: 7, resumed: "partial: the second screen is not done", tier: "hard" }],
+    [60, { ticket: 7, session: "implementer", id: "s-impl-7b", subtype: "success", cost: 6.25, turns: 80, status: "done" }],
+    [61, { verkstad: land7, code: 1, stderr: "verkstad land: rebasing issue-7 onto origin/main conflicts in src/a.ts\nreason: conflict\n" }],
+    [70, { ticket: 7, session: "conflict finisher", id: "s-conflict-7", subtype: "success", cost: 1.2, turns: 14, status: "done" }],
+    [71, { verkstad: land7, code: 0 }],
+    [71, { ticket: 7, landed: "landed on main in abc1234", commit: "abc1234" }],
+    [72, { ticket: 8, claimed: "Read the sensor", tier: "light" }],
+    [80, { ticket: 8, session: "implementer", id: "s-impl-8", subtype: "success", cost: 0.8, turns: 9, status: "blocked" }],
+    [81, { verkstad: ["land", "--park", "8", worktree(p, 8), "/tmp/verkstad-run-x/park-8.md"], code: 0 }],
+    [81, { ticket: 8, parked: "blocked: needs a USB device\n\nThe implementer's report:\nstatus: blocked" }],
+    [81, { run: "finished", sessions: 5, cost: 11.75, finished: [] }],
+  ]);
 }
 
-test("run-log digests the last session that invoked verkstad:orchestrate: its owner prompts, agents, tool errors and log files", (t) => {
+test("run-log digests the last Run's event log: per Ticket its Tier, sessions, failed Landings and outcome, each session's failed tool calls by kind, and the Run's totals", (t) => {
   const p = project(t);
-  seedRun(p);
-  const sessions = sessionDir(p);
-  const log = join(realpathSync(p.dir), ".claude", "verkstad");
+  writeRun(p, "run-2026-09-30T10-00-00-000Z.jsonl", [[0, { run: "started" }]]);
+  const file = seedRun(p);
+  const impl7 = writeTranscript(p, worktree(p, 7), "s-impl-7", [
+    ["ok", false],
+    [HOOK, true],
+    [DENIED, true],
+    [FAILED, true],
+    [FAILED, true],
+  ]);
+  const conflict7 = writeTranscript(p, worktree(p, 7), "s-conflict-7", [["ok", false]]);
+  const impl8 = writeTranscript(p, worktree(p, 8), "s-impl-8", [[FAILED, true]]);
 
   const r = p.run("run-log");
 
   assert.equal(r.stderr, "");
-  assert.equal(r.code, 0);
   assert.equal(
     r.stdout,
     [
-      "Run new-run, invoked as /verkstad:orchestrate, from 2026-10-01 21:40 to 2026-10-01 22:11 UTC",
-      `  Transcript: ${sessions}/new-run.jsonl`,
-      `  Agents' transcripts: ${sessions}/new-run/subagents/`,
-      `  Log directory: ${log}`,
+      "Run run-2026-10-01T20-00-00-000Z.jsonl, 2026-10-01 20:00 to 21:21 UTC: finished",
+      `  Event log: ${file}`,
       "",
-      "Owner prompts (2):",
-      "  2026-10-01 21:41  yes, go",
-      "  2026-10-01 22:11  next time, two at a time",
+      "#7 Add a widget: standard Tier, then hard",
+      "  implementer: stopped at its turn limit, $3.10, 60 turns",
+      `    ${impl7}: 4 failed tool calls: 1 hook refusal, 1 permission denial, 2 failed commands`,
+      "  implementer: ended, $0.40, 5 turns, status partial",
+      "    the same session as above",
+      "  implementer: ended, $6.25, 80 turns, status done",
+      "    transcript gone: no s-impl-7b.jsonl among the Project's sessions",
+      "  Landing failed: conflict: rebasing issue-7 onto origin/main conflicts in src/a.ts",
+      "  conflict finisher: ended, $1.20, 14 turns, status done",
+      `    ${conflict7}: no failed tool calls`,
+      "  landed on main in abc1234",
       "",
-      "Orchestrator: 7 turns, 1 error",
-      "  Dispatched: 3 agents; more than once: #7 (2)",
-      "  Landings: 2; failed: #7 gate-failed (new-run.jsonl:10); Parked: #9",
+      "#8 Read the sensor: light Tier",
+      "  implementer: ended, $0.80, 9 turns, status blocked",
+      `    ${impl8}: 1 failed tool call: 1 failed command`,
+      "  parked: blocked: needs a USB device",
       "",
-      "Agents (3):",
-      '  a1  ticket-standard  #7  4 turns, context 41k, no edit, gate 1 (1 failed), 2 errors  status done, tier too low  "Ticket #7 import"',
-      '  a2  ticket-light  #9  4 turns, context 23k, no edit, 3 errors (1 denied)  status blocked, tier ok  "Ticket #9 export"',
-      '  a3  general-purpose  #7  1 turn, context 12k, no edit, under a1  "Standards review of #7"',
-      "",
-      "Tool errors (6), by kind:",
-      "  2x in 2 agents: This agent is isolated in the worktree <path>, but this command is too complex to verify that it stays inside the workt…",
-      "    agent-a1.jsonl:4  git -C /elsewhere status",
-      "    agent-a2.jsonl:3  cd /p && git status",
-      "  1x: Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Interfere With Workloads].",
-      "    agent-a2.jsonl:5  kill 4242",
-      "  1x: exit N from npm",
-      "    agent-a2.jsonl:7  cd /p/wt && npm test -- export",
-      "  1x: verkstad gate: unit tests failed (exit N). The end of its output:",
-      "    agent-a1.jsonl:6  verkstad gate --quick",
-      "  1x: verkstad land: the Gate failed",
-      "    new-run.jsonl:10  verkstad land 7 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-7.md",
-      "",
-      "Largest tool results:",
-      "  0.2k  a1  Bash  verkstad gate --quick  agent-a1.jsonl:6",
-      "  0.2k  a1  Bash  git -C /elsewhere status  agent-a1.jsonl:4",
-      "  0.2k  a2  Bash  cd /p && git status  agent-a2.jsonl:3",
-      "  0.1k  a2  Bash  kill 4242  agent-a2.jsonl:5",
-      "  0.1k  orchestrator  Bash  verkstad land 7 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-7.md  new-run.jsonl:10",
-      "",
-      "Log directory, written during the Run (7 entries):",
-      "  report-7.md  status done, tier too low",
-      "  verifier-9.md  verdict failed",
-      "  park-9.md  The export needs a decision on the file name.",
-      "  verdict-4.json  live-verified",
-      "  verdict-9.json  failed",
-      "    Export opens a dialog: It opened.",
-      "    Export saves an SVG: Clicked Export; nothing was saved.",
-      "  gate logs: 2; failed: gate-agent-a1-20261001-214400.log",
+      "Totals: 2 Tickets (1 landed, 1 parked), 5 sessions, $11.75, 168 turns",
       "",
     ].join("\n"),
   );
+  assert.equal(r.code, 0);
 });
 
-test("run-log --session digests the session the owner names, even one that never invoked verkstad:orchestrate", (t) => {
+test("run-log --run digests the event log it names, and says how a Run that stopped ended and which Ticket it left", (t) => {
   const p = project(t);
   seedRun(p);
-  writeSession(p, "legacy-1234", [
-    prompt(300, "run the open Tickets"),
-    prompt(300, "<command-message>orchestrate-issues</command-message>\n<command-name>/orchestrate-issues</command-name>"),
-    prompt(301, "go ahead"),
-    say(302, "m1", "Done."),
+  const older = writeRun(p, "run-2026-09-30T10-00-00-000Z.jsonl", [
+    [0, { run: "started", main: realpathSync(p.dir), base: "main", ready: [5] }],
+    [0, { ticket: 5, claimed: "Fix the build", tier: "standard" }],
+    [9, { ticket: 5, session: "implementer", id: "s-impl-5", subtype: "error_during_execution", cost: 0.05, turns: 1 }],
+    [9, { verkstad: ["conflicts", "5", "--rebase", worktree(p, 5)], code: 2, stderr: "verkstad conflicts: no branch issue-5\n" }],
+    [9, { run: "stopped", sessions: 1, cost: 0.05, finished: [], error: "#5's implementing session failed (error_during_execution) without a report" }],
   ]);
 
-  const r = p.run("run-log", "--session", "legacy");
+  const r = p.run("run-log", "--run", older);
 
   assert.equal(r.stderr, "");
+  assert.equal(
+    r.stdout,
+    [
+      "Run run-2026-09-30T10-00-00-000Z.jsonl, 2026-10-01 20:00 to 20:09 UTC: stopped: #5's implementing session failed (error_during_execution) without a report",
+      `  Event log: ${older}`,
+      "",
+      "#5 Fix the build: standard Tier",
+      "  implementer: error_during_execution, $0.05, 1 turn",
+      "    transcript gone: no s-impl-5.jsonl among the Project's sessions",
+      "  verkstad conflicts failed: no branch issue-5",
+      "  no outcome: the Run ended before #5 landed or was Parked",
+      "",
+      "Totals: 1 Ticket (0 landed, 0 parked), 1 session, $0.05, 1 turn",
+      "",
+    ].join("\n"),
+  );
   assert.equal(r.code, 0);
-  const lines = r.stdout.split("\n");
-  assert.equal(lines[0], "Run legacy-1234, named by --session, from 2026-10-02 01:00 to 2026-10-02 01:02 UTC");
-  assert.ok(r.stdout.includes("Owner prompts (2):\n  2026-10-02 01:00  run the open Tickets\n  2026-10-02 01:01  go ahead\n"), r.stdout);
-  assert.ok(r.stdout.includes("Agents (0)\n"), r.stdout);
-  assert.ok(r.stdout.includes("Log directory, written during the Run (0 entries)\n"), r.stdout);
 });
 
-test("run-log --session starts a named session's Run at its last verkstad:orchestrate, through the Skill tool too", (t) => {
+test("run-log says a Run that never wrote its last line did not end", (t) => {
   const p = project(t);
-  writeSession(p, "mixed", [
-    prompt(500, "fix the README first"),
-    say(501, "m1", "Fixed."),
-    call(510, "m2", "s1", "Skill", { skill: "verkstad:orchestrate" }),
-    prompt(511, "go"),
-    say(512, "m3", "Nothing is ready."),
+  writeRun(p, "run-2026-10-01T20-00-00-000Z.jsonl", [
+    [0, { run: "started", main: realpathSync(p.dir), base: "main", ready: [9] }],
+    [0, { ticket: 9, claimed: "Ticket 9", tier: "hard" }],
   ]);
 
-  const r = p.run("run-log", "--session", "mixed");
+  const r = p.run("run-log");
 
-  assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^Run mixed, named by --session, from 2026-10-02 04:30 to 2026-10-02 04:32 UTC\n/);
-  assert.ok(r.stdout.includes("Owner prompts (1):\n  2026-10-02 04:31  go\n"), r.stdout);
-  assert.ok(r.stdout.includes("Orchestrator: 2 turns\n"), r.stdout);
+  assert.match(r.stdout, /^Run run-2026-10-01T20-00-00-000Z\.jsonl, 2026-10-01 20:00 to 20:00 UTC: did not end \(it is still going, or was killed\)\n/);
+  assert.match(r.stdout, /\n#9 Ticket 9: hard Tier\n {2}no outcome: the Run ended before #9 landed or was Parked\n\nTotals: 1 Ticket \(0 landed, 0 parked\), 0 sessions, \$0, 0 turns\n$/);
+  assert.equal(r.code, 0);
 });
 
-test("run-log ends the Run where its session invoked verkstad:reflect, and marks an agent whose task was killed", (t) => {
-  const p = project(t);
-  const killed = "<task-notification>\n<task-id>b1</task-id>\n<status>killed</status>\n</task-notification>";
-  writeSession(
-    p,
-    "run-then-reflect",
-    [
-      call(600, "m1", "s1", "Skill", { skill: "verkstad:orchestrate" }),
-      call(601, "m2", "o1", "Agent", { description: "Ticket #3 parser", prompt: "You are implementing Ticket #3" }),
-      { type: "queue-operation", operation: "enqueue", timestamp: at(605), content: killed },
-      call(606, "m3", "o2", "Bash", { command: 'grep -n "verkstad gate" docs/contract.md' }),
-      result(606, "o2", "Exit code 1", true),
-      prompt(610, "<command-message>verkstad:reflect</command-message>\n<command-name>/verkstad:reflect</command-name>"),
-      call(611, "m4", "o3", "Bash", { command: "verkstad run-log" }),
-      result(611, "o3", "Exit code 1\nverkstad run-log: no Run found", true),
-      prompt(612, "apply the first one"),
-    ],
-    [
+test("run-log reads the event log verkstad run writes", (t) => {
+  const p = project(t, {
+    issues: [{ number: 7, title: "Ticket 7", labels: ["ready-for-agent"] }],
+    contract: { baseBranch: "main", gate: { steps: [] }, surfaces: [] },
+    files: { ".gitignore": ".claude/verkstad/\n.claude/worktrees/\n" },
+    sessions: [
       {
-        id: "b1",
-        meta: { agentType: "ticket-light", description: "Ticket #3 parser" },
-        entries: [prompt(601, "You are implementing Ticket #3"), call(602, "m1", "t1", "Bash", { command: "verkstad gate --quick" }, 9_000), result(604, "t1", "Quick gate passed.")],
+        run: ["verkstad start 7", "printf 'built\\n' > a.txt", "git add -A", 'git commit -q -m "Adds a.txt. Refs #7"', "verkstad review record"],
+        report: {
+          status: "done",
+          worktree: "(the worktree)",
+          commits: [],
+          what_was_built: "The feature.",
+          acceptance_criteria: [{ criterion: "It works", verified_by: "a test" }],
+          surfaces: [],
+          new_surface: "none",
+          uncertain: [],
+          known_bug: false,
+          reviewed: true,
+          tier: "ok",
+          report: "status: done",
+        },
       },
-      { id: "c1", meta: { agentType: "Explore", description: "Find the Run's errors" }, entries: [prompt(611, "Find errors"), say(612, "m1", "None.")] },
     ],
-  );
-  logFile(p, "report-3.md", "status: partial\ntier: too low\n", 606);
-  logFile(p, "proposals.md", "written while reflecting", 640);
+  });
+  assert.equal(p.run("run").code, 0);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  const [call] = p.claudeCalls();
+  const id = call.args[call.args.indexOf("--session-id") + 1];
 
   const r = p.run("run-log");
 
-  assert.equal(r.code, 0, r.stderr);
-  assert.equal(
-    r.stdout.split("Agents' transcripts")[0].split("\n")[0],
-    "Run run-then-reflect, invoked as Skill verkstad:orchestrate, from 2026-10-02 06:00 to 2026-10-02 06:06 UTC",
-  );
-  assert.ok(r.stdout.includes("Owner prompts (0)\n\nOrchestrator: 3 turns, 1 error\n  Dispatched: 1 agent\n\n"), r.stdout);
-  assert.ok(r.stdout.includes('Agents (1):\n  b1  ticket-light  #3  1 turn, context 9k, no edit, gate 1, killed  "Ticket #3 parser"\n'), r.stdout);
-  assert.ok(r.stdout.includes("Tool errors (1), by kind:\n  1x: exit N from grep\n"), r.stdout);
-  // verkstad run-log's own result came after /verkstad:reflect, outside the Run.
-  assert.ok(
-    r.stdout.includes(
-      "Largest tool results:\n" +
-        "  0.0k  b1  Bash  verkstad gate --quick  agent-b1.jsonl:3\n" +
-        '  0.0k  orchestrator  Bash  grep -n "verkstad gate" docs/contract.md  run-then-reflect.jsonl:5\n\n',
-    ),
+  assert.equal(r.stderr, "");
+  assert.match(
     r.stdout,
-  );
-  assert.ok(r.stdout.endsWith("Log directory, written during the Run (1 entry):\n  report-3.md  status partial, tier too low\n"), r.stdout);
-});
-
-const REFUSED =
-  "This agent is isolated in the worktree /p/.claude/worktrees/agent-a1, but this command names git in a form too complex to verify that it stays inside the worktree. Refusing to run it. Split it into plain, separate commands.";
-
-test("run-log counts neither a Gate run nor a failure for a command the worktree guard refused, and neither a Landing", (t) => {
-  const p = project(t);
-  writeSession(
-    p,
-    "refused",
-    [
-      call(699, "m0", "s1", "Skill", { skill: "verkstad:orchestrate" }),
-      call(700, "m1", "o1", "Agent", { description: "Ticket #4 guard", prompt: "You are implementing Ticket #4" }),
-      call(701, "m2", "o2", "Bash", { command: "verkstad land 4 /p/.claude/worktrees/agent-a1 /p/.claude/verkstad/report-4.md" }),
-      result(702, "o2", REFUSED, true),
-    ],
-    [
-      {
-        id: "a1",
-        meta: { agentType: "ticket-light", description: "Ticket #4 guard" },
-        entries: [
-          prompt(700, "You are implementing Ticket #4"),
-          call(701, "m1", "t1", "Bash", { command: "cat <<E | sh\nverkstad gate --quick\nE" }, 9_000),
-          result(702, "t1", REFUSED, true),
-          call(703, "m2", "t2", "Bash", { command: "verkstad gate --quick" }),
-          result(704, "t2", "Quick gate passed."),
-          call(705, "m3", "t3", "Bash", { command: "verkstad gate" }),
-          result(706, "t3", "Gate passed."),
-        ],
-      },
-    ],
-  );
-
-  const r = p.run("run-log");
-
-  assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.stdout.includes("context 9k, no edit, gate 2, 1 error"), r.stdout);
-  assert.ok(!r.stdout.includes("failed)"), r.stdout);
-  assert.ok(!r.stdout.includes("Landings:"), r.stdout);
-  assert.ok(r.stdout.includes("Tool errors (2)"), r.stdout);
-});
-
-test("run-log counts neither a Gate run nor a Landing for a command the permission system denied", (t) => {
-  const p = project(t);
-  writeSession(
-    p,
-    "denied",
-    [
-      call(699, "m0", "s1", "Skill", { skill: "verkstad:orchestrate" }),
-      call(700, "m1", "o1", "Agent", { description: "Ticket #4 deny", prompt: "You are implementing Ticket #4" }),
-    ],
-    [
-      {
-        id: "a1",
-        meta: { agentType: "ticket-light", description: "Ticket #4 deny" },
-        entries: [
-          prompt(700, "You are implementing Ticket #4"),
-          call(701, "m1", "t1", "Bash", { command: "verkstad gate --quick" }, 9_000),
-          result(702, "t1", DENIED, true),
-          call(703, "m2", "t2", "Bash", { command: "verkstad land 4 /p/w /p/r.md" }),
-          result(704, "t2", DENIED, true),
-        ],
-      },
-    ],
-  );
-
-  const r = p.run("run-log");
-
-  assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.stdout.includes("context 9k, no edit, 2 errors (2 denied)"), r.stdout);
-  assert.ok(!r.stdout.includes("failed)"), r.stdout);
-  assert.ok(!r.stdout.includes("Landings:"), r.stdout);
-});
-
-test("run-log counts each agent's calls before its first edit, refused ones too, and lists the Run's five largest tool results", (t) => {
-  const p = project(t);
-  writeSession(
-    p,
-    "sizes",
-    [
-      call(650, "m0", "o0", "Bash", { command: "cat huge.log" }),
-      result(650, "o0", "q".repeat(90_000)),
-      call(699, "m1", "s1", "Skill", { skill: "verkstad:orchestrate" }),
-      call(700, "m2", "o1", "Agent", { description: "Ticket #5 parser", prompt: "You are implementing Ticket #5" }),
-      call(700, "m2", "o2", "Agent", { description: "Find the parser", prompt: "Find the parser" }),
-      call(709, "m3", "o3", "Bash", { command: "verkstad frontier --json" }),
-      result(709, "o3", "f".repeat(6_000)),
-    ],
-    [
-      {
-        id: "e1",
-        meta: { agentType: "ticket-standard", description: "Ticket #5 parser" },
-        entries: [
-          prompt(701, "You are implementing Ticket #5"),
-          call(702, "m1", "t1", "Read", { file_path: "/p/wt/src/big.ts" }, 10_000),
-          result(702, "t1", "x".repeat(48_200)),
-          call(703, "m2", "t2", "Grep", { pattern: "parse" }),
-          result(703, "t2", "src/a.ts:1"),
-          call(703, "m3", "t3", "Bash", { command: "git -C /p log" }),
-          result(703, "t3", REFUSED, true),
-          call(704, "m4", "t4", "Bash", { command: "kill 1" }),
-          result(704, "t4", DENIED, true),
-          call(704, "m5", "t5", "Glob", { pattern: "src/**" }),
-          result(704, "t5", "src/a.ts"),
-          call(705, "m6", "t6", "Bash", { command: "npm test 2>&1\necho done" }),
-          result(705, "t6", "y".repeat(12_400)),
-          call(706, "m7", "t7", "Read", { file_path: "/p/wt/src/a.ts" }),
-          result(706, "t7", "z".repeat(3_000)),
-          call(707, "m8", "t8", "Edit", { file_path: "/p/wt/src/a.ts", old_string: "a", new_string: "b" }),
-          result(707, "t8", "ok"),
-          call(708, "m9", "t9", "Bash", { command: "verkstad gate --quick" }),
-          result(708, "t9", "Quick gate passed."),
-        ],
-      },
-      {
-        id: "e2",
-        meta: { agentType: "Explore", description: "Find the parser" },
-        entries: [
-          prompt(702, "Find the parser"),
-          call(702, "m1", "t1", "Grep", { pattern: "parse", path: "/p/wt" }),
-          result(702, "t1", "w".repeat(20_000)),
-          call(703, "m2", "t2", "Read", { file_path: "/p/wt/src/parser.ts" }),
-          result(703, "t2", "v".repeat(5_100)),
-        ],
-      },
-    ],
-  );
-
-  const r = p.run("run-log");
-
-  assert.equal(r.code, 0, r.stderr);
-  assert.ok(
-    r.stdout.includes(
+    new RegExp(
       [
-        "Agents (2):",
-        '  e1  ticket-standard  #5  9 turns, context 10k, 7 calls before first edit, gate 1, 2 errors (1 denied)  "Ticket #5 parser"',
-        '  e2  Explore  -  2 turns, context 1k, no edit  "Find the parser"',
+        "^Run run-[0-9TZ-]+\\.jsonl, [0-9-]+ [0-9:]+ to [0-9:]+ UTC: finished",
+        "  Event log: .*",
         "",
+        "#7 Ticket 7: standard Tier",
+        "  implementer: ended, \\$0\\.25, 12 turns, status done",
+        `    transcript gone: no ${id}\\.jsonl among the Project's sessions`,
+        `  landed on main in ${sha}`,
+        "",
+        "Totals: 1 Ticket \\(1 landed, 0 parked\\), 1 session, \\$0\\.25, 12 turns",
+        "$",
       ].join("\n"),
     ),
-    r.stdout,
   );
-  assert.ok(
-    r.stdout.includes(
-      [
-        "Largest tool results:",
-        "  48.2k  e1  Read  /p/wt/src/big.ts  agent-e1.jsonl:3",
-        "  20.0k  e2  Grep  parse  agent-e2.jsonl:3",
-        "  12.4k  e1  Bash  npm test 2>&1  agent-e1.jsonl:13",
-        "  6.0k  orchestrator  Bash  verkstad frontier --json  sizes.jsonl:7",
-        "  5.1k  e2  Read  /p/wt/src/parser.ts  agent-e2.jsonl:5",
-        "",
-      ].join("\n"),
-    ),
-    r.stdout,
-  );
-  assert.ok(!r.stdout.includes("90.0k"), r.stdout);
+  assert.equal(r.code, 0);
 });
 
-test("run-log --log-dir reads the Run's files from another directory", (t) => {
+test("run-log with no event log says there is no Run to digest", (t) => {
   const p = project(t);
-  seedRun(p);
-  const other = join(p.dir, "..", "old-logs");
-  mkdirSync(other);
-  writeFileSync(join(other, "report-12.md"), "status: partial\ntier: too low\n");
-  const when = new Date(at(115));
-  utimesSync(join(other, "report-12.md"), when, when);
-
-  const r = p.run("run-log", "--log-dir", other);
-
-  assert.equal(r.code, 0, r.stderr);
-  assert.ok(r.stdout.includes(`  Log directory: ${other}\n`), r.stdout);
-  assert.ok(r.stdout.endsWith("Log directory, written during the Run (1 entry):\n  report-12.md  status partial, tier too low\n"), r.stdout);
-});
-
-test("run-log finds a Run started in a worktree of the Project, in the project directory named for the worktree", (t) => {
-  const p = project(t);
-  const wt = join(realpathSync(p.dir), ".claude", "worktrees", "side");
-  writeSession(p, "in-worktree", [prompt(400, ORCHESTRATE), say(401, "m1", "Nothing is ready.")], [], sessionDir(p, wt));
 
   const r = p.run("run-log");
 
-  assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^Run in-worktree, invoked as \/verkstad:orchestrate, from 2026-10-02 02:40 to 2026-10-02 02:41 UTC\n/);
+  assert.equal(r.stdout, `No Run to digest: ${logDir(p)} holds no run-*.jsonl.\n`);
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
 });
 
-test("run-log fails, saying where it looked, when no session invoked verkstad:orchestrate", (t) => {
+test("run-log --run fails on an event log that is not there", (t) => {
   const p = project(t);
-  writeSession(p, "chat", [prompt(200, "what does verkstad:orchestrate do?")]);
 
-  const r = p.run("run-log");
+  const r = p.run("run-log", "--run", "run-missing.jsonl");
 
+  assert.equal(r.stderr, `verkstad run-log: no event log run-missing.jsonl, here or in ${logDir(p)}\n`);
   assert.equal(r.code, 1);
-  assert.equal(r.stdout, "");
-  assert.equal(
-    r.stderr,
-    `verkstad run-log: no Run found: no session in ${sessionDir(p)} invoked verkstad:orchestrate; name one with --session <id>\n`,
-  );
 });
 
-test("run-log fails when --session names no session, or more than one", (t) => {
-  const p = project(t);
-  writeSession(p, "abc-1", [prompt(0, "one")]);
-  writeSession(p, "abc-2", [prompt(0, "two")]);
-
-  const none = p.run("run-log", "--session", "zzz");
-  const two = p.run("run-log", "--session", "abc");
-
-  assert.equal(none.code, 1);
-  assert.equal(none.stderr, `verkstad run-log: no session zzz in ${sessionDir(p)}\n`);
-  assert.equal(two.code, 1);
-  assert.equal(two.stderr, "verkstad run-log: --session abc matches more than one session: abc-1, abc-2\n");
-});
-
-test("run-log refuses an unknown argument", (t) => {
+test("run-log refuses an unknown argument, and --run without a value", (t) => {
   const p = project(t);
 
-  const r = p.run("run-log", "--verbose");
+  const unknown = p.run("run-log", "--session", "abc");
+  assert.equal(unknown.stderr, "verkstad run-log: unknown argument '--session'; usage: verkstad run-log [--run <file>]\n");
+  assert.equal(unknown.code, 2);
 
-  assert.equal(r.code, 2);
-  assert.equal(r.stderr, "verkstad run-log: unknown argument '--verbose'; usage: verkstad run-log [--session <id>] [--log-dir <dir>]\n");
-});
-
-test("run-log refuses --session without a value", (t) => {
-  const p = project(t);
-
-  const r = p.run("run-log", "--session", "--log-dir", "x");
-
-  assert.equal(r.code, 2);
-  assert.equal(r.stderr, "verkstad run-log: --session needs a value; usage: verkstad run-log [--session <id>] [--log-dir <dir>]\n");
+  const bare = p.run("run-log", "--run");
+  assert.equal(bare.stderr, "verkstad run-log: --run needs a value; usage: verkstad run-log [--run <file>]\n");
+  assert.equal(bare.code, 2);
 });

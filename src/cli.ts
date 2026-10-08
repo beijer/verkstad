@@ -78,8 +78,8 @@ const subcommands: Record<string, Subcommand> = {
     run,
   },
   "run-log": {
-    usage: "verkstad run-log [--session <id>] [--log-dir <dir>]",
-    summary: "Digests the last Run's transcripts and log files for verkstad:reflect",
+    usage: "verkstad run-log [--run <file>]",
+    summary: "Digests the last Run's event log, and its sessions' failed tool calls, for verkstad:reflect",
     run: runLog,
   },
   start: {
