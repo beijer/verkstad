@@ -24,14 +24,15 @@
 // the worktree stays, and after a Verdict check fails too, since the Verifier
 // Walks it next, and after push-failed in push mode, since the next Landing
 // runs from it; after any other failure it is removed, so that a Resume can
-// switch to the branch. A branch with no recorded review (src/review.ts) fails
-// first, with review-missing, before the lock and the rebase: nothing changes,
-// the worktree included.
+// switch to the branch. A branch whose Contract narrows its base's Surfaces or
+// verify fails first, with contract-narrowed, and then a branch with no
+// recorded review (src/review.ts), with review-missing, both before the lock
+// and the rebase: nothing changes, the worktree included.
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { type LandingMode, readContract, readLandingMode, readSurfaces } from "./contract.ts";
+import { type Checking, committedChecking, type LandingMode, narrowings, readChecking, readContract, readLandingMode } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { recordedPass, recordedPassLog, runGate, StepFailure } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
@@ -48,6 +49,7 @@ const ATTEMPTS = 3;
 type Reason =
   | "refused"
   | "review-missing"
+  | "contract-narrowed"
   | "no-commits"
   | "conflict"
   | "gate-failed"
@@ -309,14 +311,16 @@ function landTicket(args: Args): void {
   const report = readFile(args.file, "report");
   let base: string;
   let mode: LandingMode;
+  let checking: Checking;
   try {
     base = readContract(ticket.root).baseBranch;
-    readSurfaces(ticket.root);
+    checking = readChecking(ticket.root);
     mode = readLandingMode(ticket.root);
   } catch (error) {
     if (error instanceof Failure) throw refused(error.message);
     throw error;
   }
+  refuseNarrowing(ticket, base, checking);
   const noReview = missingReview(logDirectory(ticket.main), ticket.branch);
   if (noReview !== null) {
     throw new LandingFailure(
@@ -335,6 +339,25 @@ function landTicket(args: Args): void {
   } finally {
     closeSync(lock);
   }
+}
+
+/**
+ * Fails with contract-narrowed, changing nothing, when the branch's Contract checks less than the base's
+ * Contract as the branch left it (its merge-base with origin's base branch): the Surfaces decide which
+ * Tickets the Verifier Walks, so a Ticket narrowing them would land with less checking than it deserves.
+ * Comparing with the fork point, not the latest base, keeps a Surface the owner added since from reading
+ * as one the branch removed.
+ */
+function refuseNarrowing(ticket: Ticket, base: string, checking: Checking): void {
+  const forkPoint = git(ticket.root, ["merge-base", "HEAD", `origin/${base}`]).trim();
+  const before = committedChecking(ticket.root, forkPoint);
+  const found = before === null ? [] : narrowings(before, checking);
+  if (found.length === 0) return;
+  throw new LandingFailure(
+    "contract-narrowed",
+    `#${ticket.n} did not land: ${ticket.branch} narrows the Contract: it ${found.join("; ")}.\n` +
+      `Branch ${ticket.branch} is kept as it was, in its worktree.`,
+  );
 }
 
 /**

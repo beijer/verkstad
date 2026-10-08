@@ -661,6 +661,13 @@ function land(run: Run, t: Ticket): Step {
       return { to: "verify" };
     case "verdict-not-live":
       return routeVerdict(run, t, true, "");
+    case "contract-narrowed":
+      return {
+        to: "park",
+        why:
+          `Landing refused a branch that narrows the Contract: ${message}\n\n` +
+          "Narrowing the Contract's Surfaces or its verify is the owner's, through verkstad:maintain-verify; an implementer may only add to them.",
+      };
     case "github-failed": {
       const line = `landed, but updating #${t.n} failed: ${firstLine(message)}`;
       log(run, { ticket: t.n, landed: line });

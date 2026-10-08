@@ -839,6 +839,98 @@ test("Landing refuses a Contract whose surfaces are malformed, touching nothing"
   assert.deepEqual(p.calls(), []);
 });
 
+/** A Contract with two Surfaces and a Verify skill, which a branch may widen but not narrow. */
+const CHECKED = {
+  surfaces: [
+    { name: "ui", globs: ["src/ui/**", "docs/ui.md"] },
+    { name: "api", globs: ["server/**"] },
+  ],
+  verify: "verify-app",
+};
+
+/** Asserts a Landing refused by contract-narrowed changed nothing: no rebase, no Gate, worktree, branch and Ticket as they were. */
+function assertNothingChanged(p: Project, wt: string, base: string, head: string): void {
+  assert.equal(gateRuns(p), 0, "no Gate step ran");
+  assert.equal(originHead(p), base, "origin's main is unchanged");
+  assert.equal(originHas(p, "issue-7"), false, "nothing was pushed");
+  assert.equal(p.git("-C", wt, "rev-parse", "HEAD"), head, "the branch is not rebased");
+  assert.equal(p.git("-C", wt, "branch", "--show-current"), "issue-7", "the worktree is still on the branch");
+  assert.equal(p.git("-C", wt, "status", "--porcelain"), "");
+  assert.deepEqual(p.calls(), [], "no issue was touched");
+  assert.equal(issueOf(p, 7).state, "open");
+  assert.deepEqual(issueOf(p, 7).assignees, ["owner"]);
+}
+
+test("a branch that narrows the Contract's Surfaces or changes verify exits with contract-narrowed naming each narrowing, before the rebase and the Gate; nothing changes", (t) => {
+  const cases: Array<{ branch: Record<string, unknown>; narrowings: string }> = [
+    {
+      branch: {
+        surfaces: [{ name: "ui", globs: ["src/ui/**", "!src/ui/**/*.test.ts", "index.html"] }],
+        verify: "verify-other",
+      },
+      narrowings:
+        "it removes the glob docs/ui.md from the Surface ui; adds the glob !src/ui/**/*.test.ts to the Surface ui; " +
+        "removes the Surface api; changes verify from verify-app to verify-other",
+    },
+    {
+      branch: { surfaces: CHECKED.surfaces },
+      narrowings: "it removes verify (verify-app)",
+    },
+  ];
+  for (const { branch, narrowings } of cases) {
+    const p = project(t, { issues: [claimed(7)], contract: contract([COUNTED], CHECKED) });
+    const wt = ticket(p, 7, { ".claude/harness.json": JSON.stringify(contract([COUNTED], branch), null, 2) });
+    const head = p.git("rev-parse", "issue-7");
+    landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+    const base = originHead(p);
+
+    const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+    assert.equal(r.code, 1, narrowings);
+    assert.equal(r.stdout, "");
+    assert.equal(
+      r.stderr,
+      `verkstad land: #7 did not land: issue-7 narrows the Contract: ${narrowings}.\n` +
+        "Branch issue-7 is kept as it was, in its worktree.\n" +
+        "reason: contract-narrowed\n",
+    );
+    assertNothingChanged(p, wt, base, head);
+  }
+});
+
+test("a branch that adds a Surface, a glob to one and verify where there was none lands as before", (t) => {
+  const before = { surfaces: [{ name: "ui", globs: ["src/ui/**", "!src/ui/**/*.test.ts"] }] };
+  const after = {
+    surfaces: [
+      { name: "ui", globs: ["src/ui/**", "index.html"] },
+      { name: "api", globs: ["server/**", "!server/**/*.test.ts"] },
+    ],
+    verify: "verify-app",
+  };
+  const p = project(t, { issues: [claimed(7)], contract: contract([COUNTED], before) });
+  const wt = ticket(p, 7, { ".claude/harness.json": JSON.stringify(contract([COUNTED], after), null, 2) }, { "src/core/time.ts": "time\n" });
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 1);
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds src/core/time.ts. Refs #7", "Adds .claude/harness.json. Refs #7"]);
+  assert.equal(issueOf(p, 7).state, "closed");
+});
+
+test("a Surface the owner added on the base after the branch left it is not one the branch removed: the branch lands", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([COUNTED], CHECKED) });
+  const wt = ticket(p, 7, { "src/core/time.ts": "time\n" });
+  const added = contract([COUNTED], { ...CHECKED, surfaces: [...CHECKED.surfaces, { name: "cli", globs: ["bin/**"] }] });
+  landElsewhere(p, ".claude/harness.json", JSON.stringify(added, null, 2), "Adds the Surface cli");
+  p.git("fetch", "--quiet", "origin");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds src/core/time.ts. Refs #7", "Adds the Surface cli"]);
+});
+
 const PR_MODE = { landing: "pull-request" };
 
 /** The `gh pr list` call a pull-request Landing makes to find the Ticket's open pull request. */

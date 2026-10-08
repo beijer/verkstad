@@ -1,11 +1,13 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
 // checked here. Only the fields the CLI reads so far are checked (baseBranch,
 // gate, landing, surfaces and verify), each by its reader; a malformed one fails naming
-// the field (docs/contract.md describes them all).
+// the field (docs/contract.md describes them all). Landing also compares a
+// branch's Surfaces and verify with its base's, refusing a branch that narrows them.
 
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Failure } from "./fail.ts";
+import { tryGit } from "./git.ts";
 
 export const CONTRACT_PATH = ".claude/harness.json";
 
@@ -148,7 +150,10 @@ export interface Surface {
 
 /** The Contract's `surfaces`, required (`[]` for a Project with none) so that no Project lacks them by accident. */
 export function readSurfaces(root: string): Surface[] {
-  const { surfaces } = readJson(root);
+  return parseSurfaces(readJson(root));
+}
+
+function parseSurfaces({ surfaces }: JsonObject): Surface[] {
   if (!Array.isArray(surfaces)) throw malformed("surfaces must be an array of Surfaces ([] for a Project with none)");
   const result = surfaces.map((value, i): Surface => {
     const where = `surfaces[${i}]`;
@@ -177,16 +182,75 @@ export function readSurfaces(root: string): Surface[] {
 
 /** The Contract's `verify`, the Project's Verify skill, or null when it has none. Only `run` reads it. */
 export function readVerify(root: string): string | null {
-  const { verify } = readJson(root);
+  return parseVerify(readJson(root));
+}
+
+function parseVerify({ verify }: JsonObject): string | null {
   return verify === undefined ? null : nonEmptyString(verify, "verify");
+}
+
+/** What decides which Tickets the Verifier Walks: the Surfaces and the Verify skill. */
+export interface Checking {
+  surfaces: Surface[];
+  verify: string | null;
+}
+
+export function readChecking(root: string): Checking {
+  const value = readJson(root);
+  return { surfaces: parseSurfaces(value), verify: parseVerify(value) };
+}
+
+/**
+ * The Checking of the Contract committed at `rev` in the checkout at `root`, or null when that commit has
+ * no Contract, or one whose Surfaces or `verify` are malformed: there is nothing there to narrow.
+ */
+export function committedChecking(root: string, rev: string): Checking | null {
+  const shown = tryGit(root, ["show", `${rev}:${CONTRACT_PATH}`]);
+  if (shown.status !== 0) return null;
+  try {
+    const value = parseJson(shown.stdout);
+    return { surfaces: parseSurfaces(value), verify: parseVerify(value) };
+  } catch (error) {
+    if (error instanceof Failure) return null;
+    throw error;
+  }
+}
+
+/**
+ * How `branch` checks less than `base`, one phrase each: a Surface it removes, a glob it removes from one or a
+ * `!` glob it adds to one, and `verify` removed or changed. A new Surface, a new glob, a removed `!` glob and
+ * a new `verify` only add checking. Surfaces are matched by name, globs by their text.
+ */
+export function narrowings(base: Checking, branch: Checking): string[] {
+  const found: string[] = [];
+  for (const surface of base.surfaces) {
+    const kept = branch.surfaces.find((s) => s.name === surface.name);
+    if (!kept) {
+      found.push(`removes the Surface ${surface.name}`);
+      continue;
+    }
+    for (const glob of surface.globs) {
+      if (!glob.startsWith("!") && !kept.globs.includes(glob)) found.push(`removes the glob ${glob} from the Surface ${surface.name}`);
+    }
+    for (const glob of kept.globs) {
+      if (glob.startsWith("!") && !surface.globs.includes(glob)) found.push(`adds the glob ${glob} to the Surface ${surface.name}`);
+    }
+  }
+  if (base.verify !== null && branch.verify === null) found.push(`removes verify (${base.verify})`);
+  else if (base.verify !== null && branch.verify !== base.verify) found.push(`changes verify from ${base.verify} to ${branch.verify}`);
+  return found;
 }
 
 function readJson(root: string): JsonObject {
   const path = join(root, CONTRACT_PATH);
   if (!existsSync(path)) throw new Failure(`no Contract: ${path} does not exist`);
+  return parseJson(readFileSync(path, "utf8"));
+}
+
+function parseJson(text: string): JsonObject {
   let value: unknown;
   try {
-    value = JSON.parse(readFileSync(path, "utf8"));
+    value = JSON.parse(text);
   } catch (error) {
     throw new Failure(`${CONTRACT_PATH} is not valid JSON: ${(error as Error).message}`);
   }

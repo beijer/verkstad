@@ -291,6 +291,30 @@ test("run Resumes a Ticket whose Landing's Gate failed, and Parks it when the Ga
   assert.match(seven.comments[0].body, /^Resumed once, and Landing failed again \(gate-failed\)\.\n\n#7 did not land: the Gate failed: /);
 });
 
+test("run Parks a Ticket whose Landing ends contract-narrowed, with Landing's message and that narrowing is the owner's", (t) => {
+  const narrowed = JSON.stringify(contract({ verify: "verify-app" }));
+  const narrowing: StubSession = {
+    run: ["verkstad start 7", `printf '%s\\n' '${narrowed}' > .claude/harness.json`, "git commit -q -am 'Drops the Surface ui. Refs #7'", "verkstad review record"],
+    report: report("done"),
+  };
+  const p = runProject(t, [ready(7)], [narrowing], { surfaces: [UI], verify: "verify-app" });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  const narrowedLine = "#7 did not land: issue-7 narrows the Contract: it removes the Surface ui.";
+  assert.match(r.stdout, /\n#7 Landing failed: contract-narrowed\.\n#7 parked: Landing refused a branch that narrows the Contract: #7 did not land: issue-7 narrows the Contract: it removes the Surface ui\.\n/);
+  const seven = p.state().issues[0];
+  assert.deepEqual(seven.labels, ["needs-info"]);
+  assert.equal(
+    seven.comments[0].body.split("\n\nParked:")[0],
+    `Landing refused a branch that narrows the Contract: ${narrowedLine}\n` +
+      "Branch issue-7 is kept as it was, in its worktree.\n\n" +
+      "Narrowing the Contract's Surfaces or its verify is the owner's, through verkstad:maintain-verify; an implementer may only add to them.",
+  );
+  assert.equal(p.git("--git-dir", p.origin, "log", "--format=%s", "-1", "issue-7"), "Drops the Surface ui. Refs #7");
+});
+
 test("run has the Verifier Walk a branch that touches a Surface, blind to the report, and lands it live-verified", (t) => {
   const p = runProject(
     t,
