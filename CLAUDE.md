@@ -12,7 +12,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 - `test/*.test.ts`: run by `node --test`. `test/project.ts` builds a throwaway Project; `test/stub/` holds the stub `gh` and the stub `claude`.
 - `skills/<name>/SKILL.md`, `agents/<name>.md`, and `prompts/*-prompt.md`: the implementing, verifying and conflict prompts `verkstad run` fills in (`src/prompts.ts`).
 - `hooks/hooks.json`: the plugin's one hook, PreToolUse, the `verkstad hook pre-tool-use` subcommand (`src/hook.ts`) run as `"${CLAUDE_PLUGIN_ROOT}"/bin/verkstad`, so that tests reach it through the CLI.
-- `docs/`: the Contract (`docs/contract.md`), the Verdict file (`docs/verdict.md`) and, in `docs/formats/`, the formats a Project's files and issues are written in.
+- `docs/`: the Contract (`docs/contract.md`), the Verdict file (`docs/verdict.md`) and, in `docs/formats/`, the formats a Project's files and issues are written in; in `docs/research/`, the dated research an ADR cites as its evidence.
 - `scripts/`: verkstad's own Gate checks that are not tests, such as `check-borrowed.sh`.
 
 ## The CLI
