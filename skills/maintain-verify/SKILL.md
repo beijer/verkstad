@@ -1,23 +1,25 @@
 ---
 name: maintain-verify
-description: Audit a Project's Verify skill against the Project as it is now. Every Feature-map entry is read against the source and Walked live; map drift and driving-tool gaps are fixed in one change, and app bugs are reported to the owner. Use when asked to audit, maintain or refresh a Verify skill or its Feature map, or when a Walk shows the map is out of date.
+description: Audit a Project's Verify skill against the Project as it is now. Every Feature-map entry is read against the source and Walked live; map drift and driving-tool gaps are fixed, and the removals the owner approves (Surface globs that match too much, features that only repeat an e2e test, features the Project no longer has) are made, in one change; app bugs are reported to the owner. Use when asked to audit, maintain or refresh a Verify skill or its Feature map, or when a Walk shows the map is out of date.
 ---
 
 # Maintain a Verify skill
 
 A Feature map goes stale with every change to the Project, and a stale one sends a Verifier down a path that no longer exists. This skill is the audit that keeps a Verify skill true: every feature in its map is read against the code and its e2e tests, then Walked live with the skill itself. The unit is the feature. Every feature gets both passes; not every sentence of every file gets checked.
 
+A Verify skill and the Surfaces only grow unless something prunes them, and each costs on every Ticket: a glob that matches too much sends a Verifier to Walk a change no user can see, and a feature whose Walk only repeats its e2e test makes every Walk longer for nothing. So the audit also asks whether each verification still earns its cost, and proposes removing the ones that don't. The goal is a lean Verify skill: fewer, sharper features over many shallow ones. Nothing is removed without the owner's approval.
+
 It ends with one outcome:
 
 - **`clean`**: every feature had its source pass and its Walk (or is not proven for a reason its file names, see step 3), and the Verify skill needed no fix.
-- **`changed`**: the same coverage, and the proven fixes went in as one change (one commit, or one pull request).
+- **`changed`**: the same coverage, and the proven fixes and the approved removals went in as one change (one commit, or one pull request).
 - **`blocked`**: a pass could not finish, or a fix could not be proven. The report names what blocked it.
 
 Whatever the outcome, the report lists every app bug found: a bug in the Project itself, not in its Verify skill.
 
 ## What you may change
 
-You change the Verify skill and nothing else: its `SKILL.md`, its `features/`, and the driving tool's own files that its Helpers names. The Project's source, its e2e tests and the e2e harness are not yours to change. When the instance does something other than what the map says, either the map is wrong (you fix the map) or the Project is wrong (you report it). Never rewrite the map to match a broken Project.
+You change the Verify skill: its `SKILL.md`, its `features/`, and the driving tool's own files that its Helpers names. In the Contract you change only the Surfaces, and only by a narrowing the owner approved in step 5. The Project's source, its e2e tests and the e2e harness are not yours to change. When the instance does something other than what the map says, either the map is wrong (you fix the map) or the Project is wrong (you report it). Never rewrite the map to match a broken Project.
 
 ## 0. Find the Verify skill and set up
 
@@ -30,6 +32,8 @@ You change the Verify skill and nothing else: its `SKILL.md`, its `features/`, a
 Read `features/README.md` and list `features/`. Every file has a line in the README, every line links a file that exists, and each feature has one file. Then check each file has the shape `verkstad:create-verify`'s step 4 gives a feature file. Note what is wrong as drift.
 
 Then look for features the map lacks. Read what changed since the map last did: `git log --oneline <the last commit that touched features/>..HEAD -- <the paths the instance is built from>`. A user-facing feature the map doesn't name counts as missing only when you can point at the source file that adds it (a new panel, command, route).
+
+Write down how big the Verify skill and the Contract are now, for the report: the features (the files in `features/` besides the README), the sub-features (the lines under each file's `## Sub-features`) and the globs (every entry of every Surface's `globs` in `.claude/harness.json`, `!` globs included).
 
 ## 2. Source pass: one read-only agent per feature, in parallel
 
@@ -77,27 +81,44 @@ Done when every feature has been Walked, or recorded as not proven with what it 
 
 ## 4. Fix the drift and the gaps
 
-- **Map drift**: edit the feature file, README or `SKILL.md`, keeping to `verkstad:create-verify`'s step 4 (a Driving it points at the test's values, never copies them).
+- **Map drift**: edit the feature file, README or `SKILL.md`, keeping to `verkstad:create-verify`'s step 4 (a Driving it points at the test's values, never copies them). A feature or sub-feature the Project no longer has is not edited out here: step 5 proposes its removal.
 - **Driving-tool gap**: fix it in the tool, adding a command the way the Verify skill's Helpers says. When the fix needs the harness, the tests or the Project's source changed, it is not yours to make: report it for the owner.
 - **App bug**: leave the code alone. For each one, record the feature and sub-feature, the steps, what the test or the Spec expects, what you saw, and its Evidence file.
 
 Prove every fix live before it lands. After a tool fix, stop and start (the Doctor's `current` check demands it), run the Doctor, and Walk again each feature the fix touches. After a map fix, replay the changed Driving it. A fix you can't prove stays out of the change, and goes in the report.
 
-## 5. Clean up
+## 5. Propose what to remove
+
+With the passes done, look for what no longer earns its cost. Read the evidence first: the Verdicts (`verdict-<n>.json`) and the Runs' event logs (`run-*.jsonl`, each Park's reason in its `parked` field) in the log directory, `$(dirname "$(git rev-parse --path-format=absolute --git-common-dir)")/.claude/verkstad/`, which keeps 30 days; and, for further back, the Tickets' comments (`gh issue list --state all --search "match too much in:comments" --json number,title`, then `gh issue view <n> --comments`). Three kinds of removal, each with its evidence:
+
+- **A glob that matches too much.** A Ticket whose diff touched a Surface but whose Verdict found no criterion to Walk on it: a `test-verified` Verdict, or a Park asking whether the Surface's globs match too much. For each such Ticket, list the paths its diff changed that the Surface's globs match (`git show --stat` on its commits, or on its pushed branch for a Parked one), and find what they share that no user can see (a test helper, a doc, a build script). Propose the narrower glob, or the `!` glob, that would have kept those paths out, naming the Tickets and their Verdicts or Park reasons. Check it with `git ls-files -- ':(glob)<glob>'` against the old glob: a narrowing that would also drop a path a user can see (one a `live-verified` Verdict's Walk depended on) is not proposed. One Ticket is a weak case, and the proposal says so.
+- **A feature or sub-feature that adds nothing.** One whose Walk in step 3 only repeated what its e2e test already asserts, step for step, so the Gate checks it on every Landing anyway, and which has never found anything the Gate would not: no `failed` Verdict, Fix round or app bug in the log directory, the Tickets' comments or the feature file's `git log` names it. The evidence is the e2e test's path and name, and the steps it shares with the Walk. A feature whose Walk sees what the test can't (a look, a real device, a timing) stays.
+- **A feature or sub-feature for what is gone.** One the source pass and the Walk found the Project no longer has: the drift step 4 left alone. The evidence is the source pass's line and the commit that removed it.
+
+List the proposals, then ask about each one with AskUserQuestion, one question per proposal (up to four per call): remove it, or skip it. Apply only the approved ones, exactly as approved:
+
+- a feature: delete its file and its README line; a sub-feature: delete its line and every step of the file that only it needed;
+- a glob: change that Surface's `globs` in `.claude/harness.json`, and nothing else in it. This narrowing is the owner's own change: it lands with the audit's change below, never through `verkstad land`, whose `contract-narrowed` refusal is for Ticket branches. When a caller gave you a Ticket's branch, leave the Contract alone and report the approved narrowing for the owner to make on a branch of its own.
+
+Prove each removal: `features/README.md` and the files still check as in step 1, every Driving it a removal touched replays, and `verkstad surfaces origin/<baseBranch>` still reads the Contract without failing. List each skipped proposal, with its evidence, in the report. Count the features, sub-features and globs again for the report.
+
+## 6. Clean up
 
 Follow the Verify skill's Cleanup after the last Walk, including the re-Walks. Then check, by the pids it names (never a name pattern), that nothing you started is still running, and that `$ev` still holds the Evidence.
 
-## 6. Hand over the change and report
+## 7. Hand over the change and report
 
 - **`clean`**: no commit. Remove the branch and worktree if you made them.
-- **`changed`**: re-read every changed file. Then run the Gate (`verkstad gate --quick` from the worktree) and make one commit, in the Project's commit style, that says what is now true of the Verify skill. If a caller gave you its branch, stop there: the caller lands it. Otherwise, with the Contract's `landing` at `pull-request`, push the branch and open one pull request for it; with `push`, leave the commit on its branch for the owner to land. `verkstad land` lands Tickets, and only it pushes to the base branch.
+- **`changed`**: re-read every changed file. Then run the Gate (`verkstad gate --quick` from the worktree) and make one commit, in the Project's commit style, that says what is now true of the Verify skill and, after an approved narrowing, of the Surfaces. If a caller gave you its branch, stop there: the caller lands it. Otherwise, with the Contract's `landing` at `pull-request`, push the branch and open one pull request for it; with `push`, leave the commit on its branch for the owner to land. `verkstad land` lands Tickets, and only it pushes to the base branch.
 - **`blocked`**: proven fixes still go in as one change, as for `changed`. The outcome stays `blocked`, because the audit didn't finish.
 
 Report, short:
 
 - The outcome, and what blocked it if it was blocked.
+- How many features, sub-features and globs the Verify skill and the Contract have, before and after.
 - Per feature: whether the source pass found drift, and whether it was Walked or not proven (and what it needs).
 - Each fix: map drift or tool gap, the file, and what was wrong.
+- Each removal: approved and made, or skipped, with its kind and its evidence.
 - **App bugs, for the owner**: each with its feature, steps, what was expected, what was seen, and its Evidence file.
 - Tool gaps and sub-feature candidates left for later.
 - The branch, commit or pull request, and the Evidence directory.
