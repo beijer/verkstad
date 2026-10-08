@@ -142,7 +142,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(order.indexOf('UP NEXT')).toBeLessThan(order.indexOf('NEEDS YOU'))
     expect(order.indexOf('NEEDS YOU')).toBeLessThan(order.indexOf('WAITING ON A BLOCKER'))
     expect(order.indexOf('WAITING ON A BLOCKER')).toBeLessThan(order.indexOf('HISTORY'))
-    expect((await ui.find({ key: 'triage:52' }))?.text).toBe('Triage')
+    expect((await ui.find({ key: 'triage:52' }))?.text).toBe('Triage ›')
     expect(await ui.find({ key: 'triage:50' })).toBeUndefined()
     expect(await ui.find({ key: 'triage:39' })).toBeUndefined()
     expect(await text(ui, /Next thing/)).toBe('Next thing')

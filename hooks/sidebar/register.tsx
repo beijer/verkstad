@@ -420,7 +420,11 @@ export const register: Register = on => {
         {n === null ? null : <Box flexShrink={0}>{issue(n, color)}</Box>}
         {fill(text)}
         {right ? fixed(right) : null}
-        {action ? <Box flexShrink={0}>{action}</Box> : null}
+        {action ? (
+          <Box flexShrink={0} marginLeft={1}>
+            {action}
+          </Box>
+        ) : null}
       </Box>
     )
     const section = (key: string, label: string, rows: JSX.Element[], right?: JSX.Element) => (
@@ -594,7 +598,7 @@ export const register: Register = on => {
                   '',
                   0,
                   a.kind === 'triage' && a.n !== null ? (
-                    <Button key={`triage:${a.n}`} label="Triage" onPress={() => void triage($, p, a.n as number)} />
+                    <Button key={`triage:${a.n}`} label="Triage ›" plain onPress={() => void triage($, p, a.n as number)} />
                   ) : undefined,
                 )
               ),
