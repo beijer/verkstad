@@ -50,6 +50,7 @@ function writeTranscript(p: Project, cwd: string, id: string, results: Array<[st
 
 const HOOK = "PreToolUse:Bash hook error: verkstad: zsh expands =word at the start of a word; quote it.";
 const DENIED = "Permission for this action was denied by the Claude Code auto mode classifier. Reason: [Interfere With Workloads].";
+const UNGRANTED = "Claude requested permissions to use Bash, but you haven't granted it yet.";
 const FAILED = "Exit code 1\nmake: *** [all] Error 1";
 
 /** A Run of two Tickets: #7 Resumed one Tier up, then landed after a conflict; #8 Parked. */
@@ -84,6 +85,7 @@ test("run-log digests the last Run's event log: per Ticket its Tier, sessions, f
     ["ok", false],
     [HOOK, true],
     [DENIED, true],
+    [UNGRANTED, true],
     [FAILED, true],
     [FAILED, true],
   ]);
@@ -101,9 +103,10 @@ test("run-log digests the last Run's event log: per Ticket its Tier, sessions, f
       "",
       "#7 Add a widget: standard Tier, then hard",
       "  implementer: stopped at its turn limit, $3.10, 60 turns",
-      `    ${impl7}: 4 failed tool calls: 1 hook refusal, 1 permission denial, 2 failed commands`,
+      `    ${impl7}: 5 failed tool calls: 1 hook refusal, 2 permission denials, 2 failed commands`,
       "  implementer: ended, $0.40, 5 turns, status partial",
       "    the same session as above",
+      "  Resumed on the hard Tier: partial: the second screen is not done",
       "  implementer: ended, $6.25, 80 turns, status done",
       "    transcript gone: no s-impl-7b.jsonl among the Project's sessions",
       "  Landing failed: conflict: rebasing issue-7 onto origin/main conflicts in src/a.ts",
@@ -156,17 +159,31 @@ test("run-log --run digests the event log it names, and says how a Run that stop
   assert.equal(r.code, 0);
 });
 
-test("run-log says a Run that never wrote its last line did not end", (t) => {
+test("run-log says a Run that never wrote its last line did not end, with a failed CLI call made on no Ticket, and dates an end on another day", (t) => {
   const p = project(t);
-  writeRun(p, "run-2026-10-01T20-00-00-000Z.jsonl", [
-    [0, { run: "started", main: realpathSync(p.dir), base: "main", ready: [9] }],
-    [0, { ticket: 9, claimed: "Ticket 9", tier: "hard" }],
+  const file = writeRun(p, "run-2026-10-01T23-50-00-000Z.jsonl", [
+    [230, { run: "started", main: realpathSync(p.dir), base: "main", ready: [9] }],
+    [231, { verkstad: ["frontier", "--json"], code: 1, stderr: "verkstad frontier: gh failed: HTTP 502\n" }],
+    [250, { ticket: 9, claimed: "Ticket 9", tier: "hard" }],
   ]);
 
   const r = p.run("run-log");
 
-  assert.match(r.stdout, /^Run run-2026-10-01T20-00-00-000Z\.jsonl, 2026-10-01 20:00 to 20:00 UTC: did not end \(it is still going, or was killed\)\n/);
-  assert.match(r.stdout, /\n#9 Ticket 9: hard Tier\n {2}no outcome: the Run ended before #9 landed or was Parked\n\nTotals: 1 Ticket \(0 landed, 0 parked\), 0 sessions, \$0, 0 turns\n$/);
+  assert.equal(r.stderr, "");
+  assert.equal(
+    r.stdout,
+    [
+      "Run run-2026-10-01T23-50-00-000Z.jsonl, 2026-10-01 23:50 to 2026-10-02 00:10 UTC: did not end (it is still going, or was killed)",
+      `  Event log: ${file}`,
+      "  verkstad frontier failed: gh failed: HTTP 502",
+      "",
+      "#9 Ticket 9: hard Tier",
+      "  no outcome: the Run ended before #9 landed or was Parked",
+      "",
+      "Totals: 1 Ticket (0 landed, 0 parked), 0 sessions, $0, 0 turns",
+      "",
+    ].join("\n"),
+  );
   assert.equal(r.code, 0);
 });
 

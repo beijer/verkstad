@@ -86,7 +86,7 @@ function sessionDirs(main: string): string[] {
 function failureKind(text: string): "hook refusal" | "permission denial" | "failed command" {
   const head = text.replace(/<\/?tool_use_error>/g, "").trim().slice(0, 400);
   if (/^PreToolUse:\S+ hook\b/.test(head)) return "hook refusal";
-  if (/permission[^\n]*denied|denied by|doesn't want to proceed|rejected by the user/i.test(head)) return "permission denial";
+  if (/permission[^\n]*denied|denied by|requested permissions? to use|doesn't want to proceed|rejected by the user/i.test(head)) return "permission denial";
   return "failed command";
 }
 
@@ -164,16 +164,18 @@ export function runLog(args: string[]): void {
     process.stdout.write(`No Run to digest: ${dir} holds no run-*.jsonl.\n`);
     return;
   }
-  const dirs = sessionDirs(mainCheckout(cwd));
+  const transcriptDirs = sessionDirs(mainCheckout(cwd));
   const events = readLines(file);
 
   const tickets = new Map<number, Ticket>();
   let current: Ticket | undefined;
-  const ticket = (n: number): Ticket => {
+  const ticketOf = (n: number): Ticket => {
     let t = tickets.get(n);
     if (!t) tickets.set(n, (t = { n, title: "", tiers: [], lines: [], outcome: null }));
     return (current = t);
   };
+  /** Failed CLI calls made while the Run was on no Ticket. */
+  const outside: string[] = [];
   const seen = new Set<string>();
   let sessions = 0;
   let cost = 0;
@@ -183,21 +185,22 @@ export function runLog(args: string[]): void {
   for (const e of events) {
     if (e.run === "finished") ending = "finished";
     if (e.run === "stopped") ending = `stopped: ${firstLine(str(e.error))}`;
-    // A CLI call names no Ticket: it belongs to the Ticket the Run is on.
+    // A CLI call names no Ticket: it belongs to the Ticket the Run is on, if it is on one.
     if (Array.isArray(e.verkstad)) {
       const [subcommand, ...rest] = e.verkstad.map(str);
-      if (!current || num(e.code) === 0) continue;
+      if (num(e.code) === 0) continue;
       const message = failureMessage(str(e.stderr));
       const reason = /^reason: (\S+)\s*$/m.exec(str(e.stderr))?.[1];
-      current.lines.push(
+      (current?.lines ?? outside).push(
         subcommand === "land" && rest[0] !== "--park" && reason ? `  Landing failed: ${reason}: ${message}` : `  verkstad ${subcommand} failed: ${message}`,
       );
       continue;
     }
     if (typeof e.ticket !== "number") continue;
-    const t = ticket(e.ticket);
+    const t = ticketOf(e.ticket);
     if (typeof e.claimed === "string") t.title = e.claimed;
     if (typeof e.tier === "string" && t.tiers[t.tiers.length - 1] !== e.tier) t.tiers.push(e.tier);
+    if (typeof e.resumed === "string") t.lines.push(`  Resumed on the ${str(e.tier)} Tier: ${firstLine(e.resumed)}`);
     if (typeof e.session === "string") {
       const id = str(e.id);
       const subtype = str(e.subtype);
@@ -207,22 +210,25 @@ export function runLog(args: string[]): void {
       const parts = [ENDINGS[subtype] ?? subtype, usd(num(e.cost)), plural(num(e.turns), "turn"), e.status ? `status ${str(e.status)}` : ""];
       t.lines.push(`  ${e.session}: ${parts.filter(Boolean).join(", ")}`);
       // A session resumed to give its report goes on in the same transcript.
-      t.lines.push(`    ${id && seen.has(id) ? "the same session as above" : transcriptLine(id, dirs)}`);
+      t.lines.push(`    ${id && seen.has(id) ? "the same session as above" : transcriptLine(id, transcriptDirs)}`);
       seen.add(id);
     }
     if (typeof e.landed === "string") {
       t.lines.push(`  ${e.landed}`);
       t.outcome = "landed";
+      current = undefined;
     }
     if (typeof e.parked === "string") {
       t.lines.push(`  parked: ${firstLine(e.parked)}`);
       t.outcome = "parked";
+      current = undefined;
     }
   }
 
   const first = str(events[0]?.at);
   const last = str(events[events.length - 1]?.at);
-  const out = [`Run ${basename(file)}, ${utc(first)} to ${last.slice(11, 16)} UTC: ${ending}`, `  Event log: ${file}`, ""];
+  const until = last.slice(0, 10) === first.slice(0, 10) ? last.slice(11, 16) : utc(last);
+  const out = [`Run ${basename(file)}, ${utc(first)} to ${until} UTC: ${ending}`, `  Event log: ${file}`, ...outside, ""];
   for (const t of tickets.values()) {
     out.push(`#${t.n} ${t.title || "(untitled)"}: ${t.tiers.length ? `${t.tiers[0]} Tier${t.tiers.slice(1).map((tier) => `, then ${tier}`).join("")}` : "Tier unknown"}`);
     out.push(...t.lines);
