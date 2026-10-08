@@ -18,6 +18,7 @@ import {
   clip,
   firstLine,
   frontierView,
+  issueInfo,
   lastToolCall,
   phase,
   readEvents,
@@ -35,10 +36,12 @@ const PANE = 'verkstad-run'
 const POLL_MS = 2000
 const ALIVE_MS = 10_000
 const ACTIVITY_MS = 5000
-const GITHUB_MS = 5 * 60_000
+const GITHUB_MS = 2 * 60_000
 /** How long a Start waits for its Run's event log before showing what the Run printed. */
 const START_MS = 30_000
 const HISTORY = 6
+/** The desktop app's tool that offers a task as a chip the owner opens in a session of its own. */
+const SPAWN_TASK = 'mcp__ccd_session__spawn_task'
 
 // Theme keys, so the pane follows the person's theme.
 const ACCENT = 'claude'
@@ -151,15 +154,17 @@ async function readGithub($: EngineInterface, p: Project): Promise<void> {
   let view: OwnerView
   try {
     const [issues, pulls, ci] = [
-      await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels']),
+      await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels,assignees']),
       await gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,url']),
       await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url']),
     ]
     const r = await read($, run)
     const working = isGoing(r, await read($, isAlive)) ? (r?.current ?? null) : null
-    view = { items: attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working }), at: now, error: '' }
+    const items = attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working })
+    view = { items, issues: issueInfo(issues), at: now, error: '' }
   } catch (err) {
-    view = { items: (await read($, owner))?.items ?? [], at: now, error: (err as Error).message }
+    const previous = await read($, owner)
+    view = { items: previous?.items ?? [], issues: previous?.issues ?? [], at: now, error: (err as Error).message }
   }
   await update($, owner, () => view)
 }
@@ -290,6 +295,26 @@ async function control($: EngineInterface, p: Project, what: 'stop' | 'abort'): 
   aliveAt = 0
 }
 
+/**
+ * Starts triage of issue #n in a session of its own: on the desktop, a task chip the owner clicks to open the
+ * session (the app's `spawn_task` tool); elsewhere, the command put in the prompt for the owner to send.
+ */
+async function triage($: EngineInterface, p: Project, n: number): Promise<void> {
+  const command = `/verkstad:triage ${p.repo ? `${p.repo}#${n}` : `#${n}`}`
+  const spawn = (await $.tool.list()).find(t => t.name === SPAWN_TASK)
+  if (spawn) {
+    await $.tool.call({
+      tool: SPAWN_TASK,
+      title: `Triage #${n}`,
+      tldr: `Triage ${p.repo}#${n} with verkstad's triage skill, from the verkstad sidebar.`,
+      prompt: command,
+    })
+    return say($, `Triage of #${n} is a task chip now: click it to open its session.`)
+  }
+  const filled = await $.prompt.fill({ text: command, mode: 'replace' })
+  return say($, filled.isFilled ? `${command} is in the prompt: send it to start triage here.` : `Run ${command} to triage #${n}.`)
+}
+
 async function refresh($: EngineInterface, p: Project): Promise<void> {
   await say($, '')
   await readGithub($, p)
@@ -314,7 +339,7 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE }, async ($, e) => {
-    const { Box, Text, Button, Link } = $.ui.resolve(e)
+    const { Box, Text, Button, Link, Markdown } = $.ui.resolve(e)
     const p = await read($, project)
     const r = await read($, run)
     const alive = await read($, isAlive)
@@ -338,12 +363,10 @@ export const register: Register = on => {
       )
     }
 
+    /** An issue's number: a link drawn as in a reply (Markdown), so a surface that previews issue links does here too. */
     const issue = (n: number, color?: string) =>
-      p.repo ? (
-        <Link key={`#${n}`} href={`https://github.com/${p.repo}/issues/${n}`} label={`#${n}`} />
-      ) : (
-        <Text color={color}>#{n}</Text>
-      )
+      p.repo ? <Markdown key={`#${n}`} text={`[#${n}](https://github.com/${p.repo}/issues/${n})`} /> : <Text color={color}>#{n}</Text>
+
     /** Text that takes the room left in its row and is cut with an ellipsis, never wrapped or spilt. */
     const fill = (text: string, color?: string, bold?: boolean) => (
       <Box flexGrow={1} flexShrink={1} minWidth={0} overflow="hidden">
@@ -360,13 +383,20 @@ export const register: Register = on => {
         </Text>
       </Box>
     )
-    /** A row: a glyph, an issue, its text cut to fit, and a value set to the right. */
+    /** The open issues, which can be triaged. */
+    const openIssues = new Set((o?.issues ?? []).map(i => i.n))
+    /** A row: a glyph, an issue, its text cut to fit, and a value set to the right; hovered, an open issue's Triage. */
     const row = (key: string, glyph: string, color: string, n: number | null, text: string, right = '', indent = 0) => (
       <Box key={key} flexDirection="row" width={width - indent} marginLeft={indent} gap={1}>
         {fixed(glyph, color)}
         {n === null ? null : <Box flexShrink={0}>{issue(n, color)}</Box>}
         {fill(text)}
         {right ? fixed(right) : null}
+        {n !== null && openIssues.has(n) ? (
+          <Box flexShrink={0} display="none" hover={{ display: 'flex' }}>
+            <Button key={`triage:${key}`} label="Triage" plain onPress={() => void triage($, p, n)} />
+          </Box>
+        ) : null}
       </Box>
     )
     const section = (key: string, label: string, rows: JSX.Element[], right?: JSX.Element) => (
@@ -547,23 +577,16 @@ export const register: Register = on => {
       ready.slice(0, 5).forEach((t, i) => next.push(row(`r${t.n}`, i === 0 && !going ? '▸' : ' ', ACCENT, t.n, t.title, t.tier)))
       if (ready.length > 5) next.push(<Text key="more" color={DIM}>  +{ready.length - 5} more ready</Text>)
       if (ready.length === 0 && !f.error) next.push(<Text key="none" color={DIM}>Nothing is ready.</Text>)
-      if (f.waiting.length) {
-        next.push(
-          <Box key="wait" marginTop={ready.length ? 1 : 0}>
-            <Text color={DIM}>Waiting on a blocker</Text>
-          </Box>,
-        )
-        f.waiting.slice(0, 3).forEach(t => next.push(row(`w${t.n}`, '⧗', DIM, t.n, t.title, `← ${t.waitsOn.join(' ')}`)))
-        if (f.waiting.length > 3) next.push(<Text key="wmore" color={DIM}>  +{f.waiting.length - 3} more waiting</Text>)
-      }
     }
+    const waiting = (f?.waiting ?? []).map(t => row(`w${t.n}`, '⧗', DIM, t.n, t.title, `← ${t.waitsOn.join(' ')}`))
+    if (waiting.length > 5) waiting.splice(5, waiting.length, <Text key="wmore" color={DIM}>  +{(f?.waiting.length ?? 0) - 5} more waiting</Text>)
     const refreshed = (
       <Box flexDirection="row" flexShrink={0} gap={1}>
         {f && now - f.at >= 60_000 ? <Text color={DIM}>{age(f.at, now)} ago</Text> : null}
         <Button key="refresh" label="↻" plain hotkey="r" onPress={() => void refresh($, p)} />
       </Box>
     )
-    const nextRows = [section('next', 'UP NEXT', next, refreshed)]
+    const nextRows = [section('next', 'UP NEXT', next, refreshed), ...(waiting.length ? [section('waiting', 'WAITING ON A BLOCKER', waiting)] : [])]
 
     // History: past Runs, newest first; a Run's date opens its Tickets.
     const done = past.filter(one => one.file !== (going ? r?.file : undefined)).slice(0, HISTORY)

@@ -33,6 +33,7 @@ const FRONTIER = JSON.stringify({
 })
 const ISSUES = JSON.stringify([
   { number: 39, title: 'Is tiering needed?', labels: [{ name: 'ready-for-human' }] },
+  { number: 50, title: 'Next thing', labels: [{ name: 'ready-for-agent' }, { name: 'tier:light' }] },
   { number: 52, title: 'A new idea', labels: [] },
 ])
 const CI = JSON.stringify([
@@ -42,7 +43,7 @@ const TRANSCRIPT_DIR = `${HOME}/.claude/projects/-home-owner-code-project--claud
 const TAIL = line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } })
 
 /** A verkstad Project on disk and on GitHub, in memory; `verkstad` records what the controls ran. */
-function world(on: On, logs: Record<string, string>, options: { alive?: boolean; runProcess?: boolean } = {}) {
+function world(on: On, logs: Record<string, string>, options: { alive?: boolean; runProcess?: boolean; desktop?: boolean } = {}) {
   const ran: string[][] = []
   const launched: string[][] = []
   const clock = mock.clock(on, { now: NOW })
@@ -92,11 +93,22 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean;
   )
   on('fs.read', (_$, e) => value(files[e.path] ?? ''))
   const opened: string[] = []
+  const spawned: unknown[] = []
+  const filled: string[] = []
+  on('tool.list', () => value(options.desktop ? [{ name: 'mcp__ccd_session__spawn_task', description: '', mcp: true }] : []))
+  on('tool.call', (_$, e) => {
+    spawned.push(e)
+    return { result: { task_id: 't1' } } as never
+  })
+  on('prompt.fill', (_$, e) => {
+    filled.push(e.text)
+    return { isFilled: true, text: e.text }
+  })
   on('ui.open', (_$, e) => {
     opened.push(e.id)
     return value({ isPlaced: true as const })
   })
-  return { clock, ran, launched, opened }
+  return { clock, ran, launched, opened, spawned, filled }
 }
 
 const PANE = {
@@ -126,7 +138,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await text(ui, /Is tiering needed/)).toBe('Is tiering needed?')
     expect(await text(ui, /to triage/)).toBe('1 to triage: #52')
     expect(await text(ui, /Next thing/)).toBe('Next thing')
-    expect(await text(ui, /^Waiting on a blocker$/)).toBe('Waiting on a blocker')
+    expect(await text(ui, /^WAITING ON A BLOCKER$/)).toBe('WAITING ON A BLOCKER')
+    expect((await ui.find({ type: 'Markdown', text: /#50\]/ }))?.props.text).toBe('[#50](https://github.com/owner/project/issues/50)')
     expect(await text(ui, /After the next thing/)).toBe('After the next thing')
     expect(await text(ui, /^← /)).toBe('← #50')
     expect((await ui.find({ type: 'Button', text: /Oct 8/ }))?.text).toMatch(/^▸ Oct 8 \d\d:43$/)
@@ -259,4 +272,34 @@ test('a log without a pid whose verkstad run still works in the Project is shown
 
   expect(await text(ui, /Running/)).toBe('● Running')
   expect((await ui.find({ key: 'stop' }))?.text).toBe('■ Stop after #49')
+})
+
+test("Triage on an open issue's row offers its triage as a task chip that opens a session of its own", async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { desktop: true })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect(await ui.find({ key: 'triage:w51' })).toBeUndefined() // #51 is not among the open issues the mock lists
+  await ui.press({ key: 'triage:r50' })
+  expect(w.spawned).toEqual([
+    expect.objectContaining({
+      tool: 'mcp__ccd_session__spawn_task',
+      title: 'Triage #50',
+      prompt: '/verkstad:triage owner/project#50',
+    }),
+  ])
+  expect(await text(ui, /task chip/)).toBe('Triage of #50 is a task chip now: click it to open its session.')
+})
+
+test("without the desktop's task tool, Triage puts the command in the prompt", async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'terminal')
+
+  await ui.press({ key: 'triage:n1' })
+  expect(w.spawned).toEqual([])
+  expect(w.filled).toEqual(['/verkstad:triage owner/project#39'])
+  expect(await text(ui, /in the prompt/)).toBe('/verkstad:triage owner/project#39 is in the prompt: send it to start triage here.')
 })

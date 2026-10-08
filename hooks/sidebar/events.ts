@@ -6,7 +6,7 @@
 // `parked` and `aborted` its outcome. `run` is `started` (with `ready` and `pid`), then `finished`, `stopped`
 // (with `error`) or `aborted`; `asked` is the owner asking the Run to `stop` or `abort`.
 
-import type { Attention, FrontierEntry, FrontierView, RunSummary, RunTicket, RunView } from '../../types'
+import type { Attention, FrontierEntry, FrontierView, IssueInfo, RunSummary, RunTicket, RunView } from '../../types'
 
 type Event = Record<string, unknown>
 
@@ -179,7 +179,7 @@ export function frontierView(json: string, at: number): FrontierView {
   }
 }
 
-type Issue = { number: number; title: string; labels: Array<{ name: string }> }
+type Issue = { number: number; title: string; labels: Array<{ name: string }>; assignees?: Array<{ login: string }> }
 type Pull = { number: number; title: string; headRefName: string; url: string }
 type CiRun = { name: string; status: string; conclusion: string; headSha: string; url: string }
 
@@ -272,4 +272,8 @@ export function when(iso: string): string {
 
 export function usd(amount: number): string {
   return `$${amount.toFixed(2)}`
+}
+
+export function issueInfo(issues: Issue[]): IssueInfo[] {
+  return issues.map(i => ({ n: i.number, title: i.title, labels: i.labels.map(l => l.name), assignees: (i.assignees ?? []).map(a => a.login) }))
 }
