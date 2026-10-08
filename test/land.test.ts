@@ -931,6 +931,16 @@ test("a Surface the owner added on the base after the branch left it is not one 
   assert.deepEqual(originLog(p).slice(0, 2), ["Adds src/core/time.ts. Refs #7", "Adds the Surface cli"]);
 });
 
+test("a base whose Surfaces are malformed has nothing to narrow: a branch that fixes them lands", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([COUNTED], { surfaces: "src/ui" }) });
+  const wt = ticket(p, 7, { ".claude/harness.json": JSON.stringify(contract([COUNTED], { surfaces: [] }), null, 2) });
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(originLog(p)[0], "Adds .claude/harness.json. Refs #7");
+});
+
 const PR_MODE = { landing: "pull-request" };
 
 /** The `gh pr list` call a pull-request Landing makes to find the Ticket's open pull request. */

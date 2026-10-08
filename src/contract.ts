@@ -196,7 +196,10 @@ export interface Checking {
 }
 
 export function readChecking(root: string): Checking {
-  const value = readJson(root);
+  return parseChecking(readJson(root));
+}
+
+function parseChecking(value: JsonObject): Checking {
   return { surfaces: parseSurfaces(value), verify: parseVerify(value) };
 }
 
@@ -208,8 +211,7 @@ export function committedChecking(root: string, rev: string): Checking | null {
   const shown = tryGit(root, ["show", `${rev}:${CONTRACT_PATH}`]);
   if (shown.status !== 0) return null;
   try {
-    const value = parseJson(shown.stdout);
-    return { surfaces: parseSurfaces(value), verify: parseVerify(value) };
+    return parseChecking(parseJson(shown.stdout));
   } catch (error) {
     if (error instanceof Failure) return null;
     throw error;
@@ -236,8 +238,9 @@ export function narrowings(base: Checking, branch: Checking): string[] {
       if (glob.startsWith("!") && !surface.globs.includes(glob)) found.push(`adds the glob ${glob} to the Surface ${surface.name}`);
     }
   }
-  if (base.verify !== null && branch.verify === null) found.push(`removes verify (${base.verify})`);
-  else if (base.verify !== null && branch.verify !== base.verify) found.push(`changes verify from ${base.verify} to ${branch.verify}`);
+  if (base.verify !== null && branch.verify !== base.verify) {
+    found.push(branch.verify === null ? `removes verify (${base.verify})` : `changes verify from ${base.verify} to ${branch.verify}`);
+  }
   return found;
 }
 

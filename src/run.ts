@@ -665,7 +665,8 @@ function land(run: Run, t: Ticket): Step {
       return {
         to: "park",
         why:
-          `Landing refused a branch that narrows the Contract: ${message}\n\n` +
+          // Landing's last line says where the branch is before the Park pushes it; the Park says where it is after.
+          `Landing refused a branch that narrows the Contract: ${message.replace(/\nBranch \S+ is kept.*$/, "")}\n\n` +
           "Narrowing the Contract's Surfaces or its verify is the owner's, through verkstad:maintain-verify; an implementer may only add to them.",
       };
     case "github-failed": {
