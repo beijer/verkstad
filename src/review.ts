@@ -24,7 +24,7 @@ interface ReviewRecord {
 }
 
 /** Where the review of `branch` is recorded in the log directory `dir`; a slash in the branch is escaped. */
-function reviewPath(dir: string, branch: string): string {
+export function reviewPath(dir: string, branch: string): string {
   return join(dir, `review-${encodeURIComponent(branch)}.json`);
 }
 

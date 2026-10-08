@@ -3,7 +3,7 @@
 //
 // A Run (src/run.ts) writes its event log, `run-<time>.jsonl` in the log directory, one JSON object per line:
 // a Ticket claimed on its Tier, each session (role, id, ending, cost, turns, status), a Resume and its Tier,
-// each CLI call (what a failed one said), each Landing and each Park, and the Run's start and end. The digest
+// each CLI call (what a failed one said), each Landing, each Park and each abort, and the Run's start and end. The digest
 // reads the last one, or the one `--run` names, and for each session finds its transcript by its id among
 // Claude Code's transcripts for the Project's main checkout and worktrees (src/transcripts.ts) and counts the
 // tool calls that failed there, by kind.
@@ -37,12 +37,13 @@ function firstLine(text: string): string {
   return clip(text.split("\n").map((l) => l.trim()).find(Boolean) ?? "", 200);
 }
 
-/** How a session ended, from Claude Code's result subtype (or verkstad's own `error_timeout`). */
+/** How a session ended, from Claude Code's result subtype (or verkstad's own `error_timeout` and `error_aborted`). */
 const ENDINGS: Record<string, string> = {
   success: "ended",
   error_max_turns: "stopped at its turn limit",
   error_max_budget_usd: "spent its budget",
   error_timeout: "ran out of time",
+  error_aborted: "killed when the owner aborted the Run",
 };
 
 /** The transcript line for session `id`: where it is and its failed tool calls by kind, or that it is gone. */
@@ -67,7 +68,7 @@ interface Ticket {
   title: string;
   tiers: string[];
   lines: string[];
-  outcome: "landed" | "parked" | null;
+  outcome: "landed" | "parked" | "aborted" | null;
 }
 
 /** The event log to digest: the one `--run` names, here or in the log directory, or else the log directory's last. */
@@ -120,7 +121,8 @@ export function runLog(args: string[]): void {
   let ending = "did not end (it is still going, or was killed)";
 
   for (const e of events) {
-    if (e.run === "finished") ending = "finished";
+    if (e.run === "finished") ending = e.asked === "stop" ? "finished, stopped at the owner's request" : "finished";
+    if (e.run === "aborted") ending = "aborted by the owner";
     if (e.run === "stopped") ending = `stopped: ${firstLine(str(e.error))}`;
     // A CLI call names no Ticket: it belongs to the Ticket the Run is on, if it is on one.
     if (Array.isArray(e.verkstad)) {
@@ -158,6 +160,11 @@ export function runLog(args: string[]): void {
     if (typeof e.parked === "string") {
       t.lines.push(`  parked: ${firstLine(e.parked)}`);
       t.outcome = "parked";
+      current = undefined;
+    }
+    if (typeof e.aborted === "string") {
+      t.lines.push(`  aborted: its work was discarded: ${e.aborted}`);
+      t.outcome = "aborted";
       current = undefined;
     }
   }

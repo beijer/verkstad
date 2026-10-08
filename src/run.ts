@@ -31,9 +31,17 @@
 // Ticket: a Park, a failed Landing, a session wrapped up or read from its
 // branch, a Resume, a Fix round, a Verifier rerun, a session with more than
 // FAILED_CALLS failed tool calls in its transcript, or a stop; or that it was clean.
+//
+// `verkstad run --stop` and `--abort` ask the Run going in the Project to end, by
+// appending `{"asked": …}` to its event log, which the Run reads before each
+// Ticket and each step, and every second while a session runs. On a stop it
+// finishes the Ticket it is on and claims no other. On an abort it kills the
+// session working the Ticket with everything it started, never a Landing, and
+// discards the Ticket's work: its worktree, its branch here and on origin and
+// its review record; the Ticket goes back on the Frontier, unassigned.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
@@ -41,7 +49,7 @@ import { readContract, readSurfaces, readVerify, type Surface } from "./contract
 import { Failure } from "./fail.ts";
 import { type Entry, readFrontier } from "./frontier.ts";
 import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
-import { ensureLogDirectory, git, inLinkedWorktree, tryGit, worktreeRoot } from "./git.ts";
+import { ensureLogDirectory, git, inLinkedWorktree, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 import {
   CONFLICT_SCHEMA,
   conflictPrompt,
@@ -52,12 +60,24 @@ import {
   VERIFY_SCHEMA,
   verifyPrompt,
 } from "./prompts.ts";
-import { missingReview } from "./review.ts";
+import { deleteReview, reviewPath, missingReview } from "./review.ts";
 import { branchPoint, touchedSurfaces } from "./surfaces.ts";
-import { failedToolCalls, sessionDirs } from "./transcripts.ts";
+import { failedToolCalls, readJsonLines, sessionDirs } from "./transcripts.ts";
 import { checkVerdict, type Verdict } from "./verdict.ts";
 
-const USAGE = "usage: verkstad run [--max <n>] [--budget <usd>] [--dry-run]";
+const USAGE = "usage: verkstad run [--max <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort";
+
+/** What the owner may ask of the Run going: to stop after its Ticket, or to abort it now. */
+type Ask = "stop" | "abort";
+
+/** The comment an aborted Ticket gets. */
+const ABORTED = "Aborted by the owner during a Run; its work was discarded and the next Run starts it afresh.";
+
+/** How often, in milliseconds, the Run reads its event log for an abort while a session runs. */
+const ASK_POLL_MS = 1000;
+
+/** Thrown up to the Run when the owner aborts it: not a Failure, since nothing failed. */
+class Aborted extends Error {}
 
 const TIERS = ["light", "standard", "hard"] as const;
 type Tier = (typeof TIERS)[number];
@@ -162,10 +182,12 @@ interface Run {
   cost: number;
   /** What each Ticket gave reflect to learn from, in the order it happened. */
   forReflect: Map<number, string[]>;
+  /** The Ticket the Run is working, until it lands or is Parked; the one an abort discards. */
+  inFlight: number | null;
 }
 
 /** Checks the main checkout is one a Run may start from, and brings it level with origin. */
-function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "forReflect"> {
+function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "forReflect" | "inFlight"> {
   const main = worktreeRoot(process.cwd());
   if (inLinkedWorktree(main)) throw new Failure(`${main} is a worktree; run from the Project's main checkout`);
   const base = readContract(main).baseBranch;
@@ -193,6 +215,21 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
 
 function log(run: Run, event: Record<string, unknown>): void {
   appendFileSync(run.events, JSON.stringify({ at: new Date().toISOString(), ...event }) + "\n");
+}
+
+/** What the owner has asked of the Run in its event log: an abort over a stop, or nothing. */
+function asked(events: Array<Record<string, unknown>>): Ask | null {
+  if (events.some((e) => e.asked === "abort")) return "abort";
+  return events.some((e) => e.asked === "stop") ? "stop" : null;
+}
+
+function askedOf(run: Run): Ask | null {
+  return asked(readJsonLines(run.events));
+}
+
+/** Ends the Run here when the owner has asked to abort it. */
+function abortIfAsked(run: Run): void {
+  if (askedOf(run) === "abort") throw new Aborted();
 }
 
 /** Notes something Ticket #n gave reflect to learn from, once. */
@@ -375,7 +412,7 @@ const VERIFIER: Role = { name: "Verifier", agent: "verifier", walks: true };
 const CONFLICT_FINISHER: Role = { name: "conflict finisher", agent: "ticket-light", walks: false };
 
 /** Starts a session, or resumes one, for `role`, within its limits, counting what it cost. */
-function runSession(run: Run, t: Ticket, role: Role, cwd: string, prompt: string, schema: object, resume?: string): SessionResult {
+async function runSession(run: Run, t: Ticket, role: Role, cwd: string, prompt: string, schema: object, resume?: string): Promise<SessionResult> {
   const limits = LIMITS[role.agent];
   const budget = budgetOf(run.budget, role.agent);
   const options: SessionOptions = {
@@ -391,8 +428,22 @@ function runSession(run: Run, t: Ticket, role: Role, cwd: string, prompt: string
     // record a review, a Verdict or its Evidence.
     addDirs: [run.logDir],
   };
-  const result = counted(run, t, role, session(options));
+  const result = counted(run, t, role, await watched(run, options));
   return wrapUp(run, t, role, result, options);
+}
+
+/** Runs a session, killing it when the owner aborts the Run while it runs; ends the Run then. */
+async function watched(run: Run, options: SessionOptions): Promise<SessionResult> {
+  abortIfAsked(run);
+  const abort = new AbortController();
+  const poll = setInterval(() => {
+    if (askedOf(run) === "abort") abort.abort();
+  }, ASK_POLL_MS);
+  try {
+    return await session({ ...options, signal: abort.signal });
+  } finally {
+    clearInterval(poll);
+  }
 }
 
 function counted(run: Run, t: Ticket, role: Role, result: SessionResult): SessionResult {
@@ -401,6 +452,7 @@ function counted(run: Run, t: Ticket, role: Role, result: SessionResult): Sessio
   if (result.sessionId) t.sessions.set(result.sessionId, role.name);
   const status = result.report?.status ?? result.report?.verdict;
   log(run, { ticket: t.n, session: role.name, id: result.sessionId, subtype: result.subtype, cost: result.costUsd, turns: result.turns, status });
+  if (result.subtype === "error_aborted") throw new Aborted();
   return result;
 }
 
@@ -408,7 +460,7 @@ function counted(run: Run, t: Ticket, role: Role, result: SessionResult): Sessio
  * A session that ended without a report, at a limit or on its own, is resumed once, on a small budget of its
  * own, to give one; any other result stands.
  */
-function wrapUp(run: Run, t: Ticket, role: Role, result: SessionResult, options: SessionOptions): SessionResult {
+async function wrapUp(run: Run, t: Ticket, role: Role, result: SessionResult, options: SessionOptions): Promise<SessionResult> {
   if (result.report || !(stoppedAtLimit(result) || result.subtype === "success")) return result;
   const how: Record<string, string> = {
     error_max_turns: "stopped at its turn limit",
@@ -426,7 +478,7 @@ function wrapUp(run: Run, t: Ticket, role: Role, result: SessionResult, options:
     budgetUsd: WRAP_UP.usd,
     timeoutMs: WRAP_UP.hours * 3_600_000,
   };
-  return counted(run, t, role, session(wrapping));
+  return counted(run, t, role, await watched(run, wrapping));
 }
 
 /** Fails the Run on a session that gave no report and did not stop at a limit: something is wrong beyond the Ticket. */
@@ -477,7 +529,7 @@ function specOf(n: number): number | undefined {
   return ghJsonUnlessMissing<{ number: number }>(["api", `repos/{owner}/{repo}/issues/${n}/parent`])?.number;
 }
 
-function runTicket(run: Run, entry: Entry): Outcome {
+async function runTicket(run: Run, entry: Entry): Promise<Outcome> {
   const n = entry.number;
   const t: Ticket = {
     n,
@@ -497,37 +549,41 @@ function runTicket(run: Run, entry: Entry): Outcome {
     sessions: new Map(),
   };
   gh(["issue", "edit", String(n), "--add-assignee", "@me"]);
+  run.inFlight = n;
   say(run, n, `${entry.title}: claimed, ${describeTier(t.tier, run.budget)}.`);
   log(run, { ticket: n, claimed: entry.title, tier: t.tier });
   const step: Step = hasBranch(run, n)
     ? { to: "implement", why: { kind: "resume", reason: `an earlier Run or a Park left the branch issue-${n}; continue it from where it is.` } }
     : { to: "implement" };
   try {
-    return work(run, t, step);
+    const outcome = await work(run, t, step);
+    run.inFlight = null;
+    return outcome;
   } finally {
     noteFailedCalls(run, t);
   }
 }
 
 /** Takes Ticket t from `first` from step to step until it lands or is Parked. */
-function work(run: Run, t: Ticket, first: Step): Outcome {
+async function work(run: Run, t: Ticket, first: Step): Promise<Outcome> {
   let step = first;
   for (let steps = 0; steps < MAX_STEPS; steps++) {
+    if (step.to !== "done") abortIfAsked(run);
     switch (step.to) {
       case "implement":
-        step = implement(run, t, step.why);
+        step = await implement(run, t, step.why);
         break;
       case "review":
-        step = review(run, t);
+        step = await review(run, t);
         break;
       case "verify":
-        step = verify(run, t);
+        step = await verify(run, t);
         break;
       case "land":
         step = land(run, t);
         break;
       case "conflict":
-        step = finishConflict(run, t, step.files);
+        step = await finishConflict(run, t, step.files);
         break;
       case "park":
         return park(run, t, step.why);
@@ -538,7 +594,7 @@ function work(run: Run, t: Ticket, first: Step): Outcome {
   throw new Failure(`#${t.n} took ${MAX_STEPS} steps without landing or Parking; it stays claimed`);
 }
 
-function implement(run: Run, t: Ticket, why?: { kind: "resume" | "fix"; reason: string }): Step {
+async function implement(run: Run, t: Ticket, why?: { kind: "resume" | "fix"; reason: string }): Promise<Step> {
   const wt = freshWorktree(run, t);
   say(run, t.n, `implementing in ${relative(run.main, wt)}.`);
   const prompt = implementPrompt({
@@ -550,7 +606,7 @@ function implement(run: Run, t: Ticket, why?: { kind: "resume" | "fix"; reason: 
     resumeReason: why?.kind === "resume" ? why.reason : undefined,
     findings: why?.kind === "fix" ? why.reason : undefined,
   });
-  const result = runSession(run, t, implementer(t), wt, prompt, IMPLEMENT_SCHEMA);
+  const result = await runSession(run, t, implementer(t), wt, prompt, IMPLEMENT_SCHEMA);
   t.session = result.sessionId;
   return reported(run, t, result);
 }
@@ -607,7 +663,7 @@ function resumeOrPark(run: Run, t: Ticket, reason: string, parkWhy: string, up =
 }
 
 /** A branch with no recorded review goes back to the implementer's own session, once, to review it. */
-function review(run: Run, t: Ticket): Step {
+async function review(run: Run, t: Ticket): Promise<Step> {
   const branch = `issue-${t.n}`;
   if (missingReview(run.logDir, branch) === null) return { to: "verify" };
   if (t.reviewAsked || t.session === null) {
@@ -619,7 +675,7 @@ function review(run: Run, t: Ticket): Step {
     `No review of ${branch} is recorded. Run \`git merge-base HEAD ${run.upstream}\` on its own, review the branch with ` +
     "Skill verkstad:review against the commit it prints, fix the real findings, run `verkstad gate`, commit, leave the " +
     "worktree clean, and give the final report again as your structured output.";
-  return reported(run, t, runSession(run, t, implementer(t), t.worktree, prompt, IMPLEMENT_SCHEMA, t.session));
+  return reported(run, t, await runSession(run, t, implementer(t), t.worktree, prompt, IMPLEMENT_SCHEMA, t.session));
 }
 
 /**
@@ -627,7 +683,7 @@ function review(run: Run, t: Ticket): Step {
  * the patch Landing pushes. The Surfaces are the branch's Contract's, as Landing reads them, so a Surface the
  * branch declares is Walked too.
  */
-function verify(run: Run, t: Ticket): Step {
+async function verify(run: Run, t: Ticket): Promise<Step> {
   if (run.surfaces.length === 0 && readSurfaces(t.worktree).length === 0) {
     say(run, t.n, "touches no Surface; landing.");
     return { to: "land" };
@@ -661,7 +717,7 @@ function verify(run: Run, t: Ticket): Step {
     surfaces: walk,
     findings: t.failedVerdict,
   });
-  const result = runSession(run, t, VERIFIER, t.worktree, prompt, VERIFY_SCHEMA);
+  const result = await runSession(run, t, VERIFIER, t.worktree, prompt, VERIFY_SCHEMA);
   if (!result.report && !endedWithoutFailing(result)) throw noReport(t, "Verifier", result);
   t.verifierReport = typeof result.report?.report === "string" ? result.report.report.trim() : "(no report)";
   // The Verdict holds the criteria the Verifier recorded it from.
@@ -776,7 +832,7 @@ function land(run: Run, t: Ticket): Step {
 }
 
 /** A Landing that conflicted goes to the conflict prompt, on the light Tier, in a fresh worktree. */
-function finishConflict(run: Run, t: Ticket, files: string): Step {
+async function finishConflict(run: Run, t: Ticket, files: string): Promise<Step> {
   say(run, t.n, `conflicts with ${run.base} in ${files}; finishing it on the light Tier.`);
   const wt = freshWorktree(run, t);
   const branch = `issue-${t.n}`;
@@ -788,7 +844,7 @@ function finishConflict(run: Run, t: Ticket, files: string): Step {
     conflictFiles: files,
     landed: git(run.main, ["log", "--oneline", `${branch}..${run.upstream}`]).trim(),
   });
-  const result = runSession(run, t, CONFLICT_FINISHER, wt, prompt, CONFLICT_SCHEMA);
+  const result = await runSession(run, t, CONFLICT_FINISHER, wt, prompt, CONFLICT_SCHEMA);
   if (!result.report) {
     if (!endedWithoutFailing(result)) throw noReport(t, "conflict", result);
     return { to: "park", why: `The conflict in ${files} was not finished: the session gave no report, even when asked.` };
@@ -867,7 +923,82 @@ function plan(ready: Entry[], budget: number | undefined): string {
   );
 }
 
-export function run(args: string[]): void {
+/**
+ * Discards aborted Ticket #n's work, so that the next Run starts it afresh: its worktree, its branch here and on
+ * origin and its review record, whichever it has; unassigns it, keeping its labels, and says so on it. Returns
+ * what it discarded.
+ */
+function discard(run: Run, n: number): string {
+  const branch = `issue-${n}`;
+  const discarded: string[] = [];
+  const wt = join(run.main, ".claude", "worktrees", branch);
+  if (existsSync(wt)) {
+    tryGit(run.main, ["worktree", "remove", "--force", "--force", wt]);
+    rmSync(wt, { recursive: true, force: true });
+    discarded.push(`the worktree ${relative(run.main, wt)}`);
+  }
+  git(run.main, ["worktree", "prune"]);
+  if (tryGit(run.main, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]).status === 0) {
+    git(run.main, ["branch", "--delete", "--force", branch]);
+    discarded.push(`the branch ${branch}`);
+  }
+  if (tryGit(run.main, ["ls-remote", "--exit-code", "--heads", "origin", `refs/heads/${branch}`]).status === 0) {
+    git(run.main, ["push", "--quiet", "origin", "--delete", branch]);
+    discarded.push(`${branch} on origin`);
+  }
+  if (existsSync(reviewPath(run.logDir, branch))) {
+    deleteReview(run.logDir, branch);
+    discarded.push("its review record");
+  }
+  gh(["issue", "edit", String(n), "--remove-assignee", "@me"]);
+  gh(["issue", "comment", String(n), "--body", ABORTED]);
+  const what = discarded.join(", ") || "nothing: it had no worktree, branch or review record yet";
+  log(run, { ticket: n, aborted: what });
+  return what;
+}
+
+/** Whether process `pid` is alive; one we may not signal is. */
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+/**
+ * `verkstad run --stop|--abort`: asks the Run going in the Project, the one whose event log is the newest, has
+ * no end line and whose process is alive, to end, and says what will happen.
+ */
+function ask(what: Ask): void {
+  const dir = logDirectory(process.cwd());
+  const newest = existsSync(dir) ? readdirSync(dir).filter((name) => /^run-.*\.jsonl$/.test(name)).sort().pop() : undefined;
+  const events = newest ? readJsonLines(join(dir, newest)) : [];
+  const pid = events.find((e) => e.run === "started")?.pid;
+  if (!newest || events.some((e) => typeof e.run === "string" && e.run !== "started") || typeof pid !== "number" || !alive(pid)) {
+    throw new Failure("no Run is going", 1);
+  }
+  appendFileSync(join(dir, newest), JSON.stringify({ at: new Date().toISOString(), asked: what }) + "\n");
+  // The Ticket the Run is on: the last one claimed, unless it has landed or been Parked since.
+  let n: number | null = null;
+  for (const e of events) {
+    if (typeof e.claimed === "string" && typeof e.ticket === "number") n = e.ticket;
+    if ((typeof e.landed === "string" || typeof e.parked === "string") && e.ticket === n) n = null;
+  }
+  const abort = asked([...events, { asked: what }]) === "abort";
+  if (n === null) {
+    process.stdout.write(abort ? "The Run aborts before it claims another Ticket; it has no work to discard.\n" : "The Run stops before it claims another Ticket.\n");
+  } else {
+    process.stdout.write(abort ? `The Run aborts #${n} and discards its work.\n` : `The Run stops after #${n}.\n`);
+  }
+}
+
+export async function run(args: string[]): Promise<void> {
+  if (args.includes("--stop") || args.includes("--abort")) {
+    if (args.length !== 1) throw new Failure(USAGE, 2);
+    return ask(args[0] === "--stop" ? "stop" : "abort");
+  }
   const options = parseArgs(args);
   const prepared = prepare(options);
   const { owner, name } = currentRepo();
@@ -888,19 +1019,23 @@ export function run(args: string[]): void {
     events: join(prepared.logDir, `run-${stamp}.jsonl`),
     handoff: mkdtempSync(join(tmpdir(), "verkstad-run-")),
     forReflect: new Map(),
+    inFlight: null,
   };
-  log(r, { run: "started", main: r.main, base: r.base, ready: ready.map((e) => e.number) });
+  log(r, { run: "started", pid: process.pid, main: r.main, base: r.base, ready: ready.map((e) => e.number) });
 
   const finished: Array<{ n: number; line: string }> = [];
   const tried = new Set<number>();
   let stopped: Failure | null = null;
+  let aborted = false;
   let next: Entry | undefined = ready[0];
   try {
     // The Tickets filed to declare a new Surface, which go before the rest of the Frontier.
     const filed: Entry[] = [];
     while (next && (options.max === null || finished.length < options.max)) {
+      abortIfAsked(r);
+      if (askedOf(r) === "stop") break;
       tried.add(next.number);
-      const outcome = runTicket(r, next);
+      const outcome = await runTicket(r, next);
       finished.push({ n: next.number, line: outcome.line });
       const named = (s: NewSurface): string => `${s.name}${s.observes ? ` (${s.observes})` : ""}`;
       if (outcome.newSurfaces.length && r.verify === null) {
@@ -920,17 +1055,35 @@ export function run(args: string[]): void {
       }
       next = filed.shift() ?? readFrontier().ready.find((e) => !tried.has(e.number));
     }
+    // An abort asked during the last Ticket's Landing finds nothing left to abort.
+    abortIfAsked(r);
+  } catch (error) {
+    if (error instanceof Aborted) aborted = true;
+    else if (error instanceof Failure) {
+      stopped = error;
+      if (next) forReflect(r, next.number, "stopped the Run");
+    } else throw error;
+  }
+  let discarded = "";
+  try {
+    if (aborted && r.inFlight !== null) discarded = `#${r.inFlight}'s work was discarded: ${discard(r, r.inFlight)}.`;
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
-    stopped = error;
-    if (next) forReflect(r, next.number, "stopped the Run");
+    stopped = new Failure(`aborting #${r.inFlight} failed: ${error.message}`);
   } finally {
     rmSync(r.handoff, { recursive: true, force: true });
   }
+  const ending = stopped ? "stopped" : aborted ? "aborted" : "finished";
+  const stopAsked = ending === "finished" && askedOf(r) === "stop";
+  const request = aborted
+    ? `Aborted at the owner's request: ${discarded || "no Ticket was in flight, so nothing was discarded."}\n`
+    : stopAsked
+      ? "Stopped at the owner's request.\n"
+      : "";
   const sessions = `${r.sessions} session${r.sessions === 1 ? "" : "s"}, ${usd(r.cost)}`;
   process.stdout.write(
-    `Run ${stopped ? "stopped" : "finished"}: ${sessions}.\n` + finished.map((f) => `  #${f.n} ${f.line}\n`).join("") + `${reflectLine(r)}\n`,
+    `Run ${ending}: ${sessions}.\n` + finished.map((f) => `  #${f.n} ${f.line}\n`).join("") + request + `${reflectLine(r)}\n`,
   );
-  log(r, { run: stopped ? "stopped" : "finished", sessions: r.sessions, cost: r.cost, finished, error: stopped?.message });
+  log(r, { run: ending, sessions: r.sessions, cost: r.cost, finished, error: stopped?.message, ...(stopAsked ? { asked: "stop" } : {}) });
   if (stopped) throw stopped;
 }

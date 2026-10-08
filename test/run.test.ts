@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { existsSync, readdirSync, realpathSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { project, type Project } from "./project.ts";
@@ -638,4 +639,220 @@ test("run refuses a Project that does not gitignore .claude/verkstad/, making no
   assert.equal(r.code, 1);
   assert.equal(existsSync(join(p.dir, ".claude", "worktrees")), false);
   assert.deepEqual(p.calls(), []);
+});
+
+/** Waits until `ready` holds, checking every 50ms, failing after `ms`. */
+async function waitFor(what: string, ready: () => boolean, ms = 20_000): Promise<void> {
+  for (const until = Date.now() + ms; !ready(); ) {
+    if (Date.now() > until) throw new Error(`waited ${ms}ms for ${what}`);
+    await new Promise((done) => setTimeout(done, 50));
+  }
+}
+
+/** The Run's event log, one object per line. */
+function eventLog(p: Project): Array<Record<string, unknown>> {
+  const dir = join(p.dir, ".claude", "verkstad");
+  const [name] = readdirSync(dir).filter((e) => /^run-.*\.jsonl$/.test(e));
+  return readFileSync(join(dir, name), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as Record<string, unknown>);
+}
+
+/** A file under the test's TMPDIR, where a session's or a Gate step's commands leave signs for the test. */
+function sign(p: Project, name: string): string {
+  return join(p.env.TMPDIR ?? "", name);
+}
+
+/** Shell commands that say the session or step has started, then wait for the test to write `go`. */
+const WAIT_FOR_GO = 'touch "$TMPDIR/working"; while [ ! -e "$TMPDIR/go" ]; do sleep 0.1; done';
+
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const CLEAN =
+  "The Run was clean: no Park, failed Landing, wrap-up, Resume, Fix round, Verifier rerun or session with more than 20 failed tool calls.";
+
+test("run --stop lets the Run land the Ticket it is on, then end without claiming another", async (t) => {
+  const working: StubSession = { ...implemented(7, "a.txt"), run: [...(implemented(7, "a.txt").run ?? []), WAIT_FOR_GO] };
+  const p = runProject(t, [ready(7), ready(9)], [working, implemented(9, "b.txt")]);
+  const running = p.start(p.dir, "run");
+  await waitFor("the implementer to start", () => existsSync(sign(p, "working")));
+
+  const s = p.run("run", "--stop");
+
+  assert.equal(s.stderr, "");
+  assert.equal(s.stdout, "The Run stops after #7.\n");
+  assert.equal(s.code, 0);
+  writeFileSync(sign(p, "go"), "");
+  const r = await running;
+  const sha = originSha(p);
+  assert.equal(r.stderr, "");
+  assert.equal(
+    r.stdout,
+    [
+      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 implementing in .claude/worktrees/issue-7.",
+      "#7 implementer reported done ($0.25).",
+      "#7 touches no Surface; landing.",
+      `#7 landed on main in ${sha}.`,
+      "Run finished: 1 session, $0.25.",
+      `  #7 landed on main in ${sha}`,
+      "Stopped at the owner's request.",
+      CLEAN,
+      "",
+    ].join("\n"),
+  );
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "closed", ["owner"]], [9, "open", []]]);
+  assert.equal(p.claudeCalls().length, 1);
+  const events = eventLog(p);
+  assert.equal(events[0].run, "started");
+  assert.equal(typeof events[0].pid, "number");
+  assert.equal(events.filter((e) => "asked" in e && !("run" in e)).map((e) => e.asked).join(), "stop");
+  const { at: _, ...end } = events[events.length - 1];
+  assert.deepEqual(end, { run: "finished", sessions: 1, cost: 0.25, finished: [{ n: 7, line: `landed on main in ${sha}` }], asked: "stop" });
+});
+
+test("run --abort kills the implementer session and what it started, discards the Ticket's work and puts it back on the Frontier", async (t) => {
+  const working: StubSession = {
+    run: [
+      "verkstad start 7",
+      ...commitFile(7, "a.txt", "half"),
+      "verkstad review record",
+      `sleep 60 & echo "$PPID $$ $!" > "$TMPDIR/pids"; ${WAIT_FOR_GO}`,
+    ],
+    report: report("done"),
+  };
+  const p = runProject(t, [ready(7), ready(9)], [working, implemented(9, "b.txt")]);
+  const running = p.start(p.dir, "run");
+  await waitFor("the implementer to start", () => existsSync(sign(p, "working")));
+  const pids = readFileSync(sign(p, "pids"), "utf8").trim().split(" ").map(Number);
+  assert.equal(pids.length, 3);
+  assert.ok(pids.every(isAlive));
+
+  const s = p.run("run", "--abort");
+
+  assert.equal(s.stderr, "");
+  assert.equal(s.stdout, "The Run aborts #7 and discards its work.\n");
+  assert.equal(s.code, 0);
+  await waitFor("the session and its children to be gone", () => !pids.some(isAlive), 10_000);
+  const r = await running;
+  assert.equal(r.stderr, "");
+  assert.equal(
+    r.stdout,
+    [
+      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 implementing in .claude/worktrees/issue-7.",
+      "Run aborted: 1 session, $0.00.",
+      "Aborted at the owner's request: #7's work was discarded: the worktree .claude/worktrees/issue-7, the branch issue-7, its review record.",
+      CLEAN,
+      "",
+    ].join("\n"),
+  );
+  assert.equal(r.code, 0);
+  assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "issue-7")), false);
+  assert.equal(p.git("branch", "--list", "issue-7"), "");
+  assert.equal(existsSync(join(p.dir, ".claude", "verkstad", "review-issue-7.json")), false);
+  const [seven, nine] = p.state().issues;
+  assert.equal(seven.state, "open");
+  assert.deepEqual(seven.assignees, []);
+  assert.deepEqual(seven.labels, ["ready-for-agent"]);
+  assert.deepEqual(seven.comments.map((c) => c.body), ["Aborted by the owner during a Run; its work was discarded and the next Run starts it afresh."]);
+  assert.deepEqual(nine.assignees, []);
+  assert.equal(p.claudeCalls().length, 1);
+  const events = eventLog(p).map(({ at: _, ...e }) => e);
+  assert.deepEqual(events.filter((e) => "asked" in e), [{ asked: "abort" }]);
+  assert.deepEqual(events.slice(-2), [
+    { ticket: 7, aborted: "the worktree .claude/worktrees/issue-7, the branch issue-7, its review record" },
+    { run: "aborted", sessions: 1, cost: 0, finished: [] },
+  ]);
+});
+
+test("run --abort deletes the branch an earlier Park left on origin", async (t) => {
+  const working: StubSession = { run: ["verkstad start 7 --resume", WAIT_FOR_GO], report: report("done") };
+  const p = runProject(t, [ready(7)], [working]);
+  p.git("push", "--quiet", "origin", "main:refs/heads/issue-7");
+  const running = p.start(p.dir, "run");
+  await waitFor("the implementer to start", () => existsSync(sign(p, "working")));
+
+  const s = p.run("run", "--abort");
+
+  assert.equal(s.code, 0, s.stderr);
+  const r = await running;
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(
+    r.stdout,
+    /\nAborted at the owner's request: #7's work was discarded: the worktree \.claude\/worktrees\/issue-7, the branch issue-7, issue-7 on origin\.\n/,
+  );
+  assert.equal(p.git("--git-dir", p.origin, "branch", "--list", "issue-7"), "");
+  assert.equal(p.git("branch", "--list", "issue-7"), "");
+});
+
+test("run --abort asked during a Landing lets it land, and the Run ends aborted with nothing discarded", async (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [implemented(7, "a.txt"), implemented(9, "b.txt")], {
+    gate: { steps: [{ name: "slow", command: WAIT_FOR_GO }] },
+  });
+  const running = p.start(p.dir, "run");
+  await waitFor("the Landing's Gate to start", () => existsSync(sign(p, "working")));
+
+  const s = p.run("run", "--abort");
+
+  assert.equal(s.code, 0, s.stderr);
+  writeFileSync(sign(p, "go"), "");
+  const r = await running;
+  const sha = originSha(p);
+  assert.equal(r.stderr, "");
+  assert.match(
+    r.stdout,
+    new RegExp(
+      `\\n#7 landed on main in ${sha}\\.\\nRun aborted: 1 session, \\$0\\.25\\.\\n  #7 landed on main in ${sha}\\n` +
+        "Aborted at the owner's request: no Ticket was in flight, so nothing was discarded\\.\\n",
+    ),
+  );
+  assert.equal(r.code, 0);
+  assert.equal(p.git("--git-dir", p.origin, "log", "--format=%s", "-1", "main"), "Adds a.txt. Refs #7");
+  const [seven, nine] = p.state().issues;
+  assert.equal(seven.state, "closed");
+  assert.deepEqual(seven.comments.map((c) => c.body.split("\n")[0]), [`Landed on main in ${sha}.`]);
+  assert.deepEqual(nine.assignees, []);
+  const events = eventLog(p).map(({ at: _, ...e }) => e);
+  assert.deepEqual(events.filter((e) => "aborted" in e), []);
+  assert.deepEqual(events[events.length - 1], { run: "aborted", sessions: 1, cost: 0.25, finished: [{ n: 7, line: `landed on main in ${sha}` }] });
+});
+
+test("run --stop and --abort fail with no Run going: no event log, one that ended, or one whose process is gone", (t) => {
+  const p = runProject(t, [ready(7)], []);
+  const dir = join(p.dir, ".claude", "verkstad");
+  const refused = (args: string[]) => {
+    for (const arg of args) {
+      const r = p.run("run", arg);
+      assert.equal(r.stdout, "");
+      assert.equal(r.stderr, "verkstad run: no Run is going\n");
+      assert.equal(r.code, 1);
+    }
+  };
+
+  refused(["--stop", "--abort"]);
+
+  mkdirSync(dir);
+  const ended = '{"run":"started","pid":' + process.pid + "}\n" + '{"run":"finished","sessions":0,"cost":0,"finished":[]}\n';
+  writeFileSync(join(dir, "run-2026-10-08T10-00-00-000Z.jsonl"), ended);
+  refused(["--stop", "--abort"]);
+
+  const gone = spawnSync("true").pid;
+  const killed = '{"run":"started","pid":' + gone + "}\n" + '{"ticket":7,"claimed":"Ticket 7","tier":"standard"}\n';
+  writeFileSync(join(dir, "run-2026-10-08T11-00-00-000Z.jsonl"), killed);
+  refused(["--stop", "--abort"]);
+  assert.equal(readFileSync(join(dir, "run-2026-10-08T11-00-00-000Z.jsonl"), "utf8"), killed);
+
+  const usage = p.run("run", "--stop", "--max", "1");
+  assert.equal(usage.code, 2);
+  assert.match(usage.stderr, /^verkstad run: usage: verkstad run /);
 });

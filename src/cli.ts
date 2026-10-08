@@ -19,7 +19,7 @@ import { verdict } from "./verdict.ts";
 interface Subcommand {
   usage: string;
   summary: string;
-  run(args: string[]): void;
+  run(args: string[]): void | Promise<void>;
 }
 
 const subcommands: Record<string, Subcommand> = {
@@ -71,10 +71,11 @@ const subcommands: Record<string, Subcommand> = {
     run: review,
   },
   run: {
-    usage: "verkstad run [--max <n>] [--budget <usd>] [--dry-run]",
+    usage: "verkstad run [--max <n>] [--budget <usd>] [--dry-run] | --stop | --abort",
     summary:
       "Works the Frontier one Ticket at a time: a headless session implements each in its own worktree, " +
-      "the Verifier Walks it when it touches a Surface, and it lands or is Parked",
+      "the Verifier Walks it when it touches a Surface, and it lands or is Parked; --stop ends the Run going after its Ticket, " +
+      "--abort ends it now and discards its Ticket's work",
     run,
   },
   "run-log": {
@@ -104,7 +105,7 @@ function usage(): string {
   return ["usage: verkstad <subcommand> [options]", "", ...lines, ""].join("\n");
 }
 
-function main(argv: string[]): number {
+async function main(argv: string[]): Promise<number> {
   const [name, ...args] = argv;
   if (name === "help" || name === "--help" || name === "-h") {
     process.stdout.write(usage());
@@ -120,7 +121,7 @@ function main(argv: string[]): number {
     return 2;
   }
   try {
-    subcommand.run(args);
+    await subcommand.run(args);
     return 0;
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
@@ -129,4 +130,4 @@ function main(argv: string[]): number {
   }
 }
 
-process.exitCode = main(process.argv.slice(2));
+process.exitCode = await main(process.argv.slice(2));

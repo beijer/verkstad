@@ -159,6 +159,44 @@ test("run-log --run digests the event log it names, and says how a Run that stop
   assert.equal(r.code, 0);
 });
 
+test("run-log says a Run the owner aborted ended so, and what it discarded of the Ticket it was on, and one the owner stopped finished at their request", (t) => {
+  const p = project(t);
+  const aborted = writeRun(p, "run-2026-10-01T20-00-00-000Z.jsonl", [
+    [0, { run: "started", pid: 4242, main: realpathSync(p.dir), base: "main", ready: [5] }],
+    [0, { ticket: 5, claimed: "Fix the build", tier: "light" }],
+    [3, { asked: "abort" }],
+    [3, { ticket: 5, session: "implementer", id: "s-impl-5", subtype: "error_aborted", cost: 0, turns: 0 }],
+    [3, { ticket: 5, aborted: "the worktree .claude/worktrees/issue-5, the branch issue-5" }],
+    [3, { run: "aborted", sessions: 1, cost: 0, finished: [] }],
+  ]);
+  const stopped = writeRun(p, "run-2026-10-01T21-00-00-000Z.jsonl", [
+    [60, { run: "started", pid: 4243, main: realpathSync(p.dir), base: "main", ready: [] }],
+    [61, { asked: "stop" }],
+    [61, { run: "finished", sessions: 0, cost: 0, finished: [], asked: "stop" }],
+  ]);
+
+  const r = p.run("run-log", "--run", aborted);
+
+  assert.equal(r.stderr, "");
+  assert.equal(
+    r.stdout,
+    [
+      "Run run-2026-10-01T20-00-00-000Z.jsonl, 2026-10-01 20:00 to 20:03 UTC: aborted by the owner",
+      `  Event log: ${aborted}`,
+      "",
+      "#5 Fix the build: light Tier",
+      "  implementer: killed when the owner aborted the Run, $0, 0 turns",
+      "    transcript gone: no s-impl-5.jsonl among the Project's sessions",
+      "  aborted: its work was discarded: the worktree .claude/worktrees/issue-5, the branch issue-5",
+      "",
+      "Totals: 1 Ticket (0 landed, 0 parked), 1 session, $0, 0 turns",
+      "",
+    ].join("\n"),
+  );
+  assert.equal(r.code, 0);
+  assert.match(p.run("run-log", "--run", stopped).stdout, /^Run run-2026-10-01T21-00-00-000Z\.jsonl, 2026-10-01 21:00 to 21:01 UTC: finished, stopped at the owner's request\n/);
+});
+
 test("run-log says a Run that never wrote its last line did not end, with a failed CLI call made on no Ticket, and dates an end on another day", (t) => {
   const p = project(t);
   const file = writeRun(p, "run-2026-10-01T23-50-00-000Z.jsonl", [
