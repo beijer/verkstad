@@ -22,6 +22,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 - Erasable syntax only: no enums, namespaces or parameter properties. Relative imports end in `.ts`. `npm run typecheck` enforces both.
 - Ask gh for JSON (`--json`, `gh api`) and parse it in TypeScript, never with `--jq`; the stub refuses `--jq`. Read GitHub through native relations (sub-issues, `blocked_by`), never by parsing issue text (ADR 0006); the one exception is `convert-links`, whose job is to turn that text into relations once.
 - Output is short and human-readable by default; `--json` where a Ticket asks for it. A failure throws `Failure` (src/fail.ts): the CLI prints `verkstad <subcommand>: <what failed>` and exits non-zero, 2 for usage errors. `land`'s failures print a reason code.
+- Worktrees run verkstad side by side and share one git config and one set of remote-tracking refs. So nothing writes the config: a Ticket's branch has no upstream, and the CLI names `origin/<base>` wherever it means it. And every fetch goes through `fetch` or `tryFetch` (src/git.ts), which try again when another worktree's fetch holds a ref.
 - Logs, Verdicts and Evidence go in the log directory, `<main checkout>/.claude/verkstad/`: gitignored and outside every worktree. Find the main checkout from `git rev-parse --path-format=absolute --git-common-dir`.
 
 ## Skills and agents

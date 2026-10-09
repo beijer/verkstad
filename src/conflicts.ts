@@ -19,7 +19,7 @@ import { existsSync, statSync } from "node:fs";
 import { resolve } from "node:path";
 import { readBaseBranch } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { git, tryGit, worktreeRoot } from "./git.ts";
+import { fetch, git, tryGit, worktreeRoot } from "./git.ts";
 
 const USAGE = "usage: verkstad conflicts <n> [--rebase <worktree>]";
 
@@ -43,7 +43,7 @@ export function conflicts(args: string[]): void {
     throw new Failure(`${branch} does not exist`);
   }
   const rebaseRoot = worktree === undefined ? undefined : checkWorktree(worktree, branch);
-  git(root, ["fetch", "--quiet", "origin"]);
+  fetch(root);
 
   // With --name-only and --no-messages, stdout is the merged tree's id, then each conflicted file once.
   const r = tryGit(root, ["merge-tree", "--write-tree", "--name-only", "--no-messages", "-z", upstream, branch]);

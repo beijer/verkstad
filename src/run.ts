@@ -59,7 +59,7 @@ import { CONTRACT_PATH, readContract, readParallel, readSurfaces, readVerify, ty
 import { Failure } from "./fail.ts";
 import { type Entry, type Listing, readFrontier } from "./frontier.ts";
 import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
-import { ensureLogDirectory, git, inLinkedWorktree, logDirectory, tryGit, worktreeRoot } from "./git.ts";
+import { ensureLogDirectory, fetch, git, inLinkedWorktree, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 import {
   CONFLICT_SCHEMA,
   conflictPrompt,
@@ -236,7 +236,7 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
     if (tryGit(main, ["check-ignore", "-q", dir]).status !== 0) throw new Failure(`${dir} is not gitignored; add it to the Project's .gitignore`);
   }
   const upstream = `origin/${base}`;
-  git(main, ["fetch", "--quiet", "origin", base]);
+  fetch(main, [base]);
   if (tryGit(main, ["merge-base", "--is-ancestor", "HEAD", upstream]).status !== 0) {
     throw new Failure(`${base} has commits ${upstream} lacks; push them or drop them first`);
   }
@@ -537,7 +537,7 @@ function freshWorktree(run: Run, t: Ticket): string {
     if (existsSync(wt)) throw new Failure(`could not remove #${t.n}'s old worktree ${wt}`);
   }
   git(run.main, ["worktree", "prune"]);
-  git(run.main, ["fetch", "--quiet", "origin", run.base]);
+  fetch(run.main, [run.base]);
   git(run.main, ["worktree", "add", "--quiet", "--detach", wt, run.upstream]);
   // Gitignored, so a fresh checkout lacks it; the session's scratch files go here.
   mkdirSync(join(wt, ".claude", "verkstad"), { recursive: true });

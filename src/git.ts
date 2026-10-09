@@ -25,6 +25,27 @@ export function git(cwd: string, args: string[]): string {
   return r.stdout;
 }
 
+const FETCH_ATTEMPTS = 5;
+
+/**
+ * Fetches `refs` (every branch when none) from origin into the remote-tracking refs every worktree shares,
+ * and returns what the last attempt did. Another worktree's fetch may hold a ref's lock or
+ * move the ref under this one, so a failed fetch is tried again, a little later each time.
+ */
+export function tryFetch(cwd: string, refs: string[] = []): GitResult {
+  for (let attempt = 1; ; attempt++) {
+    const r = tryGit(cwd, ["fetch", "--quiet", "origin", ...refs]);
+    if (r.status === 0 || attempt === FETCH_ATTEMPTS) return r;
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50 * attempt);
+  }
+}
+
+/** Fetches as `tryFetch` does, failing as `git` does when the last attempt fails. */
+export function fetch(cwd: string, refs: string[] = []): void {
+  const r = tryFetch(cwd, refs);
+  if (r.status !== 0) throw new Failure(`git fetch failed: ${r.stderr.trim() || `exit ${r.status}`}`);
+}
+
 /** The root of the checkout or worktree `cwd` is in. */
 export function worktreeRoot(cwd: string): string {
   const r = tryGit(cwd, ["rev-parse", "--show-toplevel"]);

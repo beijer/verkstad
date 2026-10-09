@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { test } from "node:test";
 import { project, type Project } from "./project.ts";
@@ -209,4 +209,56 @@ test("start without a Ticket number, or with an unknown option, prints its usage
     assert.equal(r.stderr, stderr);
   }
   assert.equal(p.git("-C", wt, "branch", "--show-current"), "worktree-agent-a");
+});
+
+/** The config every worktree of the Project shares with its main checkout. */
+function sharedConfig(p: Project): string {
+  return readFileSync(join(p.dir, ".git", "config"), "utf8");
+}
+
+const ROUNDS = 8;
+const AT_ONCE = 4;
+
+test("several starts at once, in worktrees of one Project, all succeed every time and write nothing to the shared config", async (t) => {
+  const p = project(t);
+  const config = sharedConfig(p);
+  for (let round = 0; round < ROUNDS; round++) {
+    const latest = landElsewhere(p, "landed.txt", `round ${round}\n`, `Landed in round ${round}`);
+    const tickets = Array.from({ length: AT_ONCE }, (_, i) => 100 + round * AT_ONCE + i);
+    const worktrees = tickets.map((n) => agentWorktree(p, `agent-${n}`));
+
+    const results = await Promise.all(worktrees.map((wt, i) => p.start(wt, "start", String(tickets[i]))));
+
+    results.forEach((r, i) => {
+      const n = tickets[i];
+      assert.deepEqual(r, { code: 0, stdout: `On issue-${n} at origin/main (${short(p, latest)}). Deleted branch worktree-agent-${n}.\n`, stderr: "" }, `round ${round}, Ticket #${n}`);
+      assert.equal(p.git("-C", worktrees[i], "rev-parse", "HEAD"), latest);
+    });
+  }
+  assert.equal(sharedConfig(p), config);
+});
+
+test("several start --resume calls at once, for branches only on origin, all succeed every time and write nothing to the shared config", async (t) => {
+  const p = project(t);
+  const config = sharedConfig(p);
+  for (let round = 0; round < ROUNDS; round++) {
+    const tickets = Array.from({ length: AT_ONCE }, (_, i) => 100 + round * AT_ONCE + i);
+    for (const n of tickets) {
+      earlierBranch(p, n, { [`ticket-${n}.txt`]: `from Ticket #${n}\n` });
+      p.git("push", "--quiet", "origin", `issue-${n}`);
+      p.git("branch", "--quiet", "-D", `issue-${n}`);
+    }
+    const latest = landElsewhere(p, "landed.txt", `round ${round}\n`, `Landed in round ${round}`);
+    const worktrees = tickets.map((n) => agentWorktree(p, `agent-${n}`));
+
+    const results = await Promise.all(worktrees.map((wt, i) => p.start(wt, "start", String(tickets[i]), "--resume")));
+
+    results.forEach((r, i) => {
+      const n = tickets[i];
+      assert.deepEqual(r, { code: 0, stdout: `On issue-${n}, rebased onto origin/main (${short(p, latest)}). Deleted branch worktree-agent-${n}.\n`, stderr: "" }, `round ${round}, Ticket #${n}`);
+      assert.equal(p.git("-C", worktrees[i], "rev-parse", "HEAD~1"), latest);
+      assert.equal(p.git("-C", worktrees[i], "log", "-1", "--format=%s"), `Ticket work. Refs #${n}`);
+    });
+  }
+  assert.equal(sharedConfig(p), config);
 });

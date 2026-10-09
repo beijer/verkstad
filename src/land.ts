@@ -36,7 +36,7 @@ import { type Checking, committedChecking, type LandingMode, narrowings, readChe
 import { Failure } from "./fail.ts";
 import { recordedPass, recordedPassLog, runGate, StepFailure } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
-import { commonDir, git, logDirectory, mainCheckout, tryGit } from "./git.ts";
+import { commonDir, git, logDirectory, mainCheckout, tryFetch, tryGit } from "./git.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
 import { deleteReview, missingReview } from "./review.ts";
 import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
@@ -184,7 +184,7 @@ function takeLock(ticket: Ticket): number {
 }
 
 function fetch(ticket: Ticket, base: string): void {
-  const r = tryGit(ticket.root, ["fetch", "--quiet", "origin", base]);
+  const r = tryFetch(ticket.root, [base]);
   if (r.status !== 0) throw new Failure(`could not fetch origin/${base}: ${r.stderr.trim()}`);
 }
 

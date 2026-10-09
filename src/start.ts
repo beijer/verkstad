@@ -12,7 +12,7 @@
 import { realpathSync } from "node:fs";
 import { readBaseBranch } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { git, mainCheckout, tryGit, worktreeRoot } from "./git.ts";
+import { fetch, git, mainCheckout, tryGit, worktreeRoot } from "./git.ts";
 
 const USAGE = "usage: verkstad start <n> [--resume]";
 
@@ -40,11 +40,15 @@ export function start(args: string[]): void {
   const upstream = `origin/${base}`;
   const old = git(root, ["branch", "--show-current"]).trim();
 
-  git(root, ["fetch", "--quiet", "origin"]);
-  git(root, resume ? ["switch", "--quiet", branch] : ["switch", "--quiet", "-c", branch, upstream]);
+  fetch(root);
+  // Every worktree shares the repository's config, and another may be writing it, so nothing here writes
+  // it: the Ticket's branch gets no upstream (verkstad names origin/<base> wherever it means it), and the
+  // worktree's branch is deleted as a bare ref, leaving the config's branch section to whoever made one.
+  const from = resume ? `origin/${branch}` : upstream;
+  git(root, ["switch", "--quiet", ...(local ? [branch] : ["--no-track", "-c", branch, from])]);
   // The worktree's own branch goes, unless it is the Ticket's or the base: a detached HEAD has none.
   const deleted = old !== "" && old !== branch && old !== base ? old : "";
-  if (deleted) git(root, ["branch", "--quiet", "-D", deleted]);
+  if (deleted) git(root, ["update-ref", "-d", `refs/heads/${deleted}`]);
   const done = deleted ? ` Deleted branch ${deleted}.` : "";
 
   if (resume) {
