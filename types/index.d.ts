@@ -7,8 +7,8 @@ export type RunTicket = {
   say: string;
   sayAt: string;
   cost: number;
-  outcome: 'landed' | 'parked' | 'aborted' | null;
-  /** The commit it landed in, the Park's reason, or what an abort discarded. */
+  outcome: 'landed' | 'parked' | 'aborted' | 'failed' | null;
+  /** The commit it landed in, the Park's reason, what an abort discarded, or the failure that stopped the Run. */
   detail: string;
 };
 

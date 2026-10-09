@@ -96,12 +96,12 @@ function world(
       ran.push(args)
       if (args[0] === 'frontier') return ok(FRONTIER)
       if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
+      if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --dry-run --parallel 2')
         return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget); #50, on the light Tier (sonnet, low effort, $10 budget).\n')
       if (args.join(' ') === 'run --stop' && options.brokenCli) return { deny: 'could not start: permission denied' }
       if (args.join(' ') === 'run --stop') return ok('The Run stops after #49.\n')
       if (args.join(' ') === 'run --abort') return ok('The Run aborts #49 and discards its work.\n')
-      if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
     }
     throw new Error(`unexpected command ${e.argv.join(' ')}`)
   })
@@ -400,23 +400,37 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('Stop and Abort run verkstad run --stop and --abort once each, with two Tickets in flight', async ($, on) => {
-  const w = world(on, { [TWO]: TWO_LIVE })
-  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`Stop and Abort run verkstad run --stop and --abort once each, with two Tickets in flight, on ${surface}`, async ($, on) => {
+    const w = world(on, { [TWO]: TWO_LIVE })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+    const runs = (flag: string) => w.ran.filter(args => args.join(' ') === `run ${flag}`).length
+
+    expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #49 and #50')
+    await ui.press({ key: 'stop' })
+    expect(runs('--stop')).toBe(1)
+
+    await ui.press({ key: 'abort' })
+    expect(await text(ui, /^Abort discards/)).toBe('Abort discards the work of #49 and #50; the next Run starts them afresh.')
+    expect((await ui.find({ key: 'abort-confirm' }))?.props.label).toBe('✕ Abort #49 and #50')
+    await ui.press({ key: 'abort-confirm' })
+    expect(runs('--abort')).toBe(1)
+    expect(runs('--stop')).toBe(1)
+  })
+}
+
+test('a Ticket whose failure stops the Run is no longer in flight while the other finishes', async ($, on) => {
+  const w = world(on, { [TWO]: TWO_LIVE + line({ at: '2026-10-08T17:58:00.000Z', ticket: 49, failed: 'git push failed: remote hung up' }) })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
   await w.clock.settle()
-  const ui = await open($, 'terminal')
-  const runs = (flag: string) => w.ran.filter(args => args.join(' ') === `run ${flag}`).length
+  const ui = await open($, 'desktop')
 
-  expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #49 and #50')
-  await ui.press({ key: 'stop' })
-  expect(runs('--stop')).toBe(1)
-
-  await ui.press({ key: 'abort' })
-  expect(await text(ui, /^Abort discards/)).toBe('Abort discards the work of #49 and #50; the next Run starts them afresh.')
-  expect((await ui.find({ key: 'abort-confirm' }))?.props.label).toBe('✕ Abort #49 and #50')
-  await ui.press({ key: 'abort-confirm' })
-  expect(runs('--abort')).toBe(1)
-  expect(runs('--stop')).toBe(1)
+  expect((await ui.findAll({ type: 'Text', text: /tool calls$/ })).map(t => t.text)).toEqual(['↳ 3 tool calls'])
+  expect(await text(ui, /^standard · /)).toBeUndefined()
+  expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #50')
+  expect(await text(ui, /^failed:/)).toBe('failed: git push failed: remote hung up')
 })
 
 for (const surface of ['terminal', 'desktop'] as const) {
@@ -442,17 +456,20 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
-test('a Project whose Contract caps a Run at one Ticket is offered no count above 1', async ($, on) => {
-  const w = world(on, {}, { contract: '{"baseBranch":"main","parallel":1}' })
-  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
-  await w.clock.settle()
-  const ui = await open($, 'desktop')
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a Project whose Contract caps a Run at one Ticket is offered no count above 1, on ${surface}`, async ($, on) => {
+    const w = world(on, {}, { contract: '{"baseBranch":"main","parallel":1}' })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
 
-  expect((await ui.find({ key: 'parallel:1' }))?.props.label).toBe('1 at a time')
-  expect(await ui.find({ key: 'parallel:2' })).toBeUndefined()
-  await ui.press({ key: 'parallel:1' })
-  expect(w.launched).toEqual([['run', '--parallel', '1']])
-})
+    expect((await ui.find({ key: 'parallel:1' }))?.props.label).toBe('1 at a time')
+    expect(await ui.find({ key: 'parallel:2' })).toBeUndefined()
+    await ui.press({ key: 'parallel:1' })
+    expect(w.launched).toEqual([['run', '--parallel', '1']])
+    expect(await text(ui, /^Starting:/)).toBe('Starting: #49, on the standard Tier (opus, medium effort, $25 budget)')
+  })
+}
 
 test('a Project whose Contract caps a Run above two is offered each count up to its cap', async ($, on) => {
   const w = world(on, {}, { contract: '{"baseBranch":"main","parallel":3}' })

@@ -1,13 +1,14 @@
 // The verkstad sidebar: a pane for a Project's Runs, a hooks module of the plugin (hooks/hooks.json).
 //
 // It reads what verkstad leaves behind (the Runs' event logs, `verkstad frontier --json`, the issues and CI on
-// GitHub, the transcripts of the sessions working its Tickets) and draws one pane, opened by `/verkstad:sidebar`: the
-// Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past Runs. The
-// controls only run verkstad's own commands: Start launches `verkstad run` detached, so it outlives this session,
-// with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, or `--max 1` for One
+// GitHub, the transcripts of the sessions working its Tickets) and draws one pane, opened by `/verkstad:sidebar`:
+// the Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past
+// Runs. The controls only run verkstad's own commands: Start launches `verkstad run` detached, so it outlives this
+// session, with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, or `--max 1` for One
 // Ticket; Stop asks the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
-// confirmed, ends it and discards their work (`verkstad run --abort`). Every routing decision stays in `verkstad run`. The commands are this plugin copy's
-// own `bin/verkstad`, so the sidebar drives the version the Project installed.
+// confirmed, ends it and discards their work (`verkstad run --abort`). Every routing decision stays in
+// `verkstad run`. The commands are this plugin copy's own `bin/verkstad`, so the sidebar drives the version the
+// Project installed.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -466,14 +467,14 @@ export const register: Register = on => {
     // The Run: its state, the controls, and the Tickets in flight.
     const going = isGoing(r, alive)
     const inFlight = going ? (r?.tickets ?? []).filter(t => r?.inFlight.includes(t.n)) : []
-    const flying = ticketList(inFlight.map(t => t.n))
+    const inFlightList = ticketList(inFlight.map(t => t.n))
     let state: JSX.Element
     if (starting) {
       state = <Box key="state" flexDirection="row" width={width}>{fixed('◌ Starting…', ACCENT, true)}</Box>
     } else if (going && r) {
       const landed = r.tickets.filter(t => t.outcome === 'landed').length
       const facts = [age(r.startedAt, now), usd(r.cost), landed ? `${landed} landed` : '']
-      if (r.asked === 'stop') facts.push(`stops after ${flying || 'its Tickets in flight'}`)
+      if (r.asked === 'stop') facts.push(`stops after ${inFlightList || 'its Tickets in flight'}`)
       if (r.asked === 'abort') facts.push('aborting')
       state = (
         <Box key="state" flexDirection="row" width={width} gap={1}>
@@ -501,12 +502,12 @@ export const register: Register = on => {
         <Box key="confirm-text" width={width} marginTop={1}>
           <Text color={BAD} wrap="wrap">
             {inFlight.length > 1
-              ? `Abort discards the work of ${flying}; the next Run starts them afresh.`
-              : `Abort discards ${flying ? `${flying}'s` : "the current Ticket's"} work; the next Run starts it afresh.`}
+              ? `Abort discards the work of ${inFlightList}; the next Run starts them afresh.`
+              : `Abort discards ${inFlightList ? `${inFlightList}'s` : "the current Ticket's"} work; the next Run starts it afresh.`}
           </Text>
         </Box>,
         <Box key="confirm" flexDirection="row" gap={1} marginTop={1}>
-          <Button key="abort-confirm" label={`✕ Abort${flying ? ` ${flying}` : ''}`} hotkey="y" onPress={() => void control($, p, 'abort')} />
+          <Button key="abort-confirm" label={`✕ Abort${inFlightList ? ` ${inFlightList}` : ''}`} hotkey="y" onPress={() => void control($, p, 'abort')} />
           <Button key="abort-cancel" label="Keep going" hotkey="n" variant="primary" onPress={() => void update($, isConfirmingAbort, () => false)} />
         </Box>,
       )
@@ -514,7 +515,7 @@ export const register: Register = on => {
       controls.push(
         <Box key="controls" flexDirection="row" gap={1} marginTop={1}>
           {r?.asked ? null : (
-            <Button key="stop" label={`■ Stop after ${flying || 'its Tickets in flight'}`} hotkey="s" onPress={() => void control($, p, 'stop')} />
+            <Button key="stop" label={`■ Stop after ${inFlightList || 'its Tickets in flight'}`} hotkey="s" onPress={() => void control($, p, 'stop')} />
           )}
           {r?.asked === 'abort' ? null : <Button key="abort" label="✕ Abort" hotkey="x" onPress={() => void update($, isConfirmingAbort, () => true)} />}
         </Box>,
@@ -545,19 +546,19 @@ export const register: Register = on => {
       )
     }
 
-    const cards = inFlight.map(current => {
-      const doing = phase(current.say)
+    const cards = inFlight.map(t => {
+      const doing = phase(t.say)
       const at = stage(doing)
-      const facts = [current.tier, `${doing} ${age(current.sayAt, now)}`, current.cost ? `${usd(current.cost)} so far` : '']
-      const act = acts.find(one => one.ticket === current.n)
+      const facts = [t.tier, `${doing} ${age(t.sayAt, now)}`, t.cost ? `${usd(t.cost)} so far` : '']
+      const act = acts.find(one => one.ticket === t.n)
       return (
-        <Box key={`card:${current.n}`} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={2} paddingY={1} marginTop={1} width={width}>
+        <Box key={`card:${t.n}`} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={2} paddingY={1} marginTop={1} width={width}>
           <Box flexDirection="row" gap={1}>
-            <Box flexShrink={0}>{issue('card', current.n, ACCENT)}</Box>
+            <Box flexShrink={0}>{issue('card', t.n, ACCENT)}</Box>
             {fill(facts.filter(Boolean).join(' · '), DIM)}
           </Box>
           <Text bold wrap="wrap">
-            {current.title}
+            {t.title}
           </Text>
           <Box marginTop={1}>
             <Text wrap="truncate-end">
@@ -579,7 +580,7 @@ export const register: Register = on => {
       )
     })
 
-    const glyph = { landed: ['✓', OK], parked: ['⏸', WARN], aborted: ['✕', BAD] } as const
+    const glyph = { landed: ['✓', OK], parked: ['⏸', WARN], aborted: ['✕', BAD], failed: ['✗', BAD] } as const
     const outcome = (t: RunTicket, key: string, indent = 0) => {
       if (!t.outcome) return row(key, '·', DIM, t.n, t.title || 'no outcome', usd(t.cost), indent)
       const [g, c] = glyph[t.outcome]
