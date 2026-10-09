@@ -996,7 +996,7 @@ test("run --parallel 2 stopped by one Ticket's failed session lets the other in 
 
 /** Ticket #n's implementer, which starts once #m's has, commits `path`, pushes its branch and then works until it is killed. */
 function killedBesides(n: number, m: number, path: string): StubSession {
-  return besides(n, m, path, "half", ["git push -q origin issue-" + n, `echo $$ > "$TMPDIR/pid-${n}"; until [ -e "$TMPDIR/never" ]; do sleep 0.1; done`]);
+  return besides(n, m, path, "half", [`git push -q origin issue-${n}`, `echo $$ > "$TMPDIR/pid-${n}"; until [ -e "$TMPDIR/never" ]; do sleep 0.1; done`]);
 }
 
 test("run --abort while two implementers are running kills both sessions and discards both Tickets' worktrees and branches, here and on origin", async (t) => {
@@ -1044,10 +1044,12 @@ test("run --abort while one Ticket is landing and another is implementing lands 
   });
   const running = p.start(p.dir, "run", "--parallel", "2");
   await waitFor("#7's Landing and #9's implementer", () => existsSync(sign(p, "landing")) && existsSync(sign(p, "pid-9")));
+  const pid = Number(readFileSync(sign(p, "pid-9"), "utf8"));
 
   const s = p.run("run", "--abort");
 
   assert.equal(s.code, 0, s.stderr);
+  assert.ok(isAlive(pid), "#9's implementer runs on while #7 lands");
   writeFileSync(sign(p, "go"), "");
   const r = await running;
   const sha = originSha(p);
@@ -1061,6 +1063,9 @@ test("run --abort while one Ticket is landing and another is implementing lands 
     ),
   );
   assert.equal(p.git("--git-dir", p.origin, "log", "--format=%s", "-1", "main"), "Adds a.txt. Refs #7");
+  assert.ok(!isAlive(pid));
+  assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "issue-9")), false);
+  assert.equal(p.git("branch", "--list", "issue-9"), "");
   assert.equal(p.git("--git-dir", p.origin, "branch", "--list", "issue-9"), "");
   assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "closed", ["owner"]], [9, "open", []]]);
   const events = eventLog(p).map(({ at: _, ...e }) => e);
