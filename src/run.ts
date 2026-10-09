@@ -1,5 +1,8 @@
 // `verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`: a
-// Run. From the Project's main checkout it works the Frontier, up to --parallel
+// Run. With `--ticket <n>` it works Ticket #n alone, out of the Frontier's order,
+// and claims no other; it refuses one that is not ready, and any while a Run is
+// going, before it claims anything.
+// From the Project's main checkout it works the Frontier, up to --parallel
 // Tickets side by side (two without it, never more than the Contract's
 // `parallel` cap), lowest number first, with no guess at
 // which files a Ticket will touch (ADR 0008): it claims each Ticket, gives it a
@@ -55,7 +58,7 @@ import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
 import { CONTRACT_PATH, readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { type Entry, readFrontier } from "./frontier.ts";
+import { type Entry, type Listing, readFrontier } from "./frontier.ts";
 import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
 import { ensureLogDirectory, git, inLinkedWorktree, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 import {
@@ -73,7 +76,9 @@ import { branchPoint, touchedSurfaces } from "./surfaces.ts";
 import { failedToolCalls, readJsonLines, sessionDirs } from "./transcripts.ts";
 import { checkVerdict, type Verdict } from "./verdict.ts";
 
-const USAGE = "usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort";
+const USAGE =
+  "usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --ticket <n> [--budget <usd>] [--dry-run] | " +
+  "verkstad run --stop | verkstad run --abort";
 
 /** What the owner may ask of the Run going: to stop after its Ticket, or to abort it now. */
 type Ask = "stop" | "abort";
@@ -150,15 +155,17 @@ interface Options {
   requested: number | null;
   budget: number | undefined;
   dryRun: boolean;
+  /** The one Ticket --ticket chose, out of the Frontier's order; null without it. */
+  ticket: number | null;
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { max: null, requested: null, budget: undefined, dryRun: false };
+  const options: Options = { max: null, requested: null, budget: undefined, dryRun: false, ticket: null };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--dry-run") {
       options.dryRun = true;
-    } else if (arg === "--max" || arg === "--parallel" || arg === "--budget") {
+    } else if (arg === "--max" || arg === "--parallel" || arg === "--budget" || arg === "--ticket") {
       const value = args[++i];
       const number = Number(value);
       const whole = arg !== "--budget";
@@ -167,10 +174,14 @@ function parseArgs(args: string[]): Options {
       }
       if (arg === "--max") options.max = number;
       else if (arg === "--parallel") options.requested = number;
+      else if (arg === "--ticket") options.ticket = number;
       else options.budget = number;
     } else {
       throw new Failure(`unknown argument '${arg}'; ${USAGE}`, 2);
     }
+  }
+  if (options.ticket !== null && (options.max !== null || options.requested !== null)) {
+    throw new Failure(`--ticket runs one Ticket; it takes neither --max nor --parallel; ${USAGE}`, 2);
   }
   return options;
 }
@@ -935,10 +946,30 @@ function fileSurfaceTicket(run: Run, n: number, surface: NewSurface, awaitsMerge
   return { number, title, labels: ["ready-for-agent"], assignees: [], open_blockers: [] };
 }
 
-/** What `--dry-run` prints: the Frontier, and the Tickets the Run would start, `count` at most. */
-function plan(ready: Entry[], budget: number | undefined, count: number): string {
+/**
+ * What `--dry-run` prints: the Frontier, or the one Ticket --ticket chose, and the Tickets the Run would start,
+ * `count` at most.
+ */
+function plan(ready: Entry[], budget: number | undefined, count: number, chosen: boolean): string {
   const next = ready.slice(0, count).map((e) => `#${e.number}, on the ${describeTier(tierOf(e.labels), budget)}`);
-  return `Ready: ${ready.map((e) => `#${e.number} ${e.title} (${tierOf(e.labels)})`).join(", ")}.\nNext: ${next.join("; ")}.\n`;
+  const listed = ready.map((e) => `#${e.number} ${e.title} (${tierOf(e.labels)})`).join(", ");
+  return `${chosen ? "Ticket" : "Ready"}: ${listed}.\nNext: ${next.join("; ")}.\n`;
+}
+
+/** Ticket #n, which --ticket chose, from the Frontier; or a Failure saying why it cannot start now. */
+function chosenTicket(listing: Listing, n: number): Entry {
+  const is = (e: Entry) => e.number === n;
+  const ready = listing.ready.find(is);
+  if (ready) return ready;
+  const waiting = listing.waiting.find(is);
+  if (waiting) {
+    const blockers = waiting.open_blockers.map((b) => b.number);
+    throw new Failure(`#${n} waits on ${ticketList(blockers)}; it can start once ${blockers.length === 1 ? "it is" : "they are"} closed`);
+  }
+  const claimed = listing.in_progress.find(is);
+  if (claimed) throw new Failure(`#${n} is already claimed by ${claimed.assignees.map((a) => `@${a}`).join(", ")}`);
+  if (listing.specs_labelled.some(is)) throw new Failure(`#${n} is a Spec, with sub-issues; choose one of its Tickets`);
+  throw new Failure(`#${n} is not an open issue labelled ready-for-agent`);
 }
 
 /** `#7`, `#7 and #9`, `#7, #9 and #11`. */
@@ -996,19 +1027,22 @@ function alive(pid: number): boolean {
   }
 }
 
-/**
- * `verkstad run --stop|--abort`: asks the Run going in the Project, the one whose event log is the newest, has
- * no end line and whose process is alive, to end, and says what will happen.
- */
-function ask(what: Ask): void {
+/** The Run going in the Project: the one whose event log is the newest, has no end line and whose process is alive. */
+function goingRun(): { file: string; events: Array<Record<string, unknown>> } | null {
   const dir = logDirectory(process.cwd());
   const newest = existsSync(dir) ? readdirSync(dir).filter((name) => /^run-.*\.jsonl$/.test(name)).sort().pop() : undefined;
-  const events = newest ? readJsonLines(join(dir, newest)) : [];
-  const pid = events.find((e) => e.run === "started")?.pid;
-  if (!newest || events.some(isEndLine) || typeof pid !== "number" || !alive(pid)) {
-    throw new Failure("no Run is going", 1);
-  }
+  if (!newest) return null;
   const file = join(dir, newest);
+  const events = readJsonLines(file);
+  const pid = events.find((e) => e.run === "started")?.pid;
+  return events.some(isEndLine) || typeof pid !== "number" || !alive(pid) ? null : { file, events };
+}
+
+/** `verkstad run --stop|--abort`: asks the Run going in the Project to end, and says what will happen. */
+function ask(what: Ask): void {
+  const going = goingRun();
+  if (!going) throw new Failure("no Run is going", 1);
+  const { file, events } = going;
   appendFileSync(file, JSON.stringify({ at: new Date().toISOString(), asked: what }) + "\n");
   // The Run may have ended between the reading and the asking.
   const after = readJsonLines(file);
@@ -1036,16 +1070,20 @@ export async function run(args: string[]): Promise<void> {
     return ask(args[0] === "--stop" ? "stop" : "abort");
   }
   const options = parseArgs(args);
+  if (options.ticket !== null && goingRun()) throw new Failure(`a Run is going; start #${options.ticket} when it has ended`);
   const prepared = prepare(options);
   const { owner, name } = currentRepo();
 
-  const { ready } = readFrontier();
+  const listing = readFrontier();
+  const ready = options.ticket === null ? listing.ready : [chosenTicket(listing, options.ticket)];
   if (ready.length === 0) {
     process.stdout.write("Nothing is ready: the Frontier is empty.\n");
     return;
   }
+  // A Run on the Ticket --ticket chose works that one and claims no other.
+  const max = options.ticket === null ? options.max : 1;
   if (options.dryRun) {
-    process.stdout.write(plan(ready, options.budget, Math.min(prepared.parallel, options.max ?? Infinity)));
+    process.stdout.write(plan(ready, options.budget, Math.min(prepared.parallel, max ?? Infinity), options.ticket !== null));
     return;
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1077,7 +1115,7 @@ export async function run(args: string[]): Promise<void> {
     if (ask === "abort") aborted = true;
     if (ask !== null) stopping = true;
     const starting: Entry[] = [];
-    while (!stopping && working.size + starting.length < r.parallel && (options.max === null || tried.size < options.max)) {
+    while (!stopping && working.size + starting.length < r.parallel && (max === null || tried.size < max)) {
       const next = filed.shift() ?? frontier.find((e) => !tried.has(e.number));
       if (!next) break;
       tried.add(next.number);
@@ -1129,7 +1167,7 @@ export async function run(args: string[]): Promise<void> {
         say(r, n, `added a Surface the Contract lacks: ${named(surface)}; filed #${filedEntry.number} to declare it, ${when}.`);
         if (!outcome.awaitsMerge) filed.push(filedEntry);
       }
-      if (!stopping && (options.max === null || tried.size < options.max)) frontier = readFrontier().ready;
+      if (!stopping && (max === null || tried.size < max)) frontier = readFrontier().ready;
     } catch (error) {
       stopping = true;
       if (!(error instanceof Failure)) unexpected ??= { error };

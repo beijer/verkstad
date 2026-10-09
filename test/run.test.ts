@@ -976,7 +976,7 @@ test("run --parallel refuses anything but a positive whole number", (t) => {
   const p = runProject(t, [ready(7)], []);
   for (const value of ["0", "1.5", "two"]) {
     const r = p.run("run", "--parallel", value);
-    assert.equal(r.stderr, `verkstad run: --parallel needs a positive whole number; usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort\n`);
+    assert.equal(r.stderr, `verkstad run: --parallel needs a positive whole number; usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --ticket <n> [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort\n`);
     assert.equal(r.code, 2);
   }
 });
@@ -1159,4 +1159,102 @@ test("run --parallel 2 stopped by a new Surface in a Project with no Verify skil
   assert.match(r.stdout, /\n#7 added a Surface the Contract lacks: cli \(the first CLI command and what it prints\)\. Stopping: /);
   assert.match(r.stdout, /\nRun finished: 2 sessions, \$0\.50\.\n  #7 landed on main in [0-9a-f]+\n  #9 landed on main in [0-9a-f]+\n/);
   assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"], [11, "open"]]);
+});
+
+test("run --ticket 9 claims #9 before the lower #7, lands it and ends without claiming another; the event log names only #9", (t) => {
+  const p = runProject(t, [ready(7), ready(9, { labels: ["ready-for-agent", "tier:light"] })], [implemented(9, "b.txt")]);
+
+  const r = p.run("run", "--ticket", "9");
+
+  const sha = originSha(p);
+  assert.equal(r.stderr, "");
+  assert.equal(
+    r.stdout,
+    [
+      "#9 Ticket 9: claimed, light Tier (sonnet, medium effort, $5 budget).",
+      "#9 implementing in .claude/worktrees/issue-9.",
+      "#9 implementer reported done ($0.25).",
+      "#9 touches no Surface; landing.",
+      `#9 landed on main in ${sha}.`,
+      "Run finished: 1 session, $0.25.",
+      `  #9 landed on main in ${sha}`,
+      CLEAN,
+      "",
+    ].join("\n"),
+  );
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "open", []], [9, "closed", ["owner"]]]);
+  assert.equal(p.claudeCalls().length, 1);
+  const events = eventLog(p);
+  assert.deepEqual(events[0].ready, [9]);
+  assert.deepEqual([...new Set(events.filter((e) => "ticket" in e).map((e) => e.ticket))], [9]);
+});
+
+test("run --ticket Parks the chosen Ticket when its implementer reports blocked, and claims no other", (t) => {
+  const blocked: StubSession = { run: ["verkstad start 9"], report: report("blocked", { uncertain: ["Which port? I would pick 8080."] }) };
+  const p = runProject(t, [ready(7), ready(9)], [blocked]);
+
+  const r = p.run("run", "--ticket", "9");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(claimsAndLandings(r.stdout), ["#9 Ticket 9"]);
+  assert.match(r.stdout, /\nRun finished: 1 session, \$0\.25\.\n  #9 parked: blocked: Which port\? I would pick 8080\.\n/);
+  assert.deepEqual(p.state().issues[0].assignees, []);
+  assert.equal(p.claudeCalls().length, 1);
+});
+
+test("run --ticket refuses a Ticket that is not ready, and any while a Run is going, with exit code 1, claiming nothing", (t) => {
+  const p = runProject(
+    t,
+    [
+      ready(7),
+      ready(8),
+      ready(9, { blockedBy: [7, 8] }),
+      ready(10, { labels: [] }),
+      ready(11, { assignees: ["owner"] }),
+    ],
+    [],
+  );
+  const refused = (n: number, message: string) => {
+    for (const extra of [[], ["--dry-run"]]) {
+      const r = p.run("run", "--ticket", String(n), ...extra);
+      assert.equal(r.stdout, "");
+      assert.equal(r.stderr, `verkstad run: ${message}\n`);
+      assert.equal(r.code, 1);
+    }
+  };
+
+  refused(9, "#9 waits on #7 and #8; it can start once they are closed");
+  refused(10, "#10 is not an open issue labelled ready-for-agent");
+  refused(11, "#11 is already claimed by @owner");
+
+  const dir = join(p.dir, ".claude", "verkstad");
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, "run-2026-10-08T10-00-00-000Z.jsonl"), '{"run":"started","pid":' + process.pid + "}\n");
+  refused(7, "a Run is going; start #7 when it has ended");
+
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.assignees]), [[7, []], [8, []], [9, []], [10, []], [11, ["owner"]]]);
+  assert.deepEqual(p.claudeCalls(), []);
+});
+
+test("run --ticket --dry-run names the chosen Ticket and the Tier it would run on, and claims nothing", (t) => {
+  const p = runProject(t, [ready(7), ready(9, { labels: ["ready-for-agent", "tier:hard"] })], []);
+
+  const r = p.run("run", "--ticket", "9", "--dry-run");
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.stdout, "Ticket: #9 Ticket 9 (hard).\nNext: #9, on the hard Tier (opus, high effort, $35 budget).\n");
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], []]);
+  assert.equal(existsSync(join(p.dir, ".claude", "verkstad")) && readdirSync(join(p.dir, ".claude", "verkstad")).some((e) => e.startsWith("run-")), false);
+});
+
+test("run --ticket needs a positive whole number and goes with neither --max nor --parallel", (t) => {
+  const p = runProject(t, [ready(7)], []);
+  for (const args of [["--ticket", "seven"], ["--ticket", "7", "--max", "1"], ["--ticket", "7", "--parallel", "2"]]) {
+    const r = p.run("run", ...args);
+    assert.match(r.stderr, /^verkstad run: (--ticket needs a positive whole number|--ticket runs one Ticket; it takes neither --max nor --parallel); usage: verkstad run /);
+    assert.equal(r.code, 2);
+  }
+  assert.deepEqual(p.state().issues[0].assignees, []);
 });
