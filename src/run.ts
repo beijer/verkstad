@@ -1,8 +1,5 @@
 // `verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`: a
-// Run. With `--ticket <n>` it works Ticket #n alone, out of the Frontier's order,
-// and claims no other; it refuses one that is not ready, and any while a Run is
-// going, before it claims anything.
-// From the Project's main checkout it works the Frontier, up to --parallel
+// Run. From the Project's main checkout it works the Frontier, up to --parallel
 // Tickets side by side (two without it, never more than the Contract's
 // `parallel` cap), lowest number first, with no guess at
 // which files a Ticket will touch (ADR 0008): it claims each Ticket, gives it a
@@ -18,7 +15,9 @@
 // reads no ask. When a Ticket is
 // closed or Parked it reads the Frontier again, so a Landing that unblocks a
 // Ticket starts it next, and stops when nothing is ready or in flight, or after
-// --max Tickets. A landed Ticket that adds a Surface the Contract lacks makes it
+// --max Tickets. `verkstad run --ticket <n> [--budget <usd>] [--dry-run]` works
+// Ticket #n alone, out of the Frontier's order, and claims no other; before it
+// claims anything, it refuses one that is not ready, and any while a Run is going. A landed Ticket that adds a Surface the Contract lacks makes it
 // file a Ticket to declare the Surface and teach the Verify skill to drive it,
 // which it works next; in a Project with no Verify skill yet it stops instead.
 //

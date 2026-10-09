@@ -5,7 +5,8 @@
 // the Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past
 // Runs. The controls only run verkstad's own commands: Start launches `verkstad run` detached, so it outlives this
 // session, with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, `--max 1` for One
-// Ticket, or `--ticket <n>` for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
+// Ticket, or `--ticket <n>` for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks
+// the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
 // confirmed, ends it and discards their work (`verkstad run --abort`). Every routing decision stays in
 // `verkstad run`. The commands are this plugin copy's own `bin/verkstad`, so the sidebar drives the version the
 // Project installed.

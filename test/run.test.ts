@@ -1212,6 +1212,8 @@ test("run --ticket refuses a Ticket that is not ready, and any while a Run is go
       ready(9, { blockedBy: [7, 8] }),
       ready(10, { labels: [] }),
       ready(11, { assignees: ["owner"] }),
+      ready(12),
+      ready(13, { parent: 12 }),
     ],
     [],
   );
@@ -1227,13 +1229,14 @@ test("run --ticket refuses a Ticket that is not ready, and any while a Run is go
   refused(9, "#9 waits on #7 and #8; it can start once they are closed");
   refused(10, "#10 is not an open issue labelled ready-for-agent");
   refused(11, "#11 is already claimed by @owner");
+  refused(12, "#12 is a Spec, with sub-issues; choose one of its Tickets");
 
   const dir = join(p.dir, ".claude", "verkstad");
   mkdirSync(dir, { recursive: true });
   writeFileSync(join(dir, "run-2026-10-08T10-00-00-000Z.jsonl"), '{"run":"started","pid":' + process.pid + "}\n");
   refused(7, "a Run is going; start #7 when it has ended");
 
-  assert.deepEqual(p.state().issues.map((i) => [i.number, i.assignees]), [[7, []], [8, []], [9, []], [10, []], [11, ["owner"]]]);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.assignees]), [[7, []], [8, []], [9, []], [10, []], [11, ["owner"]], [12, []], [13, []]]);
   assert.deepEqual(p.claudeCalls(), []);
 });
 
@@ -1251,9 +1254,17 @@ test("run --ticket --dry-run names the chosen Ticket and the Tier it would run o
 
 test("run --ticket needs a positive whole number and goes with neither --max nor --parallel", (t) => {
   const p = runProject(t, [ready(7)], []);
-  for (const args of [["--ticket", "seven"], ["--ticket", "7", "--max", "1"], ["--ticket", "7", "--parallel", "2"]]) {
+  const usage =
+    "usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --ticket <n> [--budget <usd>] [--dry-run] | " +
+    "verkstad run --stop | verkstad run --abort";
+  const refused: Array<[string[], string]> = [
+    [["--ticket", "seven"], "--ticket needs a positive whole number"],
+    [["--ticket", "7", "--max", "1"], "--ticket runs one Ticket; it takes neither --max nor --parallel"],
+    [["--ticket", "7", "--parallel", "2"], "--ticket runs one Ticket; it takes neither --max nor --parallel"],
+  ];
+  for (const [args, message] of refused) {
     const r = p.run("run", ...args);
-    assert.match(r.stderr, /^verkstad run: (--ticket needs a positive whole number|--ticket runs one Ticket; it takes neither --max nor --parallel); usage: verkstad run /);
+    assert.equal(r.stderr, `verkstad run: ${message}; ${usage}\n`);
     assert.equal(r.code, 2);
   }
   assert.deepEqual(p.state().issues[0].assignees, []);

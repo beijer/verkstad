@@ -75,7 +75,7 @@ _Avoid_: artifacts, proof, logs
 ## The loop
 
 **Run**:
-One `verkstad run`, which works the Frontier until nothing is ready or in flight, two Tickets side by side by default or `--parallel <n>`, up to the Contract's `parallel` cap, each in its own worktree, Landing them one at a time. The `verkstad:start-run` skill starts one.
+One `verkstad run`, which works the Frontier until nothing is ready or in flight, two Tickets side by side by default or `--parallel <n>`, up to the Contract's `parallel` cap, each in its own worktree, Landing them one at a time; or, with `--ticket <n>`, one chosen Ticket alone, out of the Frontier's order. The `verkstad:start-run` skill starts one.
 _Avoid_: batch, session, sprint
 
 **Gate**:
