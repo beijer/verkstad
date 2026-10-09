@@ -6,6 +6,6 @@ So `verkstad run --parallel <n>` works up to `n` Tickets at once, each in its ow
 
 ## Consequences
 
-- What ADR 0007 feared comes back in proportion to the overlap: conflicts, Verdicts voided by a rebase that changed the patch, and conflict sessions. A Project whose Tickets crowd one file, or whose Gate or Verify instances cannot run side by side, works one at a time.
+- What ADR 0007 feared comes back in proportion to the overlap: conflicts, Verdicts voided by a rebase that changed the patch, and conflict sessions. A Run works two Tickets at once unless `--parallel <n>` says otherwise, and a Project whose Tickets crowd one file, or whose Gate or Verify instances cannot run side by side, caps it with the Contract's `parallel` field, at 1 to work one at a time.
 - `--stop` finishes every Ticket in flight, and a failure that stops the Run lets the others finish first, so that nothing in flight is left half-done by another Ticket's trouble.
 - The event log interleaves the Tickets' lines; each line names its Ticket, so `verkstad run-log` and the summary stay per Ticket.

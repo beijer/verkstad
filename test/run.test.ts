@@ -981,6 +981,14 @@ test("run --parallel refuses anything but a positive whole number", (t) => {
   }
 });
 
+/** The Run's claims (`#7 Ticket 7`) and Landings (`#7 landed on main.`) in its output, in order. */
+function claimsAndLandings(stdout: string): string[] {
+  return stdout
+    .split("\n")
+    .filter((l) => l.startsWith("#") && (l.includes(": claimed") || l.includes(" landed on main in ")))
+    .map((l) => l.replace(/ in [0-9a-f]+\.$/, ".").replace(/:.*/, ""));
+}
+
 test("run without --parallel works two of three ready Tickets side by side, and claims the third when one ends", (t) => {
   // #9 works on until #7 has landed and #11 has started, so that #11 starts while #9 is in flight.
   const eleven: StubSession = { ticket: 11, run: [`touch "$TMPDIR/started-11"`, ...(implemented(11, "c.txt").run ?? [])], report: report("done") };
@@ -990,9 +998,8 @@ test("run without --parallel works two of three ready Tickets side by side, and 
 
   assert.equal(r.stderr, "");
   assert.equal(r.code, 0);
-  const steps = r.stdout.split("\n").filter((l) => l.startsWith("#") && (l.includes(": claimed") || l.includes(" landed on main in ")));
   assert.deepEqual(
-    steps.slice(0, 4).map((l) => l.replace(/ in [0-9a-f]+\.$/, ".").replace(/:.*/, "")),
+    claimsAndLandings(r.stdout).slice(0, 4),
     ["#7 Ticket 7", "#9 Ticket 9", "#7 landed on main.", "#11 Ticket 11"],
   );
   assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"], [11, "closed"]]);
@@ -1005,9 +1012,8 @@ test("run in a Project whose Contract caps parallel at 1 works one Ticket at a t
   const r = p.run("run");
 
   assert.equal(r.code, 0, r.stderr);
-  const steps = r.stdout.split("\n").filter((l) => l.startsWith("#") && (l.includes(": claimed") || l.includes(" landed on main in ")));
   assert.deepEqual(
-    steps.map((l) => l.replace(/ in [0-9a-f]+\.$/, ".").replace(/:.*/, "")),
+    claimsAndLandings(r.stdout),
     ["#7 Ticket 7", "#7 landed on main.", "#9 Ticket 9", "#9 landed on main."],
   );
   assert.ok(!promptIn(p, 7).includes("Other agents are implementing"), promptIn(p, 7));

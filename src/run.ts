@@ -53,7 +53,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
-import { readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
+import { CONTRACT_PATH, readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { type Entry, readFrontier } from "./frontier.ts";
 import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
@@ -146,14 +146,14 @@ const DEFAULT_PARALLEL = 2;
 
 interface Options {
   max: number | null;
-  /** The most Tickets the Run works at once, from --parallel; null for the default. */
-  parallel: number | null;
+  /** The most Tickets the Run works at once that --parallel asks for; null without it. */
+  requested: number | null;
   budget: number | undefined;
   dryRun: boolean;
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { max: null, parallel: null, budget: undefined, dryRun: false };
+  const options: Options = { max: null, requested: null, budget: undefined, dryRun: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--dry-run") {
@@ -166,7 +166,7 @@ function parseArgs(args: string[]): Options {
         throw new Failure(`${arg} needs a positive ${whole ? "whole number" : "amount in USD"}; ${USAGE}`, 2);
       }
       if (arg === "--max") options.max = number;
-      else if (arg === "--parallel") options.parallel = number;
+      else if (arg === "--parallel") options.requested = number;
       else options.budget = number;
     } else {
       throw new Failure(`unknown argument '${arg}'; ${USAGE}`, 2);
@@ -208,10 +208,10 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
   if (inLinkedWorktree(main)) throw new Failure(`${main} is a worktree; run from the Project's main checkout`);
   const base = readContract(main).baseBranch;
   const cap = readParallel(main);
-  if (options.parallel !== null && cap !== null && options.parallel > cap) {
-    throw new Failure(`--parallel ${options.parallel} is above this Project's cap of ${cap} (\`parallel\` in .claude/harness.json)`, 2);
+  if (options.requested !== null && cap !== null && options.requested > cap) {
+    throw new Failure(`--parallel ${options.requested} is above this Project's cap of ${cap} (\`parallel\` in ${CONTRACT_PATH})`, 2);
   }
-  const parallel = options.parallel ?? Math.min(DEFAULT_PARALLEL, cap ?? Infinity);
+  const parallel = options.requested ?? Math.min(DEFAULT_PARALLEL, cap ?? Infinity);
   const surfaces = readSurfaces(main);
   const verify = readVerify(main);
   if (surfaces.length && verify === null) {
