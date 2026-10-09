@@ -1,6 +1,7 @@
 // `verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`: a
 // Run. From the Project's main checkout it works the Frontier, up to --parallel
-// Tickets side by side (one without it), lowest number first, with no guess at
+// Tickets side by side (two without it, never more than the Contract's
+// `parallel` cap), lowest number first, with no guess at
 // which files a Ticket will touch (ADR 0008): it claims each Ticket, gives it a
 // worktree under .claude/worktrees/, and has a headless Claude Code session
 // (src/claude.ts) implement it with the implementing prompt (prompts/) on the
@@ -52,7 +53,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
-import { readContract, readSurfaces, readVerify, type Surface } from "./contract.ts";
+import { readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { type Entry, readFrontier } from "./frontier.ts";
 import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
@@ -140,16 +141,19 @@ function budgetNote(usd: number, walks: boolean): string {
   );
 }
 
+/** How many Tickets a Run works at once without --parallel, unless the Contract caps it lower. */
+const DEFAULT_PARALLEL = 2;
+
 interface Options {
   max: number | null;
-  /** The most Tickets the Run works at once. */
-  parallel: number;
+  /** The most Tickets the Run works at once, from --parallel; null for the default. */
+  parallel: number | null;
   budget: number | undefined;
   dryRun: boolean;
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { max: null, parallel: 1, budget: undefined, dryRun: false };
+  const options: Options = { max: null, parallel: null, budget: undefined, dryRun: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--dry-run") {
@@ -182,6 +186,8 @@ interface Run {
   logDir: string;
   surfaces: Surface[];
   verify: string | null;
+  /** The most Tickets it works at once: --parallel's, or the default capped by the Contract's `parallel`. */
+  parallel: number;
   /** The budget every session gets instead of its agent's, from --budget. */
   budget: number | undefined;
   /** The Run's event log, run-<time>.jsonl in the log directory. */
@@ -201,6 +207,11 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
   const main = worktreeRoot(process.cwd());
   if (inLinkedWorktree(main)) throw new Failure(`${main} is a worktree; run from the Project's main checkout`);
   const base = readContract(main).baseBranch;
+  const cap = readParallel(main);
+  if (options.parallel !== null && cap !== null && options.parallel > cap) {
+    throw new Failure(`--parallel ${options.parallel} is above this Project's cap of ${cap} (\`parallel\` in .claude/harness.json)`, 2);
+  }
+  const parallel = options.parallel ?? Math.min(DEFAULT_PARALLEL, cap ?? Infinity);
   const surfaces = readSurfaces(main);
   const verify = readVerify(main);
   if (surfaces.length && verify === null) {
@@ -220,7 +231,7 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
     throw new Failure(`${base} has commits ${upstream} lacks; push them or drop them first`);
   }
   git(main, ["merge", "--quiet", "--ff-only", upstream]);
-  return { main, base, upstream, logDir: ensureLogDirectory(main), surfaces, verify, budget: options.budget, sessions: 0, cost: 0 };
+  return { main, base, upstream, logDir: ensureLogDirectory(main), surfaces, verify, parallel, budget: options.budget, sessions: 0, cost: 0 };
 }
 
 function log(run: Run, event: Record<string, unknown>): void {
@@ -1034,7 +1045,7 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
   if (options.dryRun) {
-    process.stdout.write(plan(ready, options.budget, Math.min(options.parallel, options.max ?? Infinity)));
+    process.stdout.write(plan(ready, options.budget, Math.min(prepared.parallel, options.max ?? Infinity)));
     return;
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1066,7 +1077,7 @@ export async function run(args: string[]): Promise<void> {
     if (ask === "abort") aborted = true;
     if (ask !== null) stopping = true;
     const starting: Entry[] = [];
-    while (!stopping && working.size + starting.length < options.parallel && (options.max === null || tried.size < options.max)) {
+    while (!stopping && working.size + starting.length < r.parallel && (options.max === null || tried.size < options.max)) {
       const next = filed.shift() ?? frontier.find((e) => !tried.has(e.number));
       if (!next) break;
       tried.add(next.number);

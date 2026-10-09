@@ -1,6 +1,6 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
 // checked here. Only the fields the CLI reads so far are checked (baseBranch,
-// gate, landing, surfaces and verify), each by its reader; a malformed one fails naming
+// gate, landing, parallel, surfaces and verify), each by its reader; a malformed one fails naming
 // the field (docs/contract.md describes them all). Landing also compares a
 // branch's Surfaces and verify with its base's, refusing a branch that narrows them.
 
@@ -187,6 +187,14 @@ export function readVerify(root: string): string | null {
 
 function parseVerify({ verify }: JsonObject): string | null {
   return verify === undefined ? null : nonEmptyString(verify, "verify");
+}
+
+/** The Contract's `parallel`, the most Tickets a Run works at once, or null when it caps nothing. Only `run` reads it. */
+export function readParallel(root: string): number | null {
+  const { parallel } = readJson(root);
+  if (parallel === undefined) return null;
+  if (typeof parallel !== "number" || !Number.isInteger(parallel) || parallel < 1) throw malformed("parallel must be a whole number of at least 1");
+  return parallel;
 }
 
 /** What decides which Tickets the Verifier Walks: the Surfaces and the Verify skill. */

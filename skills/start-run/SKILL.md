@@ -6,7 +6,7 @@ disable-model-invocation: true
 
 # Start a Run
 
-`verkstad run` is the Run: it works the Frontier, one Ticket at a time or `--parallel <n>` side by side, and decides everything about each Ticket in code. This skill only launches it, watches it and reports on it. Never route, retry, land or Park a Ticket yourself, and never second-guess a step the Run took: when its output and the Contract (`${CLAUDE_PLUGIN_ROOT}/docs/contract.md`, its `verkstad run` section) do not explain something, tell the owner.
+`verkstad run` is the Run: it works the Frontier, two Tickets side by side or `--parallel <n>`, up to the Contract's `parallel` cap, and decides everything about each Ticket in code. This skill only launches it, watches it and reports on it. Never route, retry, land or Park a Ticket yourself, and never second-guess a step the Run took: when its output and the Contract (`${CLAUDE_PLUGIN_ROOT}/docs/contract.md`, its `verkstad run` section) do not explain something, tell the owner.
 
 Run from the Project's main checkout. Write every Ticket you show the owner as `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`, which makes it a link.
 

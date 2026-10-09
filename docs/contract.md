@@ -34,6 +34,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 | `baseBranch` | `gate --quick`, `land` | The branch Tickets land on. |
 | `gate` | `gate`, `land` | The Gate's named steps. |
 | `landing` | `land` | The Landing mode: `push` (the default) or `pull-request`. |
+| `parallel` | `run` | The most Tickets a Run works at once. No cap without it. |
 | `surfaces` | `surfaces`, `verdict`, `land` | The Surfaces, each a name and the path globs whose changes can alter it. `[]` for a Project with none. |
 | `verify` | `run`, `land`; the agents: the Verifier, through `run`, and the implementer | The name of the Project's Verify skill. |
 
@@ -81,6 +82,14 @@ An object, required: the Gate that `verkstad gate` runs.
 ### `landing`
 
 A string, optional: the Landing mode, how `verkstad land` puts a Ticket on the base branch. `"push"`, the default, pushes the rebased branch straight to `baseBranch` and closes the Ticket. `"pull-request"`, for a Project whose base branch is protected or reviewed, pushes the rebased branch to `origin` as `issue-<n>` and opens a pull request onto `baseBranch` that closes the Ticket when the owner merges it. Any other value fails naming the field. `gate` does not read it. What Landing does is under [Landing](#landing-1) below.
+
+### `parallel`
+
+An integer of at least 1, optional: the most Tickets a Run in this Project works at once. Without it there is no cap. A Project whose Gate or Verify instances cannot run side by side (one port, one device, one database) sets it to 1. `verkstad run` without `--parallel` works whichever is lower, 2 or the cap, and refuses `--parallel <n>` above the cap as a usage error naming it. Any other value fails naming the field. Only `run` reads it.
+
+```json
+"parallel": 1
+```
 
 ### `surfaces`
 
@@ -167,9 +176,9 @@ A Run stops on an unknown reason, for the owner.
 
 ## A Run: `verkstad run`
 
-`verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`, from the Project's main checkout, works the Frontier, the lowest number first, one Ticket at a time or, with `--parallel <n>`, up to `n` side by side (ADR 0008): every routing rule and budget below is code (`src/run.ts`), and each agent is a headless `claude -p` session (`src/claude.ts`) in a worktree the Run makes. It refuses, starting nothing, outside the main checkout, off `baseBranch`, with uncommitted changes to tracked files, with `.claude/verkstad/` or `.claude/worktrees/` not gitignored, with Surfaces and no `verify`, or with commits on the base branch that `origin` lacks; it fast-forwards the main checkout to `origin/<baseBranch>` otherwise. `--dry-run` prints the Frontier with each Ticket's Tier and which it would start, up to `--parallel`'s `n`, and claims nothing. `--max <n>` stops after `n` Tickets; `--budget <usd>` caps each session's spend.
+`verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`, from the Project's main checkout, works the Frontier, the lowest number first, up to two Tickets side by side or, with `--parallel <n>`, up to `n`, never more than the Contract's [`parallel`](#parallel) cap (ADR 0008): every routing rule and budget below is code (`src/run.ts`), and each agent is a headless `claude -p` session (`src/claude.ts`) in a worktree the Run makes. It refuses, starting nothing, outside the main checkout, off `baseBranch`, with uncommitted changes to tracked files, with `.claude/verkstad/` or `.claude/worktrees/` not gitignored, with Surfaces and no `verify`, or with commits on the base branch that `origin` lacks; it fast-forwards the main checkout to `origin/<baseBranch>` otherwise. `--dry-run` prints the Frontier with each Ticket's Tier and which it would start, as many as it works at once, and claims nothing. `--max <n>` stops after `n` Tickets; `--budget <usd>` caps each session's spend.
 
-With `--parallel <n>` it claims the lowest-numbered ready Tickets, up to `n`, each in its own worktree, and their implementer, Verifier and conflict sessions run at the same time; each implementer's prompt names the other Tickets in flight by number and title. When one is closed or Parked, it reads the Frontier again and claims the next. Landings stay one at a time: a Ticket that lands after another has moved the base branch is rebased onto it by Landing, keeping its Verdict when the rebase is clean (ADR 0005), and a conflict goes to the conflict prompt as in step 5 below. Its event log interleaves the Tickets' lines, each naming its Ticket.
+It claims the lowest-numbered ready Tickets, as many as it works at once, each in its own worktree, and their implementer, Verifier and conflict sessions run at the same time; each implementer's prompt names the other Tickets in flight by number and title. When one is closed or Parked, it reads the Frontier again and claims the next. Landings stay one at a time: a Ticket that lands after another has moved the base branch is rebased onto it by Landing, keeping its Verdict when the rebase is clean (ADR 0005), and a conflict goes to the conflict prompt as in step 5 below. Its event log interleaves the Tickets' lines, each naming its Ticket.
 
 Each session is bounded by a dollar budget (`--max-budget-usd`): light $5, standard $25, hard $35 and the Verifier $10, or `--budget`'s for every session. Claude Code shows the session what is left, and the prompt tells it to stop starting work at about 15% left, commit what passes and report. Its turns (light 200, standard 250, hard 400, the Verifier 120) and its time (1, 2, 3 and 1 hours) are fuses, well above what a session needs, for one that loops or hangs.
 

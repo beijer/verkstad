@@ -179,7 +179,7 @@ test("run --max 1 starts one Ticket and leaves the rest of the Frontier", (t) =>
 test("run --dry-run says which Ticket it would start, on which Tier, and claims nothing", (t) => {
   const p = runProject(t, [ready(7, { labels: ["ready-for-agent", "tier:hard"] }), ready(9)], []);
 
-  const r = p.run("run", "--dry-run");
+  const r = p.run("run", "--parallel", "1", "--dry-run");
 
   assert.equal(r.stdout, "Ready: #7 Ticket 7 (hard), #9 Ticket 9 (standard).\nNext: #7, on the hard Tier (opus, high effort, $35 budget).\n");
   assert.equal(r.code, 0);
@@ -424,7 +424,7 @@ const CLI_SURFACE = { name: "cli", globs: ["cli.txt", "bin/**"], observes: "the 
 test("run stops after landing a Ticket that adds a Surface, in a Project whose Contract names no Verify skill", (t) => {
   const p = runProject(t, [ready(7), ready(9)], [implemented(7, "cli.txt", { new_surfaces: [CLI_SURFACE] })]);
 
-  const r = p.run("run");
+  const r = p.run("run", "--parallel", "1");
 
   assert.equal(r.code, 0, r.stderr);
   assert.match(
@@ -454,7 +454,7 @@ test("run files a Ticket to declare a Surface a landed Ticket added, under its S
     { surfaces: [UI], verify: "verify-app" },
   );
 
-  const r = p.run("run");
+  const r = p.run("run", "--parallel", "1");
 
   assert.equal(r.code, 0, r.stderr);
   const title = "Declare the cli Surface and teach the Verify skill to drive it";
@@ -523,7 +523,7 @@ test("run files the declaring Ticket blocked by a Ticket whose pull request wait
     landing: "pull-request",
   });
 
-  const r = p.run("run");
+  const r = p.run("run", "--parallel", "1");
 
   assert.equal(r.code, 0, r.stderr);
   assert.ok(
@@ -571,7 +571,7 @@ test("the stub claude refuses a new Surface reported without a glob", (t) => {
 test("run stops, leaving the Ticket claimed, when a session fails without a report", (t) => {
   const p = runProject(t, [ready(7), ready(9)], [{ subtype: "error_during_execution" }]);
 
-  const r = p.run("run");
+  const r = p.run("run", "--parallel", "1");
 
   assert.equal(r.code, 1);
   assert.match(r.stderr, /^verkstad run: #7's implementing session failed \(error_during_execution\) without a report; /);
@@ -682,7 +682,7 @@ const CLEAN =
 test("run --stop lets the Run land the Ticket it is on, then end without claiming another", async (t) => {
   const working: StubSession = { ...implemented(7, "a.txt"), run: [...(implemented(7, "a.txt").run ?? []), WAIT_FOR_GO] };
   const p = runProject(t, [ready(7), ready(9)], [working, implemented(9, "b.txt")]);
-  const running = p.start(p.dir, "run");
+  const running = p.start(p.dir, "run", "--parallel", "1");
   await waitFor("the implementer to start", () => existsSync(sign(p, "working")));
 
   const s = p.run("run", "--stop");
@@ -732,7 +732,7 @@ test("run --abort kills the implementer session and what it started, discards th
     report: report("done"),
   };
   const p = runProject(t, [ready(7), ready(9)], [working, implemented(9, "b.txt")]);
-  const running = p.start(p.dir, "run");
+  const running = p.start(p.dir, "run", "--parallel", "1");
   await waitFor("the implementer to start", () => existsSync(sign(p, "working")));
   const pids = readFileSync(sign(p, "pids"), "utf8").trim().split(" ").map(Number);
   assert.equal(pids.length, 4);
@@ -800,7 +800,7 @@ test("run --abort asked during a Landing lets it land, and the Run ends aborted 
   const p = runProject(t, [ready(7), ready(9)], [implemented(7, "a.txt"), implemented(9, "b.txt")], {
     gate: { steps: [{ name: "slow", command: WAIT_FOR_GO }] },
   });
-  const running = p.start(p.dir, "run");
+  const running = p.start(p.dir, "run", "--parallel", "1");
   await waitFor("the Landing's Gate to start", () => existsSync(sign(p, "working")));
 
   const s = p.run("run", "--abort");
@@ -979,6 +979,75 @@ test("run --parallel refuses anything but a positive whole number", (t) => {
     assert.equal(r.stderr, `verkstad run: --parallel needs a positive whole number; usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort\n`);
     assert.equal(r.code, 2);
   }
+});
+
+test("run without --parallel works two of three ready Tickets side by side, and claims the third when one ends", (t) => {
+  // #9 works on until #7 has landed and #11 has started, so that #11 starts while #9 is in flight.
+  const eleven: StubSession = { ticket: 11, run: [`touch "$TMPDIR/started-11"`, ...(implemented(11, "c.txt").run ?? [])], report: report("done") };
+  const p = runProject(t, [ready(7), ready(9), ready(11)], [besides(7, 9, "a.txt", "seven"), besides(9, 7, "b.txt", "nine", [afterLanding(7), meets(9, 11)]), eleven]);
+
+  const r = p.run("run");
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  const steps = r.stdout.split("\n").filter((l) => l.startsWith("#") && (l.includes(": claimed") || l.includes(" landed on main in ")));
+  assert.deepEqual(
+    steps.slice(0, 4).map((l) => l.replace(/ in [0-9a-f]+\.$/, ".").replace(/:.*/, "")),
+    ["#7 Ticket 7", "#9 Ticket 9", "#7 landed on main.", "#11 Ticket 11"],
+  );
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"], [11, "closed"]]);
+  assert.ok(promptIn(p, 11).includes("Other agents are implementing these Tickets at the same time, each in a worktree of its own: #9 Ticket 9."), promptIn(p, 11));
+});
+
+test("run in a Project whose Contract caps parallel at 1 works one Ticket at a time", (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [implemented(7, "a.txt"), implemented(9, "b.txt")], { parallel: 1 });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  const steps = r.stdout.split("\n").filter((l) => l.startsWith("#") && (l.includes(": claimed") || l.includes(" landed on main in ")));
+  assert.deepEqual(
+    steps.map((l) => l.replace(/ in [0-9a-f]+\.$/, ".").replace(/:.*/, "")),
+    ["#7 Ticket 7", "#7 landed on main.", "#9 Ticket 9", "#9 landed on main."],
+  );
+  assert.ok(!promptIn(p, 7).includes("Other agents are implementing"), promptIn(p, 7));
+});
+
+test("run --parallel above the Contract's cap is a usage error naming the cap, and claims nothing", (t) => {
+  const p = runProject(t, [ready(7), ready(9), ready(11)], [], { parallel: 2 });
+
+  const r = p.run("run", "--parallel", "3");
+
+  assert.equal(r.stderr, "verkstad run: --parallel 3 is above this Project's cap of 2 (`parallel` in .claude/harness.json)\n");
+  assert.equal(r.code, 2);
+  assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
+  assert.equal(p.claudeCalls().length, 0);
+});
+
+test("run refuses a Contract whose parallel is not a whole number of at least 1", (t) => {
+  for (const parallel of [0, "two", 1.5]) {
+    const p = runProject(t, [ready(7)], [], { parallel });
+
+    const r = p.run("run");
+
+    assert.equal(r.stderr, "verkstad run: .claude/harness.json: parallel must be a whole number of at least 1\n");
+    assert.equal(r.code, 1);
+    assert.deepEqual(p.state().issues.map((i) => i.assignees), [[]]);
+  }
+});
+
+test("run --dry-run without --parallel names the two Tickets it would start", (t) => {
+  const p = runProject(t, [ready(7), ready(9), ready(11)], []);
+
+  const r = p.run("run", "--dry-run");
+
+  assert.equal(
+    r.stdout,
+    "Ready: #7 Ticket 7 (standard), #9 Ticket 9 (standard), #11 Ticket 11 (standard).\n" +
+      "Next: #7, on the standard Tier (opus, medium effort, $25 budget); #9, on the standard Tier (opus, medium effort, $25 budget).\n",
+  );
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
 });
 
 test("run --parallel 2 stopped by one Ticket's failed session lets the other in flight land first, and logs what failed", (t) => {
