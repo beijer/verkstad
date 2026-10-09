@@ -294,12 +294,12 @@ interface CliResult {
   stderr: string;
 }
 
-/** Runs one of verkstad's own subcommands, as the owner would, in the main checkout unless told otherwise. */
-function verkstad(run: Run, args: string[], cwd = run.main): CliResult {
-  const r = spawnSync(join(pluginRoot, "bin", "verkstad"), args, { cwd, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
+/** Runs one of verkstad's own subcommands for Ticket #n, as the owner would, in the main checkout. */
+function verkstad(run: Run, n: number, args: string[]): CliResult {
+  const r = spawnSync(join(pluginRoot, "bin", "verkstad"), args, { cwd: run.main, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.error) throw new Failure(`could not run verkstad ${args[0]}: ${r.error.message}`);
   const result = { code: r.status ?? 1, stdout: r.stdout, stderr: r.stderr };
-  log(run, { verkstad: args, code: result.code, ...(result.code === 0 ? {} : { stderr: result.stderr }) });
+  log(run, { ticket: n, verkstad: args, code: result.code, ...(result.code === 0 ? {} : { stderr: result.stderr }) });
   return result;
 }
 
@@ -697,7 +697,7 @@ async function verify(run: Run, t: Ticket): Promise<Step> {
     say(run, t.n, "touches no Surface; landing.");
     return { to: "land" };
   }
-  const rebase = verkstad(run, ["conflicts", String(t.n), "--rebase", t.worktree]);
+  const rebase = verkstad(run, t.n, ["conflicts", String(t.n), "--rebase", t.worktree]);
   if (rebase.code === 1 && rebase.stdout.trim()) return { to: "conflict", files: rebase.stdout.trim().split("\n").join(", ") };
   if (rebase.code !== 0) throw new Failure(`#${t.n}: rebasing it before the Verifier failed: ${rebase.stderr.trim()}`);
   const surfaces = readSurfaces(t.worktree);
@@ -782,7 +782,7 @@ function landingReport(run: Run, t: Ticket): string {
 }
 
 function land(run: Run, t: Ticket): Step {
-  const r = verkstad(run, ["land", String(t.n), t.worktree, landingReport(run, t)]);
+  const r = verkstad(run, t.n, ["land", String(t.n), t.worktree, landingReport(run, t)]);
   if (r.code === 0) {
     const landed = /^Landed #\d+ on \S+ in ([0-9a-f]+)/m.exec(r.stdout);
     const opened = /^(?:Opened|Updated) (\S+) onto/m.exec(r.stdout);
@@ -868,7 +868,7 @@ async function finishConflict(run: Run, t: Ticket, files: string): Promise<Step>
 function park(run: Run, t: Ticket, why: string): Outcome {
   const file = join(run.handoff, `park-${t.n}.md`);
   writeFileSync(file, why.trim() + "\n");
-  const r = verkstad(run, ["land", "--park", String(t.n), t.worktree, file]);
+  const r = verkstad(run, t.n, ["land", "--park", String(t.n), t.worktree, file]);
   if (r.code !== 0) throw new Failure(`#${t.n} could not be Parked: ${landingMessage(r.stderr)}`);
   forReflect(run, t.n, "Parked");
   const line = `parked: ${firstLine(why)}`;
@@ -1130,7 +1130,7 @@ export async function run(args: string[]): Promise<void> {
   }
   const discards: string[] = [];
   try {
-    for (const n of abortedTickets) {
+    for (const n of abortedTickets.sort((a, b) => a - b)) {
       try {
         discards.push(`#${n}'s work was discarded: ${discard(r, n)}.`);
       } catch (error) {

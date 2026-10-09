@@ -3,10 +3,11 @@
 //
 // A Run (src/run.ts) writes its event log, `run-<time>.jsonl` in the log directory, one JSON object per line:
 // a Ticket claimed on its Tier, each session (role, id, ending, cost, turns, status), a Resume and its Tier,
-// each CLI call (what a failed one said), each Landing, each Park and each abort, and the Run's start and end. The digest
-// reads the last one, or the one `--run` names, and for each session finds its transcript by its id among
-// Claude Code's transcripts for the Project's main checkout and worktrees (src/transcripts.ts) and counts the
-// tool calls that failed there, by kind.
+// each CLI call (what a failed one said), each Landing, each Park, each abort and each failure that stopped the Run, and
+// the Run's start and end; each line about a Ticket names it, since the lines of Tickets worked side by side
+// interleave. The digest reads the last one, or the one `--run` names, and for each session finds its
+// transcript by its id among Claude Code's transcripts for the Project's main checkout and worktrees
+// (src/transcripts.ts) and counts the tool calls that failed there, by kind.
 
 import { existsSync, readdirSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
@@ -68,7 +69,8 @@ interface Ticket {
   title: string;
   tiers: string[];
   lines: string[];
-  outcome: "landed" | "parked" | "aborted" | null;
+  cost: number;
+  outcome: "landed" | "parked" | "aborted" | "stopped" | null;
 }
 
 /** The event log to digest: the one `--run` names, here or in the log directory, or else the log directory's last. */
@@ -109,7 +111,7 @@ export function runLog(args: string[]): void {
   let current: Ticket | undefined;
   const ticketOf = (n: number): Ticket => {
     let t = tickets.get(n);
-    if (!t) tickets.set(n, (t = { n, title: "", tiers: [], lines: [], outcome: null }));
+    if (!t) tickets.set(n, (t = { n, title: "", tiers: [], lines: [], cost: 0, outcome: null }));
     return (current = t);
   };
   /** Failed CLI calls made while the Run was on no Ticket. */
@@ -124,13 +126,14 @@ export function runLog(args: string[]): void {
     if (e.run === "finished") ending = e.asked === "stop" ? "finished, stopped at the owner's request" : "finished";
     if (e.run === "aborted") ending = "aborted by the owner";
     if (e.run === "stopped") ending = `stopped: ${firstLine(str(e.error))}`;
-    // A CLI call names no Ticket: it belongs to the Ticket the Run is on, if it is on one.
+    // A CLI call names its Ticket; in a log from before it did, it belongs to the Ticket the Run is on, if any.
     if (Array.isArray(e.verkstad)) {
       const [subcommand, ...rest] = e.verkstad.map(str);
       if (num(e.code) === 0) continue;
       const message = failureMessage(str(e.stderr));
       const reason = /^reason: (\S+)\s*$/m.exec(str(e.stderr))?.[1];
-      (current?.lines ?? outside).push(
+      const on = typeof e.ticket === "number" ? ticketOf(e.ticket) : current;
+      (on?.lines ?? outside).push(
         subcommand === "land" && rest[0] !== "--park" && reason ? `  Landing failed: ${reason}: ${message}` : `  verkstad ${subcommand} failed: ${message}`,
       );
       continue;
@@ -145,6 +148,7 @@ export function runLog(args: string[]): void {
       const subtype = str(e.subtype);
       sessions++;
       cost += num(e.cost);
+      t.cost += num(e.cost);
       turns += num(e.turns);
       const parts = [ENDINGS[subtype] ?? subtype, usd(num(e.cost)), plural(num(e.turns), "turn"), e.status ? `status ${str(e.status)}` : ""];
       t.lines.push(`  ${e.session}: ${parts.filter(Boolean).join(", ")}`);
@@ -162,6 +166,11 @@ export function runLog(args: string[]): void {
       t.outcome = "parked";
       current = undefined;
     }
+    if (typeof e.failed === "string") {
+      t.lines.push(`  stopped the Run: ${firstLine(e.failed)}`);
+      t.outcome = "stopped";
+      current = undefined;
+    }
     if (typeof e.aborted === "string") {
       t.lines.push(`  aborted: its work was discarded: ${e.aborted}`);
       t.outcome = "aborted";
@@ -174,7 +183,7 @@ export function runLog(args: string[]): void {
   const until = last.slice(0, 10) === first.slice(0, 10) ? last.slice(11, 16) : utc(last);
   const out = [`Run ${basename(file)}, ${utc(first)} to ${until} UTC: ${ending}`, `  Event log: ${file}`, ...outside, ""];
   for (const t of tickets.values()) {
-    out.push(`#${t.n} ${t.title || "(untitled)"}: ${t.tiers.length ? `${t.tiers[0]} Tier${t.tiers.slice(1).map((tier) => `, then ${tier}`).join("")}` : "Tier unknown"}`);
+    out.push(`#${t.n} ${t.title || "(untitled)"}: ${t.tiers.length ? `${t.tiers[0]} Tier${t.tiers.slice(1).map((tier) => `, then ${tier}`).join("")}` : "Tier unknown"}, ${usd(t.cost)}`);
     out.push(...t.lines);
     if (!t.outcome) out.push(`  no outcome: the Run ended before #${t.n} landed or was Parked`);
     out.push("");

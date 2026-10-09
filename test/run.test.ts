@@ -993,3 +993,90 @@ test("run --parallel 2 stopped by one Ticket's failed session lets the other in 
   assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "open", ["owner"]], [9, "closed", ["owner"]], [11, "open", []]]);
   assert.deepEqual(eventLog(p).filter((e) => "failed" in e).map((e) => [e.ticket, String(e.failed).split(";")[0]]), [[7, "#7's implementing session failed (error_during_execution) without a report"]]);
 });
+
+/** Ticket #n's implementer, which starts once #m's has, commits `path`, pushes its branch and then works until it is killed. */
+function killedBesides(n: number, m: number, path: string): StubSession {
+  return besides(n, m, path, "half", ["git push -q origin issue-" + n, `echo $$ > "$TMPDIR/pid-${n}"; until [ -e "$TMPDIR/never" ]; do sleep 0.1; done`]);
+}
+
+test("run --abort while two implementers are running kills both sessions and discards both Tickets' worktrees and branches, here and on origin", async (t) => {
+  const p = runProject(t, [ready(7), ready(9), ready(11)], [killedBesides(7, 9, "a.txt"), killedBesides(9, 7, "b.txt"), implemented(11, "c.txt")]);
+  const running = p.start(p.dir, "run", "--parallel", "2");
+  await waitFor("both implementers to push", () => existsSync(sign(p, "pid-7")) && existsSync(sign(p, "pid-9")));
+  const pids = [7, 9].map((n) => Number(readFileSync(sign(p, `pid-${n}`), "utf8")));
+  assert.ok(pids.every(isAlive));
+
+  const s = p.run("run", "--abort");
+
+  assert.equal(s.stderr, "");
+  assert.equal(s.stdout, "The Run aborts #7 and #9 and discards their work.\n");
+  const r = await running;
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.ok(!pids.some(isAlive));
+  const discarded = (n: number) => `#${n}'s work was discarded: the worktree .claude/worktrees/issue-${n}, the branch issue-${n}, issue-${n} on origin, its review record.`;
+  assert.equal(
+    r.stdout,
+    [
+      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 implementing in .claude/worktrees/issue-7.",
+      "#9 Ticket 9: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#9 implementing in .claude/worktrees/issue-9.",
+      "Run aborted: 2 sessions, $0.00.",
+      `Aborted at the owner's request: ${discarded(7)} ${discarded(9)}`,
+      CLEAN,
+      "",
+    ].join("\n"),
+  );
+  for (const n of [7, 9]) {
+    assert.equal(existsSync(join(p.dir, ".claude", "worktrees", `issue-${n}`)), false);
+    assert.equal(p.git("branch", "--list", `issue-${n}`), "");
+    assert.equal(p.git("--git-dir", p.origin, "branch", "--list", `issue-${n}`), "");
+  }
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees, i.comments.length]), [[7, "open", [], 1], [9, "open", [], 1], [11, "open", [], 0]]);
+  assert.equal(p.claudeCalls().length, 2);
+});
+
+test("run --abort while one Ticket is landing and another is implementing lands the first and discards the second", async (t) => {
+  const landing = 'touch "$TMPDIR/landing"; while [ ! -e "$TMPDIR/go" ]; do sleep 0.1; done';
+  const p = runProject(t, [ready(7), ready(9)], [besides(7, 9, "a.txt", "seven"), killedBesides(9, 7, "b.txt")], {
+    gate: { steps: [{ name: "slow", command: landing }] },
+  });
+  const running = p.start(p.dir, "run", "--parallel", "2");
+  await waitFor("#7's Landing and #9's implementer", () => existsSync(sign(p, "landing")) && existsSync(sign(p, "pid-9")));
+
+  const s = p.run("run", "--abort");
+
+  assert.equal(s.code, 0, s.stderr);
+  writeFileSync(sign(p, "go"), "");
+  const r = await running;
+  const sha = originSha(p);
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.match(
+    r.stdout,
+    new RegExp(
+      `\\n#7 landed on main in ${sha}\\.\\nRun aborted: 2 sessions, \\$0\\.25\\.\\n  #7 landed on main in ${sha}\\n` +
+        "Aborted at the owner's request: #9's work was discarded: the worktree \\.claude/worktrees/issue-9, the branch issue-9, issue-9 on origin, its review record\\.\\n",
+    ),
+  );
+  assert.equal(p.git("--git-dir", p.origin, "log", "--format=%s", "-1", "main"), "Adds a.txt. Refs #7");
+  assert.equal(p.git("--git-dir", p.origin, "branch", "--list", "issue-9"), "");
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "closed", ["owner"]], [9, "open", []]]);
+  const events = eventLog(p).map(({ at: _, ...e }) => e);
+  assert.deepEqual(events.filter((e) => "verkstad" in e).map((e) => [e.ticket, (e.verkstad as string[])[0]]), [[7, "land"]]);
+  assert.deepEqual(events.filter((e) => "aborted" in e).map((e) => e.ticket), [9]);
+});
+
+test("run --parallel 2 stopped by a new Surface in a Project with no Verify skill lets the other Ticket in flight land first", (t) => {
+  const surfacing = besides(7, 9, "cli.txt", "cli");
+  surfacing.report = report("done", { new_surfaces: [CLI_SURFACE] });
+  const p = runProject(t, [ready(7), ready(9), ready(11)], [surfacing, besides(9, 7, "b.txt", "nine", [afterLanding(7)]), implemented(11, "c.txt")]);
+
+  const r = p.run("run", "--parallel", "2");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\n#7 added a Surface the Contract lacks: cli \(the first CLI command and what it prints\)\. Stopping: /);
+  assert.match(r.stdout, /\nRun finished: 2 sessions, \$0\.50\.\n  #7 landed on main in [0-9a-f]+\n  #9 landed on main in [0-9a-f]+\n/);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"], [11, "open"]]);
+});
