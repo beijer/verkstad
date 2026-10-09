@@ -1,11 +1,12 @@
 // The verkstad sidebar: a pane for a Project's Runs, a hooks module of the plugin (hooks/hooks.json).
 //
 // It reads what verkstad leaves behind (the Runs' event logs, `verkstad frontier --json`, the issues and CI on
-// GitHub, the current session's transcript) and draws one pane, opened by `/verkstad:sidebar`: the Run going and its
-// controls, what waits on the owner, the Tickets up next, and past Runs. The controls only run verkstad's own
-// commands: Start launches `verkstad run` detached, so it outlives this session; Stop asks it to stop after its
-// Ticket (`verkstad run --stop`); Abort, once confirmed, ends it and discards the Ticket's work
-// (`verkstad run --abort`). Every routing decision stays in `verkstad run`. The commands are this plugin copy's
+// GitHub, the transcripts of the sessions working its Tickets) and draws one pane, opened by `/verkstad:sidebar`: the
+// Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past Runs. The
+// controls only run verkstad's own commands: Start launches `verkstad run` detached, so it outlives this session,
+// with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, or `--max 1` for One
+// Ticket; Stop asks the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
+// confirmed, ends it and discards their work (`verkstad run --abort`). Every routing decision stays in `verkstad run`. The commands are this plugin copy's
 // own `bin/verkstad`, so the sidebar drives the version the Project installed.
 
 import { atom, read, update } from 'claude-code'
@@ -27,6 +28,7 @@ import {
   stage,
   STAGES,
   transcriptFolder,
+  ticketList,
   usd,
   when,
 } from './events'
@@ -42,6 +44,8 @@ const START_MS = 30_000
 const NOTICE_MS = 5000
 const FAILURE_MS = 15_000
 const HISTORY = 6
+/** How many Tickets a Run works at once without --parallel, as `verkstad run` does (src/run.ts), unless the Contract caps it lower. */
+const DEFAULT_PARALLEL = 2
 /** The desktop app's tool that offers a task as a chip the owner opens in a session of its own. */
 const SPAWN_TASK = 'mcp__ccd_session__spawn_task'
 
@@ -59,7 +63,7 @@ const isAlive = atom({ plugin: 'verkstad', key: 'isAlive' } as const, null)
 const history = atom({ plugin: 'verkstad', key: 'history' } as const, [])
 const frontier = atom({ plugin: 'verkstad', key: 'frontier' } as const, null)
 const owner = atom({ plugin: 'verkstad', key: 'owner' } as const, null)
-const activity = atom({ plugin: 'verkstad', key: 'activity' } as const, null)
+const activity = atom({ plugin: 'verkstad', key: 'activity' } as const, [])
 const notice = atom({ plugin: 'verkstad', key: 'notice' } as const, null)
 const expanded = atom({ plugin: 'verkstad', key: 'expanded' } as const, null)
 const isConfirmingAbort = atom({ plugin: 'verkstad', key: 'isConfirmingAbort' } as const, false)
@@ -97,8 +101,11 @@ async function findProject($: EngineInterface, cwd: string): Promise<Project | n
   const contract = `${main}/.claude/harness.json`
   if (!(await $.fs.exists(contract))) return null
   let base = 'main'
+  let parallel: number | null = null
   try {
-    base = String(JSON.parse(String(await $.fs.read(contract))).baseBranch ?? 'main')
+    const json = JSON.parse(String(await $.fs.read(contract)))
+    base = String(json.baseBranch ?? 'main')
+    if (Number.isInteger(json.parallel) && json.parallel >= 1) parallel = json.parallel
   } catch {
     // verkstad says what is wrong with it when a Run starts
   }
@@ -109,7 +116,7 @@ async function findProject($: EngineInterface, cwd: string): Promise<Project | n
   } catch {
     // issues show as plain numbers
   }
-  return { main, logDir: `${main}/.claude/verkstad`, repo: nameWithOwner, base, name: main.split('/').pop() ?? 'project' }
+  return { main, logDir: `${main}/.claude/verkstad`, repo: nameWithOwner, base, name: main.split('/').pop() ?? 'project', parallel }
 }
 
 /** A Run is going while its log has no end line and its process is there; until that is asked, it is not. */
@@ -161,7 +168,7 @@ async function readGithub($: EngineInterface, p: Project): Promise<void> {
       await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url']),
     ]
     const r = await read($, run)
-    const working = isGoing(r, await read($, isAlive)) ? (r?.current ?? null) : null
+    const working = isGoing(r, await read($, isAlive)) ? (r?.inFlight ?? []) : []
     view = { items: attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working }), at: now, error: '' }
   } catch (err) {
     const previous = await read($, owner)
@@ -185,7 +192,7 @@ async function readRuns($: EngineInterface, p: Project, now: number): Promise<vo
   await update($, run, () => view)
   if (before?.file !== view.file) {
     aliveAt = 0
-    await update($, activity, () => null)
+    await update($, activity, () => [])
   }
   const outcomes = (r: RunView | null) => r?.tickets.map(t => `${t.n}${t.outcome}`).join() ?? ''
   if (before?.file !== view.file || outcomes(before) !== outcomes(view) || Boolean(before?.ended) !== Boolean(view.ended)) githubAt = 0
@@ -212,21 +219,22 @@ async function readRuns($: EngineInterface, p: Project, now: number): Promise<vo
   void now
 }
 
+/** What the session working each Ticket in flight did last, from the newest transcript of its worktree. */
 async function readActivity($: EngineInterface, p: Project, r: RunView): Promise<void> {
-  const n = r.current
-  if (n === null) return
   const config = (await $.env.get('CLAUDE_CONFIG_DIR')) || `${await $.env.get('HOME')}/.claude`
-  const folder = `${config}/projects/${transcriptFolder(`${p.main}/.claude/worktrees/issue-${n}`)}`
-  if (!(await $.fs.exists(folder))) return
-  const t = r.tickets.find(one => one.n === n)
   const since = Date.parse(r.startedAt)
-  const newest = (await $.fs.list(folder))
-    .filter(e => e.name.endsWith('.jsonl') && e.mtimeMs >= since)
-    .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
-  if (!newest || !t) return
-  const out = await $.process.run(['sh', '-c', 'grep -c \'"type":"tool_use"\' "$1"; tail -c 200000 "$1"', 'sh', `${folder}/${newest.name}`])
-  const [count = '0', ...tail] = out.stdout.split('\n')
-  const next: Activity = { ticket: n, calls: Number(count) || 0, last: lastToolCall(tail.join('\n')) }
+  const next: Activity[] = []
+  for (const n of r.inFlight) {
+    const folder = `${config}/projects/${transcriptFolder(`${p.main}/.claude/worktrees/issue-${n}`)}`
+    if (!(await $.fs.exists(folder))) continue
+    const newest = (await $.fs.list(folder))
+      .filter(e => e.name.endsWith('.jsonl') && e.mtimeMs >= since)
+      .sort((a, b) => b.mtimeMs - a.mtimeMs)[0]
+    if (!newest) continue
+    const out = await $.process.run(['sh', '-c', 'grep -c \'"type":"tool_use"\' "$1"; tail -c 200000 "$1"', 'sh', `${folder}/${newest.name}`])
+    const [count = '0', ...tail] = out.stdout.split('\n')
+    next.push({ ticket: n, calls: Number(count) || 0, last: lastToolCall(tail.join('\n')) })
+  }
   await update($, activity, () => next)
 }
 
@@ -272,18 +280,18 @@ async function poll($: EngineInterface): Promise<void> {
   }
 }
 
-async function start($: EngineInterface, p: Project, max: number | null): Promise<void> {
+/** Starts `verkstad run` with `extra`: none for its default, `--parallel <n>` for a count, `--max 1` for One Ticket. */
+async function start($: EngineInterface, p: Project, extra: string[]): Promise<void> {
   await update($, isConfirmingAbort, () => false)
   await say($, 'Reading the Frontier…')
   try {
-    await launch($, p, max)
+    await launch($, p, extra)
   } catch (err) {
     await failed($, 'Start', err)
   }
 }
 
-async function launch($: EngineInterface, p: Project, max: number | null): Promise<void> {
-  const extra = max === null ? [] : ['--max', String(max)]
+async function launch($: EngineInterface, p: Project, extra: string[]): Promise<void> {
   const plan = await verkstad($, p, ['run', '--dry-run', ...extra])
   if (plan.exitCode !== 0) return say($, firstLine(plan.stderr, 300) || `verkstad run --dry-run exited ${plan.exitCode}`, true)
   if (!/^Next: /m.test(plan.stdout)) return say($, firstLine(plan.stdout, 300))
@@ -301,7 +309,7 @@ async function launch($: EngineInterface, p: Project, max: number | null): Promi
 
 async function control($: EngineInterface, p: Project, what: 'stop' | 'abort'): Promise<void> {
   await update($, isConfirmingAbort, () => false)
-  await say($, what === 'stop' ? 'Asking the Run to stop after its Ticket…' : 'Asking the Run to abort…')
+  await say($, what === 'stop' ? 'Asking the Run to stop after its Tickets in flight…' : 'Asking the Run to abort…')
   try {
     const r = await verkstad($, p, ['run', `--${what}`])
     const text = r.exitCode === 0 ? firstLine(r.stdout, 300) : firstLine(r.stderr, 300) || `verkstad run --${what} exited ${r.exitCode}`
@@ -387,7 +395,7 @@ export const register: Register = on => {
     const past = await read($, history)
     const f = await read($, frontier)
     const o = await read($, owner)
-    const act = await read($, activity)
+    const acts = await read($, activity)
     const note = await read($, notice)
     const open = await read($, expanded)
     const confirming = await read($, isConfirmingAbort)
@@ -404,9 +412,12 @@ export const register: Register = on => {
       )
     }
 
-    /** An issue's number: a link drawn as in a reply (Markdown), so a surface that previews issue links does here too. */
-    const issue = (n: number, color?: string) =>
-      p.repo ? <Markdown key={`#${n}`} text={`[#${n}](https://github.com/${p.repo}/issues/${n})`} /> : <Text color={color}>#{n}</Text>
+    /**
+     * An issue's number: a link drawn as in a reply (Markdown), so a surface that previews issue links does here too.
+     * Keyed by where it is drawn, since one Ticket can show twice: in flight, and on a Frontier read before.
+     */
+    const issue = (where: string, n: number, color?: string) =>
+      p.repo ? <Markdown key={`${where}#${n}`} text={`[#${n}](https://github.com/${p.repo}/issues/${n})`} /> : <Text color={color}>#{n}</Text>
 
     /** Text that takes the room left in its row and is cut with an ellipsis, never wrapped or spilt. */
     const fill = (text: string, color?: string, bold?: boolean) => (
@@ -428,7 +439,7 @@ export const register: Register = on => {
     const row = (key: string, glyph: string, color: string, n: number | null, text: string, right = '', indent = 0, action?: JSX.Element) => (
       <Box key={key} flexDirection="row" width={width - indent} marginLeft={indent} gap={1}>
         {fixed(glyph, color)}
-        {n === null ? null : <Box flexShrink={0}>{issue(n, color)}</Box>}
+        {n === null ? null : <Box flexShrink={0}>{issue(key, n, color)}</Box>}
         {fill(text)}
         {right ? fixed(right) : null}
         {action ? (
@@ -452,16 +463,17 @@ export const register: Register = on => {
       </Box>
     )
 
-    // The Run: its state, the controls, and the Ticket it is on.
+    // The Run: its state, the controls, and the Tickets in flight.
     const going = isGoing(r, alive)
-    const current = going ? r?.tickets.find(t => t.n === r.current) : undefined
+    const inFlight = going ? (r?.tickets ?? []).filter(t => r?.inFlight.includes(t.n)) : []
+    const flying = ticketList(inFlight.map(t => t.n))
     let state: JSX.Element
     if (starting) {
       state = <Box key="state" flexDirection="row" width={width}>{fixed('◌ Starting…', ACCENT, true)}</Box>
     } else if (going && r) {
       const landed = r.tickets.filter(t => t.outcome === 'landed').length
       const facts = [age(r.startedAt, now), usd(r.cost), landed ? `${landed} landed` : '']
-      if (r.asked === 'stop') facts.push(`stops after ${current ? `#${current.n}` : 'this Ticket'}`)
+      if (r.asked === 'stop') facts.push(`stops after ${flying || 'its Tickets in flight'}`)
       if (r.asked === 'abort') facts.push('aborting')
       state = (
         <Box key="state" flexDirection="row" width={width} gap={1}>
@@ -488,11 +500,13 @@ export const register: Register = on => {
       controls.push(
         <Box key="confirm-text" width={width} marginTop={1}>
           <Text color={BAD} wrap="wrap">
-            Abort discards {current ? `#${current.n}'s` : "the current Ticket's"} work; the next Run starts it afresh.
+            {inFlight.length > 1
+              ? `Abort discards the work of ${flying}; the next Run starts them afresh.`
+              : `Abort discards ${flying ? `${flying}'s` : "the current Ticket's"} work; the next Run starts it afresh.`}
           </Text>
         </Box>,
         <Box key="confirm" flexDirection="row" gap={1} marginTop={1}>
-          <Button key="abort-confirm" label={`✕ Abort${current ? ` #${current.n}` : ''}`} hotkey="y" onPress={() => void control($, p, 'abort')} />
+          <Button key="abort-confirm" label={`✕ Abort${flying ? ` ${flying}` : ''}`} hotkey="y" onPress={() => void control($, p, 'abort')} />
           <Button key="abort-cancel" label="Keep going" hotkey="n" variant="primary" onPress={() => void update($, isConfirmingAbort, () => false)} />
         </Box>,
       )
@@ -500,16 +514,21 @@ export const register: Register = on => {
       controls.push(
         <Box key="controls" flexDirection="row" gap={1} marginTop={1}>
           {r?.asked ? null : (
-            <Button key="stop" label={`■ Stop after ${current ? `#${current.n}` : 'this Ticket'}`} hotkey="s" onPress={() => void control($, p, 'stop')} />
+            <Button key="stop" label={`■ Stop after ${flying || 'its Tickets in flight'}`} hotkey="s" onPress={() => void control($, p, 'stop')} />
           )}
           {r?.asked === 'abort' ? null : <Button key="abort" label="✕ Abort" hotkey="x" onPress={() => void update($, isConfirmingAbort, () => true)} />}
         </Box>,
       )
     } else if (!starting) {
+      // Each count up to the Contract's cap, or up to the default without one, where the default is the most.
+      const counts = Array.from({ length: p.parallel ?? DEFAULT_PARALLEL }, (_, i) => i + 1)
       controls.push(
-        <Box key="controls" flexDirection="row" gap={1} marginTop={1}>
-          <Button key="start" label="▶ Start" hotkey="g" variant="primary" onPress={() => void start($, p, null)} />
-          <Button key="start-one" label="▶ One Ticket" hotkey="1" onPress={() => void start($, p, 1)} />
+        <Box key="controls" flexDirection="row" flexWrap="wrap" gap={1} marginTop={1} width={width}>
+          <Button key="start" label="▶ Start" hotkey="g" variant="primary" onPress={() => void start($, p, [])} />
+          <Button key="start-one" label="▶ One Ticket" hotkey="1" onPress={() => void start($, p, ['--max', '1'])} />
+          {counts.map(n => (
+            <Button key={`parallel:${n}`} label={`${n} at a time`} plain onPress={() => void start($, p, ['--parallel', String(n)])} />
+          ))}
         </Box>,
       )
     }
@@ -526,15 +545,15 @@ export const register: Register = on => {
       )
     }
 
-    let card: JSX.Element | null = null
-    if (going && r && current) {
+    const cards = inFlight.map(current => {
       const doing = phase(current.say)
       const at = stage(doing)
       const facts = [current.tier, `${doing} ${age(current.sayAt, now)}`, current.cost ? `${usd(current.cost)} so far` : '']
-      card = (
-        <Box key="card" flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={2} paddingY={1} marginTop={1} width={width}>
+      const act = acts.find(one => one.ticket === current.n)
+      return (
+        <Box key={`card:${current.n}`} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={2} paddingY={1} marginTop={1} width={width}>
           <Box flexDirection="row" gap={1}>
-            <Box flexShrink={0}>{issue(current.n, ACCENT)}</Box>
+            <Box flexShrink={0}>{issue('card', current.n, ACCENT)}</Box>
             {fill(facts.filter(Boolean).join(' · '), DIM)}
           </Box>
           <Text bold wrap="wrap">
@@ -550,7 +569,7 @@ export const register: Register = on => {
               ))}
             </Text>
           </Box>
-          {act && act.ticket === current.n && act.last ? (
+          {act?.last ? (
             <Box flexDirection="row" marginTop={1} gap={1}>
               {fixed(`↳ ${act.calls} tool calls`, DIM)}
               {fill(`· ${act.last}`, DIM)}
@@ -558,7 +577,7 @@ export const register: Register = on => {
           ) : null}
         </Box>
       )
-    }
+    })
 
     const glyph = { landed: ['✓', OK], parked: ['⏸', WARN], aborted: ['✕', BAD] } as const
     const outcome = (t: RunTicket, key: string, indent = 0) => {
@@ -621,8 +640,8 @@ export const register: Register = on => {
         ]
       : []
 
-    // Up next: the Frontier, without the Ticket the Run is on.
-    const ready = (f?.ready ?? []).filter(t => t.n !== current?.n)
+    // Up next: the Frontier, without the Tickets in flight.
+    const ready = (f?.ready ?? []).filter(t => !inFlight.some(one => one.n === t.n))
     const next: JSX.Element[] = []
     if (!f) next.push(<Text key="reading" color={DIM}>Reading the Frontier…</Text>)
     else {
@@ -713,7 +732,7 @@ export const register: Register = on => {
       <Box flexDirection="column" width={width + 2} paddingX={1}>
         {state}
         {controls}
-        {card}
+        {cards}
         {runRows}
         {nextRows}
         {needsRows}

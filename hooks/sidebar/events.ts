@@ -46,7 +46,7 @@ export function runView(file: string, events: Event[]): RunView {
     ended: null,
     ready: [],
     tickets: [],
-    current: null,
+    inFlight: [],
     sessions: 0,
     cost: 0,
   }
@@ -61,7 +61,6 @@ export function runView(file: string, events: Event[]): RunView {
     const end = e.run
     if (end === 'finished' || end === 'stopped' || end === 'aborted') {
       view.ended = { kind: end, at: str(e.at), error: firstLine(str(e.error)) }
-      view.current = null
     }
     if (typeof e.ticket !== 'number') continue
     let t = tickets.get(e.ticket)
@@ -92,9 +91,9 @@ export function runView(file: string, events: Event[]): RunView {
       t.outcome = 'aborted'
       t.detail = firstLine(e.aborted)
     }
-    view.current = t.outcome || view.ended ? null : t.n
   }
   view.tickets = [...tickets.values()]
+  view.inFlight = view.ended ? [] : view.tickets.filter(t => !t.outcome).map(t => t.n)
   return view
 }
 
@@ -188,7 +187,7 @@ type CiRun = { name: string; status: string; conclusion: string; headSha: string
  * the owner, Tickets claimed with no Run working them, and Specs labelled as if an agent could take them.
  */
 export function attention(
-  input: { issues: Issue[]; pulls: Pull[]; ci: CiRun[]; frontier: FrontierView | null; repo: string; base: string; working: number | null },
+  input: { issues: Issue[]; pulls: Pull[]; ci: CiRun[]; frontier: FrontierView | null; repo: string; base: string; working: number[] },
 ): Attention[] {
   const href = (n: number) => (input.repo ? `https://github.com/${input.repo}/issues/${n}` : null)
   const items: Attention[] = []
@@ -207,7 +206,7 @@ export function attention(
     if (has(i, 'ready-for-human')) items.push({ kind: 'human', n: i.number, text: i.title, href: href(i.number) })
   }
   for (const t of input.frontier?.inProgress ?? []) {
-    if (t.n !== input.working) items.push({ kind: 'claimed', n: t.n, text: `claimed, but no Run works it: ${t.title}`, href: href(t.n) })
+    if (!input.working.includes(t.n)) items.push({ kind: 'claimed', n: t.n, text: `claimed, but no Run works it: ${t.title}`, href: href(t.n) })
   }
   for (const n of input.frontier?.specsLabelled ?? []) {
     items.push({ kind: 'spec', n, text: 'a Spec labelled ready-for-agent', href: href(n) })
@@ -240,6 +239,12 @@ export function lastToolCall(tail: string): string {
     return what ? `${use.name}: ${firstLine(what, 80)}` : use.name
   }
   return ''
+}
+
+/** `#7`, `#7 and #9`, `#7, #9 and #11`. */
+export function ticketList(numbers: number[]): string {
+  const named = numbers.map(n => `#${n}`)
+  return named.length < 2 ? named.join('') : `${named.slice(0, -1).join(', ')} and ${named[named.length - 1]}`
 }
 
 /** `/a/b.c/d` as Claude Code names its transcript folder for that working directory. */

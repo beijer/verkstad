@@ -25,7 +25,8 @@ export type RunView = {
   /** The Frontier when it started. */
   ready: number[];
   tickets: RunTicket[];
-  current: number | null;
+  /** The Tickets it is working, in the order it claimed them: claimed, with no outcome yet, while it has not ended. */
+  inFlight: number[];
   sessions: number;
   cost: number;
 };
@@ -75,12 +76,20 @@ export type Attention = {
 
 export type OwnerView = { items: Attention[]; at: number; error: string };
 
-/** What the session working the current Ticket did last, from its transcript. */
+/** What the session working a Ticket in flight did last, from its transcript. */
 export type Activity = { ticket: number; calls: number; last: string };
 
 export type Notice = { text: string; isError: boolean; at: number };
 
-export type Project = { main: string; logDir: string; repo: string; base: string; name: string };
+export type Project = {
+  main: string;
+  logDir: string;
+  repo: string;
+  base: string;
+  name: string;
+  /** The Contract's `parallel`, the most Tickets a Run works at once, or null when it caps nothing. */
+  parallel: number | null;
+};
 
 declare module 'claude-code' {
   interface PluginState {
@@ -92,7 +101,8 @@ declare module 'claude-code' {
       history: RunSummary[];
       frontier: FrontierView | null;
       owner: OwnerView | null;
-      activity: Activity | null;
+      /** One for each Ticket in flight whose session's transcript was read. */
+      activity: Activity[];
       /** The last control's answer. */
       notice: Notice | null;
       /** The past Run whose Tickets the history shows, by its event log. */

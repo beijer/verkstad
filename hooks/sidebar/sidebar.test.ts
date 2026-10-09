@@ -39,19 +39,34 @@ const ISSUES = JSON.stringify([
 const CI = JSON.stringify([
   { name: 'CI', status: 'completed', conclusion: 'failure', headSha: '07abb4a1234', url: 'https://github.com/owner/project/actions/runs/1' },
 ])
-const TRANSCRIPT_DIR = `${HOME}/.claude/projects/-home-owner-code-project--claude-worktrees-issue-49`
-const TAIL = line({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } })
+const transcriptDir = (n: number) => `${HOME}/.claude/projects/-home-owner-code-project--claude-worktrees-issue-${n}`
+const tail = (name: string, input: object) => line({ type: 'assistant', message: { content: [{ type: 'tool_use', name, input }] } })
+/** Each Ticket's session: how many tool calls its transcript holds, and its tail. */
+const SESSIONS: Record<string, [number, string]> = {
+  [transcriptDir(49)]: [12, tail('Bash', { command: 'npm test' })],
+  [transcriptDir(50)]: [3, tail('Read', { file_path: '/home/owner/code/project/src/plan.ts' })],
+  [transcriptDir(51)]: [1, tail('Skill', { skill: 'verkstad:tdd' })],
+}
 
 /** A verkstad Project on disk and on GitHub, in memory; `verkstad` records what the controls ran. */
-function world(on: On, logs: Record<string, string>, options: { alive?: boolean; runProcess?: boolean; desktop?: boolean; brokenCli?: boolean } = {}) {
+function world(
+  on: On,
+  logs: Record<string, string>,
+  options: { alive?: boolean; runProcess?: boolean; desktop?: boolean; brokenCli?: boolean; contract?: string } = {},
+) {
   const ran: string[][] = []
   const launched: string[][] = []
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME })
   const value = <T>(v: T) => ({ value: v })
   const ok = (stdout: string, exitCode = 0, stderr = '') => value({ exitCode, stdout, stderr, isStdoutTruncated: false, isStderrTruncated: false })
-  const files: Record<string, string> = { [`${MAIN}/.claude/harness.json`]: '{"baseBranch":"main"}' }
+  const files: Record<string, string> = { [`${MAIN}/.claude/harness.json`]: options.contract ?? '{"baseBranch":"main"}' }
   for (const [name, text] of Object.entries(logs)) files[`${LOGS}/${name}`] = text
+  /** The Run writing more of its event log. */
+  const append = (name: string, text: string) => {
+    logs[name] = (logs[name] ?? '') + text
+    files[`${LOGS}/${name}`] = logs[name]!
+  }
   on('session.start', (_$, e) => ({ cwd: e.cwd }))
   on('process.run', (_$, e) => {
     const [cmd, ...rest] = e.argv
@@ -66,7 +81,10 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean;
       launched.push(e.argv.slice(6))
       return ok('')
     }
-    if (cmd === 'sh' && script.includes('grep -c')) return ok(`12\n${TAIL}`)
+    if (cmd === 'sh' && script.includes('grep -c')) {
+      const [calls, last] = SESSIONS[String(e.argv.at(-1)).replace(/\/[^/]*$/, '')] ?? [0, '']
+      return ok(`${calls}\n${last}`)
+    }
     if (cmd === 'sh' && script.includes('pgrep')) {
       expect(e.argv.at(-1)).toBe(MAIN)
       // As on the machine: a pattern written plainly in the script matches the shell running it, in the main checkout.
@@ -78,16 +96,19 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean;
       ran.push(args)
       if (args[0] === 'frontier') return ok(FRONTIER)
       if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
+      if (args.join(' ') === 'run --dry-run --parallel 2')
+        return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget); #50, on the light Tier (sonnet, low effort, $10 budget).\n')
       if (args.join(' ') === 'run --stop' && options.brokenCli) return { deny: 'could not start: permission denied' }
       if (args.join(' ') === 'run --stop') return ok('The Run stops after #49.\n')
       if (args.join(' ') === 'run --abort') return ok('The Run aborts #49 and discards its work.\n')
+      if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
     }
     throw new Error(`unexpected command ${e.argv.join(' ')}`)
   })
-  on('fs.exists', (_$, e) => value(e.path in files || e.path === LOGS || e.path === TRANSCRIPT_DIR))
+  on('fs.exists', (_$, e) => value(e.path in files || e.path === LOGS || e.path in SESSIONS))
   on('fs.list', (_$, e) =>
     value(
-      e.path === TRANSCRIPT_DIR
+      e.path in SESSIONS
         ? [{ name: 's1.jsonl', kind: 'file' as const, size: 10, mtimeMs: NOW - 1000, isLink: false }]
         : Object.keys(logs).map(name => ({ name, kind: 'file' as const, size: logs[name]!.length, mtimeMs: 0, isLink: false })),
     ),
@@ -109,7 +130,7 @@ function world(on: On, logs: Record<string, string>, options: { alive?: boolean;
     opened.push(e.id)
     return value({ isPlaced: true as const })
   })
-  return { clock, ran, launched, opened, spawned, filled }
+  return { clock, ran, launched, opened, spawned, filled, append }
 }
 
 const PANE = {
@@ -329,4 +350,116 @@ test('a Stop whose command cannot run says so, in place of nothing, for longer t
   expect(await text(ui, /failed/)).toBeDefined()
   await w.clock.advance(10_000)
   expect(await text(ui, /failed/)).toBeUndefined()
+})
+
+const TWO = 'run-2026-10-08T17-50-00-000Z.jsonl'
+const TWO_LIVE =
+  line({ at: '2026-10-08T17:50:00.000Z', run: 'started', ready: [49, 50, 51], pid: 4242 }) +
+  line({ at: '2026-10-08T17:50:01.000Z', ticket: 49, claimed: 'The owner can stop a Run', tier: 'standard' }) +
+  line({ at: '2026-10-08T17:50:01.500Z', ticket: 50, claimed: 'Next thing', tier: 'light' }) +
+  line({ at: '2026-10-08T17:50:02.000Z', ticket: 49, say: 'implementing in .claude/worktrees/issue-49.' }) +
+  line({ at: '2026-10-08T17:50:03.000Z', ticket: 50, say: 'implementing in .claude/worktrees/issue-50.' }) +
+  line({ at: '2026-10-08T17:56:00.000Z', ticket: 50, say: 'touches ui; the Verifier Walks it.' })
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a Run with two Tickets in flight shows each with its stage and last tool call, and the next one claimed when one lands, on ${surface}`, async ($, on) => {
+    const w = world(on, { [TWO]: TWO_LIVE })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+
+    expect(await text(ui, /Running/)).toBe('● Running')
+    expect(await text(ui, /The owner can stop a Run/)).toBe('The owner can stop a Run')
+    expect(await text(ui, /^standard · /)).toBe('standard · implementing 9m')
+    expect(await text(ui, /^Next thing$/)).toBe('Next thing')
+    expect(await text(ui, /^light · /)).toBe('light · verifying 4m')
+    const stages = (await ui.findAll({ type: 'Text', text: /claim .* land$/ })).map(t => t.text)
+    expect(stages).toEqual(['✓ claim  ›  build  ›  verify  ›  land', '✓ claim  ›  ✓ build  ›  verify  ›  land'])
+    const calls = (await ui.findAll({ type: 'Text', text: /tool calls$/ })).map(t => t.text)
+    expect(calls).toEqual(['↳ 12 tool calls', '↳ 3 tool calls'])
+    expect(await text(ui, /^· Bash/)).toBe('· Bash: npm test')
+    expect(await text(ui, /^· Read/)).toBe('· Read: plan.ts')
+    // Neither Ticket in flight is up next, nor claimed with no Run working it.
+    expect(await ui.find({ key: 'r49' })).toBeUndefined()
+    expect(await ui.find({ key: 'r50' })).toBeUndefined()
+
+    w.append(
+      TWO,
+      line({ at: '2026-10-08T17:59:00.000Z', ticket: 49, landed: 'landed on main in a1b2c3d', commit: 'a1b2c3d' }) +
+        line({ at: '2026-10-08T17:59:01.000Z', ticket: 51, claimed: 'After the next thing', tier: 'standard' }) +
+        line({ at: '2026-10-08T17:59:02.000Z', ticket: 51, say: 'implementing in .claude/worktrees/issue-51.' }),
+    )
+    await w.clock.advance(6000)
+    expect((await ui.findAll({ type: 'Text', text: /tool calls$/ })).map(t => t.text)).toEqual(['↳ 3 tool calls', '↳ 1 tool calls'])
+    expect(await text(ui, /^· Skill/)).toBe('· Skill: verkstad:tdd')
+    expect(await text(ui, /^· Bash/)).toBeUndefined()
+    expect(await text(ui, /^THIS RUN$/)).toBe('THIS RUN')
+    expect(await text(ui, /^standard · implementing/)).toBe('standard · implementing 1m')
+    expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #50 and #51')
+    await ui.unmount()
+  })
+}
+
+test('Stop and Abort run verkstad run --stop and --abort once each, with two Tickets in flight', async ($, on) => {
+  const w = world(on, { [TWO]: TWO_LIVE })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'terminal')
+  const runs = (flag: string) => w.ran.filter(args => args.join(' ') === `run ${flag}`).length
+
+  expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #49 and #50')
+  await ui.press({ key: 'stop' })
+  expect(runs('--stop')).toBe(1)
+
+  await ui.press({ key: 'abort' })
+  expect(await text(ui, /^Abort discards/)).toBe('Abort discards the work of #49 and #50; the next Run starts them afresh.')
+  expect((await ui.find({ key: 'abort-confirm' }))?.props.label).toBe('✕ Abort #49 and #50')
+  await ui.press({ key: 'abort-confirm' })
+  expect(runs('--abort')).toBe(1)
+  expect(runs('--stop')).toBe(1)
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`Start runs verkstad run with no count, and a count runs it with --parallel, up to two without a cap, on ${surface}`, async ($, on) => {
+    const w = world(on, {})
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+
+    expect((await ui.find({ key: 'start' }))?.props.label).toBe('▶ Start')
+    expect((await ui.find({ key: 'start-one' }))?.props.label).toBe('▶ One Ticket')
+    expect((await ui.find({ key: 'parallel:1' }))?.props.label).toBe('1 at a time')
+    expect((await ui.find({ key: 'parallel:2' }))?.props.label).toBe('2 at a time')
+    expect(await ui.find({ key: 'parallel:3' })).toBeUndefined()
+
+    await ui.press({ key: 'parallel:2' })
+    expect(w.ran).toContainEqual(['run', '--dry-run', '--parallel', '2'])
+    expect(w.launched).toEqual([['run', '--parallel', '2']])
+    expect(await text(ui, /^Starting:/)).toBe(
+      'Starting: #49, on the standard Tier (opus, medium effort, $25 budget); #50, on the light Tier (sonnet, low effort, $10 budget)',
+    )
+    await ui.unmount()
+  })
+}
+
+test('a Project whose Contract caps a Run at one Ticket is offered no count above 1', async ($, on) => {
+  const w = world(on, {}, { contract: '{"baseBranch":"main","parallel":1}' })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect((await ui.find({ key: 'parallel:1' }))?.props.label).toBe('1 at a time')
+  expect(await ui.find({ key: 'parallel:2' })).toBeUndefined()
+  await ui.press({ key: 'parallel:1' })
+  expect(w.launched).toEqual([['run', '--parallel', '1']])
+})
+
+test('a Project whose Contract caps a Run above two is offered each count up to its cap', async ($, on) => {
+  const w = world(on, {}, { contract: '{"baseBranch":"main","parallel":3}' })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'terminal')
+
+  expect((await ui.find({ key: 'parallel:3' }))?.props.label).toBe('3 at a time')
+  expect(await ui.find({ key: 'parallel:4' })).toBeUndefined()
 })
