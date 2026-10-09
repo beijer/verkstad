@@ -1,4 +1,9 @@
 #!/bin/sh
-# The stub `gh` tests put first on the PATH; see test/stub/gh.ts.
+# The stub `gh` tests put first on the PATH; see test/stub/gh.ts. Each call holds
+# the stub's lock while it reads and writes the fake GitHub, so that sessions
+# calling it at once keep its state whole.
 self=$(readlink -f "$0" 2>/dev/null || realpath "$0")
+if [ -n "$VERKSTAD_GH_STUB_DIR" ]; then
+  exec flock "$VERKSTAD_GH_STUB_DIR/lock" node --no-warnings "$(dirname "$self")/gh.ts" "$@"
+fi
 exec node --no-warnings "$(dirname "$self")/gh.ts" "$@"

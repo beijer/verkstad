@@ -73,9 +73,11 @@ export function findIssue(state: StubState, number: number): StubIssue | undefin
 
 /**
  * One headless session the stub `claude` plays (test/stub/claude.ts), in the order the CLI starts or resumes
- * them: the shell commands it runs in its working directory, as an agent would, then the result it prints.
+ * them (per Ticket, when a session names one): the shell commands it runs in its working directory, as an agent would, then the result it prints.
  */
 export interface StubSession {
+  /** The Ticket whose worktree the session runs in; one left out is played for whichever Ticket calls next. */
+  ticket?: number;
   /** Commands run with `sh -c` in the session's working directory, in order; one that fails fails the stub. */
   run?: string[];
   /** The structured output, checked against the call's --json-schema; none when left out. */

@@ -1,5 +1,8 @@
 // A stub `claude`: plays the headless sessions a test scripts, in order. Each
-// call takes the next StubSession from $VERKSTAD_CLAUDE_STUB_DIR/sessions.json,
+// call takes the next StubSession from $VERKSTAD_CLAUDE_STUB_DIR/sessions.json
+// scripted for the calling Ticket, the one whose worktree (issue-<n>) it runs
+// in, or for any Ticket; it takes it under a lock, since a Run that works
+// Tickets side by side starts several sessions at once. It
 // appends its argv, working directory and prompt to calls.jsonl, runs the
 // session's commands in its working directory as an agent would, and prints a
 // result as `claude -p --output-format json` does. It accepts exactly the flags
@@ -10,7 +13,7 @@
 
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, readFileSync, rmdirSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { StubSession } from "./state.ts";
@@ -82,6 +85,38 @@ function transcribe(id: string, commands: string[], failed: number): void {
   appendFileSync(join(dir, `${id}.jsonl`), lines.map((l) => JSON.stringify(l) + "\n").join(""));
 }
 
+/**
+ * Takes the first session scripted for Ticket `ticket` or for any Ticket off the queue in `dir`, holding the
+ * lock directory `dir`/lock while it reads and writes the queue, so that two sessions starting at once each take
+ * their own.
+ */
+function take(dir: string, ticket: number | undefined, prompt: string): StubSession {
+  const lock = join(dir, "lock");
+  for (const until = Date.now() + 10_000; ; ) {
+    try {
+      mkdirSync(lock);
+      break;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST" || Date.now() > until) throw error;
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+    }
+  }
+  try {
+    const queuePath = join(dir, "sessions.json");
+    const queue = JSON.parse(readFileSync(queuePath, "utf8")) as StubSession[];
+    const at = queue.findIndex((s) => s.ticket === undefined || s.ticket === ticket);
+    if (at === -1) {
+      const whose = ticket === undefined ? "" : ` for #${ticket}`;
+      throw new Error(`no session is scripted${whose} for the prompt starting ${JSON.stringify(prompt.slice(0, 80))}`);
+    }
+    const [session] = queue.splice(at, 1);
+    writeFileSync(queuePath, JSON.stringify(queue, null, 2) + "\n");
+    return session;
+  } finally {
+    rmdirSync(lock);
+  }
+}
+
 function main(): number {
   const dir = process.env.VERKSTAD_CLAUDE_STUB_DIR;
   if (!dir) {
@@ -97,11 +132,8 @@ function main(): number {
       if (flags.get(flag) !== wanted) throw new Error(`verkstad must pass ${flag}${wanted ? ` ${wanted}` : ""}`);
     }
     if (!prompt.trim()) throw new Error("no prompt on stdin");
-    const queuePath = join(dir, "sessions.json");
-    const queue = JSON.parse(readFileSync(queuePath, "utf8")) as StubSession[];
-    const session = queue.shift();
-    if (!session) throw new Error(`no session is scripted for the prompt starting ${JSON.stringify(prompt.slice(0, 80))}`);
-    writeFileSync(queuePath, JSON.stringify(queue, null, 2) + "\n");
+    const ticket = /\/issue-(\d+)$/.exec(process.cwd())?.[1];
+    const session = take(dir, ticket === undefined ? undefined : Number(ticket), prompt);
 
     const env = { ...process.env, PATH: `${join(root, "bin")}:${process.env.PATH}` };
     for (const command of session.run ?? []) {

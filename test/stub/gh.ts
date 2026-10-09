@@ -1,7 +1,9 @@
 // A stub `gh`: a small fake GitHub for tests. It keeps its state (see
 // state.ts) in $VERKSTAD_GH_STUB_DIR/state.json, appends every call's argv to
 // $VERKSTAD_GH_STUB_DIR/calls.jsonl, and answers exactly the subcommands and
-// API requests verkstad makes. Anything else fails loudly, so a new call in the
+// API requests verkstad makes, holding $VERKSTAD_GH_STUB_DIR/lock (test/stub/gh
+// takes it with flock(1)) so that concurrent calls each see the last one's state.
+// Anything else fails loudly, so a new call in the
 // CLI needs a handler here before its test can pass.
 //
 // To support a new call, add one entry:
