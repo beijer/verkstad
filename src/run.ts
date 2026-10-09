@@ -8,9 +8,10 @@
 // session's structured report: a branch with no recorded review goes back to
 // the same session to review it; one touching a Surface goes to a Verifier
 // session; a finished one goes to `verkstad land`; what cannot finish is Parked
-// with `verkstad land --park`. The Tickets' sessions run at the same time;
-// their Landings, which run in this process and under Landing's lock, one at a
-// time, a later one rebasing onto what an earlier one landed. When a Ticket is
+// with `verkstad land --park`. The Tickets' sessions run at the same time, but
+// their Landings run one at a time, in this process and under Landing's lock, a
+// later one rebasing onto what an earlier one landed; while one runs, the Run
+// reads no ask. When a Ticket is
 // closed or Parked it reads the Frontier again, so a Landing that unblocks a
 // Ticket starts it next, and stops when nothing is ready or in flight, or after
 // --max Tickets. A landed Ticket that adds a Surface the Contract lacks makes it
@@ -1002,12 +1003,12 @@ function ask(what: Ask): void {
   const after = readJsonLines(file);
   const end = after.findIndex(isEndLine);
   if (end !== -1 && end < after.findLastIndex((e) => e.asked === what)) throw new Failure("no Run is going", 1);
-  // The Tickets the Run is on: those claimed that have not landed or been Parked since.
+  // The Tickets the Run is on: those claimed that have not landed, been Parked or failed since.
   const inFlight = new Set<number>();
   for (const e of events) {
     if (typeof e.ticket !== "number") continue;
     if (typeof e.claimed === "string") inFlight.add(e.ticket);
-    if (typeof e.landed === "string" || typeof e.parked === "string") inFlight.delete(e.ticket);
+    if (typeof e.landed === "string" || typeof e.parked === "string" || typeof e.failed === "string") inFlight.delete(e.ticket);
   }
   const abort = asked([...events, { asked: what }]) === "abort";
   const tickets = ticketList([...inFlight]);
@@ -1094,6 +1095,7 @@ export async function run(args: string[]): Promise<void> {
       } else if (error instanceof Failure) {
         failures.push(error);
         forReflect(r, n, "stopped the Run");
+        log(r, { ticket: n, failed: error.message });
       } else unexpected ??= { error };
       continue;
     }
@@ -1118,22 +1120,28 @@ export async function run(args: string[]): Promise<void> {
       }
       if (!stopping && (options.max === null || tried.size < options.max)) frontier = readFrontier().ready;
     } catch (error) {
-      if (!(error instanceof Failure)) throw error;
-      failures.push(error);
-      forReflect(r, n, "stopped the Run");
       stopping = true;
+      if (!(error instanceof Failure)) unexpected ??= { error };
+      else {
+        failures.push(error);
+        forReflect(r, n, "stopped the Run");
+      }
     }
   }
-  let stopped: Failure | null = failures.length ? new Failure(failures.map((f) => f.message).join("\n")) : null;
   const discards: string[] = [];
   try {
-    for (const n of abortedTickets) discards.push(`#${n}'s work was discarded: ${discard(r, n)}.`);
-  } catch (error) {
-    if (!(error instanceof Failure)) throw error;
-    stopped = new Failure(`aborting #${abortedTickets[discards.length]} failed: ${error.message}`);
+    for (const n of abortedTickets) {
+      try {
+        discards.push(`#${n}'s work was discarded: ${discard(r, n)}.`);
+      } catch (error) {
+        if (!(error instanceof Failure)) throw error;
+        failures.push(new Failure(`aborting #${n} failed: ${error.message}`));
+      }
+    }
   } finally {
     rmSync(r.handoff, { recursive: true, force: true });
   }
+  const stopped = failures.length ? new Failure(failures.map((f) => f.message).join("\n")) : null;
   if (unexpected) throw unexpected.error;
   const discarded = discards.join(" ");
   const ending = stopped ? "stopped" : aborted ? "aborted" : "finished";

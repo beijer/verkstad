@@ -980,3 +980,16 @@ test("run --parallel refuses anything but a positive whole number", (t) => {
     assert.equal(r.code, 2);
   }
 });
+
+test("run --parallel 2 stopped by one Ticket's failed session lets the other in flight land first, and logs what failed", (t) => {
+  const failing: StubSession = { ticket: 7, run: [meets(7, 9)], subtype: "error_during_execution" };
+  const p = runProject(t, [ready(7), ready(9), ready(11)], [failing, besides(9, 7, "b.txt", "nine")]);
+
+  const r = p.run("run", "--parallel", "2");
+
+  assert.equal(r.code, 1);
+  assert.match(r.stderr, /^verkstad run: #7's implementing session failed \(error_during_execution\) without a report; /);
+  assert.match(r.stdout, /\nRun stopped: 2 sessions, \$0\.50\.\n  #9 landed on main in [0-9a-f]+\nSomething for \/verkstad:reflect to learn from: #7 stopped the Run\.\n$/);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "open", ["owner"]], [9, "closed", ["owner"]], [11, "open", []]]);
+  assert.deepEqual(eventLog(p).filter((e) => "failed" in e).map((e) => [e.ticket, String(e.failed).split(";")[0]]), [[7, "#7's implementing session failed (error_during_execution) without a report"]]);
+});
