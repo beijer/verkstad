@@ -12,7 +12,7 @@ Keep these lines only when they apply, and drop them otherwise:
 - The comments line, when a comment overrides the body: `{COMMENT}` says which comment wins.
 - The Resume paragraph, when re-dispatching a Ticket: `{RESUME_REASON}` is why it came back (the failure, the report, or the owner's answer).
 - The Fix round paragraph instead, when the Verifier's Verdict was `failed`: `{FINDINGS}` is the Verifier's report from `<log>/verifier-<n>.md`, its Criteria lines and its Evidence directory.
-- `{OTHER_AGENT}`, when other Tickets are in flight: "Other agents are working concurrently in their own worktrees: #M (<files or areas>), … Stay out of those; if you cannot, say so in the report."
+- `{OTHER_AGENT}`, when other Tickets are in flight in the Run: "Other agents are implementing these Tickets at the same time, each in a worktree of its own: #M <title>; … Keep out of the code they change; where you cannot, say so in the report."
 
 ```
 You are implementing Ticket #{N} of {REPO}. Your working directory is a git worktree of your own; stay in it. The `verkstad` command is on your PATH.

@@ -857,3 +857,126 @@ test("run --stop and --abort fail with no Run going: no event log, one that ende
   assert.equal(usage.code, 2);
   assert.match(usage.stderr, /^verkstad run: usage: verkstad run /);
 });
+
+/** A shell command that says Ticket #n's session has started, then waits until #m's has too, failing after 20 seconds. */
+function meets(n: number, m: number): string {
+  return `touch "$TMPDIR/started-${n}"; i=0; until [ -e "$TMPDIR/started-${m}" ]; do i=$((i+1)); [ $i -lt 200 ] || { echo "#${m} never started" >&2; exit 1; }; sleep 0.1; done`;
+}
+
+/** A shell command that waits until a commit of Ticket #m is on origin's main, failing after 20 seconds. */
+function afterLanding(m: number): string {
+  return `i=0; until git fetch -q origin main && git log --format=%s FETCH_HEAD | grep -q "Refs #${m}$"; do i=$((i+1)); [ $i -lt 200 ] || { echo "#${m} never landed" >&2; exit 1; }; sleep 0.1; done`;
+}
+
+/** Ticket #n's implementer, which starts once #m's has, commits `path`, and then runs `after`. */
+function besides(n: number, m: number, path: string, content: string, after: string[] = []): StubSession {
+  return { ticket: n, run: [meets(n, m), `verkstad start ${n}`, ...commitFile(n, path, content), "verkstad review record", ...after], report: report("done") };
+}
+
+/** The prompt of the first session the stub `claude` played in Ticket #n's worktree. */
+function promptIn(p: Project, n: number): string {
+  const call = p.claudeCalls().find((c) => c.cwd.endsWith(`/issue-${n}`));
+  assert.ok(call, `no session ran for #${n}`);
+  return call.prompt;
+}
+
+test("run --parallel 2 works two ready Tickets side by side, tells each implementer of the other, and lands the second rebased onto the first", (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [besides(7, 9, "a.txt", "seven"), besides(9, 7, "b.txt", "nine", [afterLanding(7)])]);
+
+  const r = p.run("run", "--parallel", "2");
+
+  assert.equal(r.stderr, "");
+  const [nine, seven] = p.git("--git-dir", p.origin, "log", "--format=%h %p %s", "-2", "main").split("\n").map((l) => l.split(" "));
+  assert.deepEqual([seven.slice(2).join(" "), nine.slice(2).join(" ")], ["Adds a.txt. Refs #7", "Adds b.txt. Refs #9"]);
+  assert.equal(nine[1], seven[0], "#9 landed on #7's commit");
+  assert.equal(
+    r.stdout,
+    [
+      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 implementing in .claude/worktrees/issue-7.",
+      "#9 Ticket 9: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#9 implementing in .claude/worktrees/issue-9.",
+      "#7 implementer reported done ($0.25).",
+      "#7 touches no Surface; landing.",
+      `#7 landed on main in ${seven[0]}.`,
+      "#9 implementer reported done ($0.25).",
+      "#9 touches no Surface; landing.",
+      `#9 landed on main in ${nine[0]}.`,
+      "Run finished: 2 sessions, $0.50.",
+      `  #7 landed on main in ${seven[0]}`,
+      `  #9 landed on main in ${nine[0]}`,
+      CLEAN,
+      "",
+    ].join("\n"),
+  );
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"]]);
+  const others = "Other agents are implementing these Tickets at the same time, each in a worktree of its own:";
+  assert.ok(promptIn(p, 7).includes(` ${others} #9 Ticket 9. Keep out of the code they change; where you cannot, say so in the report.\n`), promptIn(p, 7));
+  assert.ok(promptIn(p, 9).includes(` ${others} #7 Ticket 7. Keep out of the code they change; where you cannot, say so in the report.\n`), promptIn(p, 9));
+});
+
+test("run --parallel 2 has a conflict session finish the second of two Tickets that change the same lines, and lands it", (t) => {
+  const finishing: StubSession = {
+    ticket: 9,
+    run: ["verkstad start 9 --resume || true", "printf 'seven and nine\\n' > a.txt && git add a.txt && GIT_EDITOR=true git rebase --continue"],
+    report: { status: "done", worktree: "(the worktree)", commits: [], uncertain: [], report: "status: done\nResolved: a.txt, both kept." },
+  };
+  const p = runProject(t, [ready(7), ready(9)], [besides(7, 9, "a.txt", "seven"), besides(9, 7, "a.txt", "nine", [afterLanding(7)]), finishing], {}, { "a.txt": "base\n" });
+
+  const r = p.run("run", "--parallel", "2");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(
+    r.stdout.includes("\n#9 Landing failed: conflict.\n#9 conflicts with main in a.txt; finishing it on the light Tier.\n#9 conflict finisher reported done ($0.25).\n"),
+    r.stdout,
+  );
+  assert.equal(p.git("--git-dir", p.origin, "show", "main:a.txt"), "seven and nine");
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"]]);
+  assert.deepEqual(
+    eventLog(p).filter((e) => typeof e.say === "string" && e.say.startsWith("conflicts")).map(({ at: _, ...e }) => e),
+    [{ ticket: 9, say: "conflicts with main in a.txt; finishing it on the light Tier." }],
+  );
+});
+
+test("run --stop asked while two Tickets are in flight lands both and claims no third", async (t) => {
+  const waiting = (n: number, m: number, path: string): StubSession => besides(n, m, path, "built", [WAIT_FOR_GO]);
+  const p = runProject(t, [ready(7), ready(9), ready(11)], [waiting(7, 9, "a.txt"), waiting(9, 7, "b.txt"), implemented(11, "c.txt")]);
+  const running = p.start(p.dir, "run", "--parallel", "2");
+  await waitFor("both implementers to start", () => existsSync(sign(p, "started-7")) && existsSync(sign(p, "started-9")));
+
+  const s = p.run("run", "--stop");
+
+  assert.equal(s.stderr, "");
+  assert.equal(s.stdout, "The Run stops after #7 and #9.\n");
+  assert.equal(s.code, 0);
+  writeFileSync(sign(p, "go"), "");
+  const r = await running;
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\nRun finished: 2 sessions, \$0\.50\.\n  #(7|9) landed on main in [0-9a-f]+\n  #(7|9) landed on main in [0-9a-f]+\nStopped at the owner's request\.\n/);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state, i.assignees]), [[7, "closed", ["owner"]], [9, "closed", ["owner"]], [11, "open", []]]);
+  assert.equal(p.claudeCalls().length, 2);
+});
+
+test("run --parallel 2 --dry-run names the two Tickets it would start, and claims nothing", (t) => {
+  const p = runProject(t, [ready(7, { labels: ["ready-for-agent", "tier:hard"] }), ready(9), ready(11)], []);
+
+  const r = p.run("run", "--parallel", "2", "--dry-run");
+
+  assert.equal(
+    r.stdout,
+    "Ready: #7 Ticket 7 (hard), #9 Ticket 9 (standard), #11 Ticket 11 (standard).\n" +
+      "Next: #7, on the hard Tier (opus, high effort, $35 budget); #9, on the standard Tier (opus, medium effort, $25 budget).\n",
+  );
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
+});
+
+test("run --parallel refuses anything but a positive whole number", (t) => {
+  const p = runProject(t, [ready(7)], []);
+  for (const value of ["0", "1.5", "two"]) {
+    const r = p.run("run", "--parallel", value);
+    assert.equal(r.stderr, `verkstad run: --parallel needs a positive whole number; usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort\n`);
+    assert.equal(r.code, 2);
+  }
+});

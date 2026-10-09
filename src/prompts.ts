@@ -80,6 +80,8 @@ export interface ImplementValues {
   resumeReason?: string;
   /** The Verifier's findings; set for a Fix round only. */
   findings?: string;
+  /** The other Tickets in flight in the Run, by number and title. */
+  others: Array<{ n: number; title: string }>;
 }
 
 export function implementPrompt(v: ImplementValues): string {
@@ -92,7 +94,10 @@ export function implementPrompt(v: ImplementValues): string {
     COMMENT: "",
     RESUME_REASON: v.resumeReason,
     FINDINGS: v.findings,
-    OTHER_AGENT: "",
+    OTHER_AGENT: v.others.length
+      ? "Other agents are implementing these Tickets at the same time, each in a worktree of its own: " +
+        `${v.others.map((o) => `#${o.n} ${o.title}`).join("; ")}. Keep out of the code they change; where you cannot, say so in the report.`
+      : "",
   });
   return `${body}\n\n${STRUCTURED} Set \`known_bug\` true when Uncertain names a known bug, and \`reviewed\` true only when you ran verkstad:review on the branch's final commits.\n`;
 }

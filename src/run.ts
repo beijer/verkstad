@@ -1,13 +1,18 @@
-// `verkstad run [--max <n>] [--budget <usd>] [--dry-run]`: a Run. From the
-// Project's main checkout it works the Frontier one Ticket at a time, lowest
-// number first: it claims the Ticket, gives it a worktree under
-// .claude/worktrees/, and has a headless Claude Code session (src/claude.ts)
-// implement it with the implementing prompt (prompts/) on the Ticket's Tier. Then it routes on the session's structured report: a
-// branch with no recorded review goes back to the same session to review it;
-// one touching a Surface goes to a Verifier session; a finished one goes to
-// `verkstad land`; what cannot finish is Parked with `verkstad land --park`.
-// When the Ticket is closed or Parked it reads the Frontier again, so a Landing
-// that unblocks a Ticket starts it next, and stops when nothing is ready or after
+// `verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`: a
+// Run. From the Project's main checkout it works the Frontier, up to --parallel
+// Tickets side by side (one without it), lowest number first, with no guess at
+// which files a Ticket will touch (ADR 0008): it claims each Ticket, gives it a
+// worktree under .claude/worktrees/, and has a headless Claude Code session
+// (src/claude.ts) implement it with the implementing prompt (prompts/) on the
+// Ticket's Tier, told which other Tickets are in flight. Then it routes on the
+// session's structured report: a branch with no recorded review goes back to
+// the same session to review it; one touching a Surface goes to a Verifier
+// session; a finished one goes to `verkstad land`; what cannot finish is Parked
+// with `verkstad land --park`. The Tickets' sessions run at the same time;
+// their Landings, which run in this process and under Landing's lock, one at a
+// time, a later one rebasing onto what an earlier one landed. When a Ticket is
+// closed or Parked it reads the Frontier again, so a Landing that unblocks a
+// Ticket starts it next, and stops when nothing is ready or in flight, or after
 // --max Tickets. A landed Ticket that adds a Surface the Contract lacks makes it
 // file a Ticket to declare the Surface and teach the Verify skill to drive it,
 // which it works next; in a Project with no Verify skill yet it stops instead.
@@ -20,7 +25,8 @@
 // report goes one Tier up. A session is bounded by its dollar budget, which it
 // is told and sees shrink; its turns and its time are only fuses (LIMITS).
 // What needs the owner and is not a Park (a session that failed outright, a
-// Landing that cannot run) stops the Run, the Ticket still claimed.
+// Landing that cannot run) stops the Run, the Ticket still claimed, once the
+// other Tickets in flight have finished.
 //
 // It keeps only what a later step reads: the hand-off files `land` takes go in
 // a temporary directory the Run deletes, what a Ticket's agents found goes on
@@ -35,10 +41,10 @@
 // `verkstad run --stop` and `--abort` ask the Run going in the Project to end, by
 // appending `{"asked": …}` to its event log, which the Run reads before each
 // Ticket and each step, and every second while a session runs. On a stop it
-// finishes the Ticket it is on and claims no other. On an abort it kills the
-// session working the Ticket with everything it started, never a Landing, and
-// discards the Ticket's work: its worktree, its branch here and on origin and
-// its review record; the Ticket goes back on the Frontier, unassigned.
+// finishes every Ticket in flight and claims no other. On an abort it kills the
+// sessions working the Tickets with everything they started, never a Landing,
+// and discards each such Ticket's work: its worktree, its branch here and on
+// origin and its review record; the Ticket goes back on the Frontier, unassigned.
 
 import { spawnSync } from "node:child_process";
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -65,7 +71,7 @@ import { branchPoint, touchedSurfaces } from "./surfaces.ts";
 import { failedToolCalls, readJsonLines, sessionDirs } from "./transcripts.ts";
 import { checkVerdict, type Verdict } from "./verdict.ts";
 
-const USAGE = "usage: verkstad run [--max <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort";
+const USAGE = "usage: verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | verkstad run --stop | verkstad run --abort";
 
 /** What the owner may ask of the Run going: to stop after its Ticket, or to abort it now. */
 type Ask = "stop" | "abort";
@@ -135,24 +141,27 @@ function budgetNote(usd: number, walks: boolean): string {
 
 interface Options {
   max: number | null;
+  /** The most Tickets the Run works at once. */
+  parallel: number;
   budget: number | undefined;
   dryRun: boolean;
 }
 
 function parseArgs(args: string[]): Options {
-  const options: Options = { max: null, budget: undefined, dryRun: false };
+  const options: Options = { max: null, parallel: 1, budget: undefined, dryRun: false };
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--dry-run") {
       options.dryRun = true;
-    } else if (arg === "--max" || arg === "--budget") {
+    } else if (arg === "--max" || arg === "--parallel" || arg === "--budget") {
       const value = args[++i];
       const number = Number(value);
-      const whole = arg === "--max";
+      const whole = arg !== "--budget";
       if (value === undefined || !(number > 0) || (whole && !Number.isInteger(number))) {
         throw new Failure(`${arg} needs a positive ${whole ? "whole number" : "amount in USD"}; ${USAGE}`, 2);
       }
-      if (whole) options.max = number;
+      if (arg === "--max") options.max = number;
+      else if (arg === "--parallel") options.parallel = number;
       else options.budget = number;
     } else {
       throw new Failure(`unknown argument '${arg}'; ${USAGE}`, 2);
@@ -182,8 +191,8 @@ interface Run {
   cost: number;
   /** What each Ticket gave reflect to learn from, in the order it happened. */
   forReflect: Map<number, string[]>;
-  /** The Ticket the Run is working, until it lands or is Parked; the one an abort discards. */
-  inFlight: number | null;
+  /** The Tickets the Run is working, by number, with their titles, until each lands, is Parked or ends the Run. */
+  inFlight: Map<number, string>;
 }
 
 /** Checks the main checkout is one a Run may start from, and brings it level with origin. */
@@ -549,16 +558,13 @@ async function runTicket(run: Run, entry: Entry): Promise<Outcome> {
     sessions: new Map(),
   };
   gh(["issue", "edit", String(n), "--add-assignee", "@me"]);
-  run.inFlight = n;
   say(run, n, `${entry.title}: claimed, ${describeTier(t.tier, run.budget)}.`);
   log(run, { ticket: n, claimed: entry.title, tier: t.tier });
   const step: Step = hasBranch(run, n)
     ? { to: "implement", why: { kind: "resume", reason: `an earlier Run or a Park left the branch issue-${n}; continue it from where it is.` } }
     : { to: "implement" };
   try {
-    const outcome = await work(run, t, step);
-    run.inFlight = null;
-    return outcome;
+    return await work(run, t, step);
   } finally {
     noteFailedCalls(run, t);
   }
@@ -606,6 +612,7 @@ async function implement(run: Run, t: Ticket, why?: { kind: "resume" | "fix"; re
     spec: specOf(t.n),
     resumeReason: why?.kind === "resume" ? why.reason : undefined,
     findings: why?.kind === "fix" ? why.reason : undefined,
+    others: [...run.inFlight].filter(([n]) => n !== t.n).map(([n, title]) => ({ n, title })),
   });
   const result = await runSession(run, t, implementer(t), wt, prompt, IMPLEMENT_SCHEMA);
   t.session = result.sessionId;
@@ -916,12 +923,16 @@ function fileSurfaceTicket(run: Run, n: number, surface: NewSurface, awaitsMerge
   return { number, title, labels: ["ready-for-agent"], assignees: [], open_blockers: [] };
 }
 
-function plan(ready: Entry[], budget: number | undefined): string {
-  const next = ready[0];
-  return (
-    `Ready: ${ready.map((e) => `#${e.number} ${e.title} (${tierOf(e.labels)})`).join(", ")}.\n` +
-    `Next: #${next.number}, on the ${describeTier(tierOf(next.labels), budget)}.\n`
-  );
+/** What `--dry-run` prints: the Frontier, and the Tickets the Run would start, `count` at most. */
+function plan(ready: Entry[], budget: number | undefined, count: number): string {
+  const next = ready.slice(0, count).map((e) => `#${e.number}, on the ${describeTier(tierOf(e.labels), budget)}`);
+  return `Ready: ${ready.map((e) => `#${e.number} ${e.title} (${tierOf(e.labels)})`).join(", ")}.\nNext: ${next.join("; ")}.\n`;
+}
+
+/** `#7`, `#7 and #9`, `#7, #9 and #11`. */
+function ticketList(numbers: number[]): string {
+  const named = numbers.map((n) => `#${n}`);
+  return named.length < 2 ? named.join("") : `${named.slice(0, -1).join(", ")} and ${named[named.length - 1]}`;
 }
 
 /**
@@ -991,17 +1002,19 @@ function ask(what: Ask): void {
   const after = readJsonLines(file);
   const end = after.findIndex(isEndLine);
   if (end !== -1 && end < after.findLastIndex((e) => e.asked === what)) throw new Failure("no Run is going", 1);
-  // The Ticket the Run is on: the last one claimed, unless it has landed or been Parked since.
-  let n: number | null = null;
+  // The Tickets the Run is on: those claimed that have not landed or been Parked since.
+  const inFlight = new Set<number>();
   for (const e of events) {
-    if (typeof e.claimed === "string" && typeof e.ticket === "number") n = e.ticket;
-    if ((typeof e.landed === "string" || typeof e.parked === "string") && e.ticket === n) n = null;
+    if (typeof e.ticket !== "number") continue;
+    if (typeof e.claimed === "string") inFlight.add(e.ticket);
+    if (typeof e.landed === "string" || typeof e.parked === "string") inFlight.delete(e.ticket);
   }
   const abort = asked([...events, { asked: what }]) === "abort";
-  if (n === null) {
+  const tickets = ticketList([...inFlight]);
+  if (inFlight.size === 0) {
     process.stdout.write(abort ? "The Run aborts before it claims another Ticket; it has no work to discard.\n" : "The Run stops before it claims another Ticket.\n");
   } else {
-    process.stdout.write(abort ? `The Run aborts #${n} and discards its work.\n` : `The Run stops after #${n}.\n`);
+    process.stdout.write(abort ? `The Run aborts ${tickets} and discards ${inFlight.size === 1 ? "its" : "their"} work.\n` : `The Run stops after ${tickets}.\n`);
   }
 }
 
@@ -1020,7 +1033,7 @@ export async function run(args: string[]): Promise<void> {
     return;
   }
   if (options.dryRun) {
-    process.stdout.write(plan(ready, options.budget));
+    process.stdout.write(plan(ready, options.budget, Math.min(options.parallel, options.max ?? Infinity)));
     return;
   }
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -1030,60 +1043,99 @@ export async function run(args: string[]): Promise<void> {
     events: join(prepared.logDir, `run-${stamp}.jsonl`),
     handoff: mkdtempSync(join(tmpdir(), "verkstad-run-")),
     forReflect: new Map(),
-    inFlight: null,
+    inFlight: new Map(),
   };
   log(r, { run: "started", pid: process.pid, main: r.main, base: r.base, ready: ready.map((e) => e.number) });
 
   const finished: Array<{ n: number; line: string }> = [];
   const tried = new Set<number>();
-  let stopped: Failure | null = null;
+  const failures: Failure[] = [];
+  /** The Tickets an abort ended before they landed or were Parked, whose work it discards. */
+  const abortedTickets: number[] = [];
   let aborted = false;
-  let next: Entry | undefined = ready[0];
-  try {
-    // The Tickets filed to declare a new Surface, which go before the rest of the Frontier.
-    const filed: Entry[] = [];
-    while (next && (options.max === null || finished.length < options.max)) {
-      abortIfAsked(r);
-      if (askedOf(r) === "stop") break;
+  /** Set once the Run claims no more Tickets: on a stop, an abort or a failure, or when it cannot go on. */
+  let stopping = false;
+  // The Tickets filed to declare a new Surface, which go before the rest of the Frontier.
+  const filed: Entry[] = [];
+  let frontier = ready;
+  const working = new Map<number, Promise<{ entry: Entry; outcome?: Outcome; error?: unknown }>>();
+  let unexpected: { error: unknown } | null = null;
+  for (;;) {
+    const ask = askedOf(r);
+    if (ask === "abort") aborted = true;
+    if (ask !== null) stopping = true;
+    const starting: Entry[] = [];
+    while (!stopping && working.size + starting.length < options.parallel && (options.max === null || tried.size < options.max)) {
+      const next = filed.shift() ?? frontier.find((e) => !tried.has(e.number));
+      if (!next) break;
       tried.add(next.number);
-      const outcome = await runTicket(r, next);
-      finished.push({ n: next.number, line: outcome.line });
-      const named = (s: NewSurface): string => `${s.name}${s.observes ? ` (${s.observes})` : ""}`;
-      if (outcome.newSurfaces.length && r.verify === null) {
-        say(
-          r,
-          next.number,
-          `added a Surface the Contract lacks: ${outcome.newSurfaces.map(named).join(", ")}. Stopping: the Project has no Verify skill yet; ` +
-            "run /verkstad:setup to declare it, then /verkstad:create-verify.",
-        );
-        break;
-      }
-      for (const surface of outcome.newSurfaces) {
-        const entry = fileSurfaceTicket(r, next.number, surface, outcome.awaitsMerge);
-        const when = outcome.awaitsMerge ? `blocked by #${next.number} until its pull request is merged` : "next";
-        say(r, next.number, `added a Surface the Contract lacks: ${named(surface)}; filed #${entry.number} to declare it, ${when}.`);
-        if (!outcome.awaitsMerge) filed.push(entry);
-      }
-      next = filed.shift() ?? readFrontier().ready.find((e) => !tried.has(e.number));
+      starting.push(next);
     }
-    // An abort asked during the last Ticket's Landing finds nothing left to abort.
-    abortIfAsked(r);
-  } catch (error) {
-    if (error instanceof Aborted) aborted = true;
-    else if (error instanceof Failure) {
-      stopped = error;
-      if (next) forReflect(r, next.number, "stopped the Run");
-    } else throw error;
+    // Every Ticket is in flight before any implementer is told which others are.
+    for (const entry of starting) r.inFlight.set(entry.number, entry.title);
+    for (const entry of starting) {
+      const ended = runTicket(r, entry).then(
+        (outcome) => ({ entry, outcome }),
+        (error: unknown) => ({ entry, error }),
+      );
+      working.set(entry.number, ended);
+    }
+    if (working.size === 0) break;
+    const { entry, outcome, error } = await Promise.race(working.values());
+    const n = entry.number;
+    working.delete(n);
+    r.inFlight.delete(n);
+    if (outcome === undefined) {
+      // The others in flight finish, as on a stop, or end on the abort too.
+      stopping = true;
+      if (error instanceof Aborted) {
+        aborted = true;
+        abortedTickets.push(n);
+      } else if (error instanceof Failure) {
+        failures.push(error);
+        forReflect(r, n, "stopped the Run");
+      } else unexpected ??= { error };
+      continue;
+    }
+    finished.push({ n, line: outcome.line });
+    const named = (s: NewSurface): string => `${s.name}${s.observes ? ` (${s.observes})` : ""}`;
+    if (outcome.newSurfaces.length && r.verify === null) {
+      say(
+        r,
+        n,
+        `added a Surface the Contract lacks: ${outcome.newSurfaces.map(named).join(", ")}. Stopping: the Project has no Verify skill yet; ` +
+          "run /verkstad:setup to declare it, then /verkstad:create-verify.",
+      );
+      stopping = true;
+      continue;
+    }
+    try {
+      for (const surface of outcome.newSurfaces) {
+        const filedEntry = fileSurfaceTicket(r, n, surface, outcome.awaitsMerge);
+        const when = outcome.awaitsMerge ? `blocked by #${n} until its pull request is merged` : "next";
+        say(r, n, `added a Surface the Contract lacks: ${named(surface)}; filed #${filedEntry.number} to declare it, ${when}.`);
+        if (!outcome.awaitsMerge) filed.push(filedEntry);
+      }
+      if (!stopping && (options.max === null || tried.size < options.max)) frontier = readFrontier().ready;
+    } catch (error) {
+      if (!(error instanceof Failure)) throw error;
+      failures.push(error);
+      forReflect(r, n, "stopped the Run");
+      stopping = true;
+    }
   }
-  let discarded = "";
+  let stopped: Failure | null = failures.length ? new Failure(failures.map((f) => f.message).join("\n")) : null;
+  const discards: string[] = [];
   try {
-    if (aborted && r.inFlight !== null) discarded = `#${r.inFlight}'s work was discarded: ${discard(r, r.inFlight)}.`;
+    for (const n of abortedTickets) discards.push(`#${n}'s work was discarded: ${discard(r, n)}.`);
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
-    stopped = new Failure(`aborting #${r.inFlight} failed: ${error.message}`);
+    stopped = new Failure(`aborting #${abortedTickets[discards.length]} failed: ${error.message}`);
   } finally {
     rmSync(r.handoff, { recursive: true, force: true });
   }
+  if (unexpected) throw unexpected.error;
+  const discarded = discards.join(" ");
   const ending = stopped ? "stopped" : aborted ? "aborted" : "finished";
   const stopAsked = ending === "finished" && askedOf(r) === "stop";
   const request = aborted

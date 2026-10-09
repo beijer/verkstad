@@ -71,11 +71,11 @@ const subcommands: Record<string, Subcommand> = {
     run: review,
   },
   run: {
-    usage: "verkstad run [--max <n>] [--budget <usd>] [--dry-run] | --stop | --abort",
+    usage: "verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | --stop | --abort",
     summary:
-      "Works the Frontier one Ticket at a time: a headless session implements each in its own worktree, " +
-      "the Verifier Walks it when it touches a Surface, and it lands or is Parked; --stop ends the Run going after its Ticket, " +
-      "--abort ends it now and discards its Ticket's work",
+      "Works the Frontier, one Ticket at a time or --parallel <n> side by side: a headless session implements each in its own worktree, " +
+      "the Verifier Walks it when it touches a Surface, and it lands or is Parked; --stop ends the Run going after its Tickets in flight, " +
+      "--abort ends it now and discards their work",
     run,
   },
   "run-log": {
