@@ -183,7 +183,7 @@ function takeLock(ticket: Ticket): number {
   return fd;
 }
 
-function fetch(ticket: Ticket, base: string): void {
+function fetchBase(ticket: Ticket, base: string): void {
   const r = tryFetch(ticket.root, [base]);
   if (r.status !== 0) throw new Failure(`could not fetch origin/${base}: ${r.stderr.trim()}`);
 }
@@ -220,7 +220,7 @@ function describeGate({ reused, firstFailure }: Checked): string {
  */
 function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const upstream = `origin/${base}`;
-  fetch(ticket, base);
+  fetchBase(ticket, base);
   // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the Ticket's own
   // tree passed, so the failure may be a flaky test, and the Gate runs once more before it ends gate-failed.
   const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassLog(ticket.root) ?? "its log is unknown");
@@ -278,7 +278,7 @@ function rebaseCheckGatePush(ticket: Ticket, base: string): Landed {
     const checked = rebaseCheckGate(ticket, base);
     const push = tryGit(ticket.root, ["push", "--quiet", "origin", `HEAD:refs/heads/${base}`]);
     if (push.status === 0) return { sha: git(ticket.root, ["rev-parse", "--short", "HEAD"]).trim(), checked };
-    fetch(ticket, base);
+    fetchBase(ticket, base);
     const moved = tryGit(ticket.root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).status !== 0;
     if (!moved) throw keptInWorktree(ticket, "push-failed", `pushing to ${upstream} failed: ${push.stderr.trim()}`);
     if (attempt === ATTEMPTS) {
