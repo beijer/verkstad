@@ -4,8 +4,8 @@
 // GitHub, the transcripts of the sessions working its Tickets) and draws one pane, opened by `/verkstad:sidebar`:
 // the Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past
 // Runs. The controls only run verkstad's own commands: Start launches `verkstad run` detached, so it outlives this
-// session, with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, or `--max 1` for One
-// Ticket; Stop asks the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
+// session, with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, `--max 1` for One
+// Ticket, or `--ticket <n>` for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
 // confirmed, ends it and discards their work (`verkstad run --abort`). Every routing decision stays in
 // `verkstad run`. The commands are this plugin copy's own `bin/verkstad`, so the sidebar drives the version the
 // Project installed.
@@ -281,7 +281,10 @@ async function poll($: EngineInterface): Promise<void> {
   }
 }
 
-/** Starts `verkstad run` with `extra`: none for its default, `--parallel <n>` for a count, `--max 1` for One Ticket. */
+/**
+ * Starts `verkstad run` with `extra`: none for its default, `--parallel <n>` for a count, `--max 1` for One Ticket,
+ * `--ticket <n>` for one chosen Ticket.
+ */
 async function start($: EngineInterface, p: Project, extra: string[]): Promise<void> {
   await update($, isConfirmingAbort, () => false)
   await say($, 'Reading the Frontier…')
@@ -647,7 +650,12 @@ export const register: Register = on => {
     if (!f) next.push(<Text key="reading" color={DIM}>Reading the Frontier…</Text>)
     else {
       if (f.error) next.push(<Box key="ferr" width={width}><Text color={BAD} wrap="wrap">verkstad frontier: {f.error}</Text></Box>)
-      ready.slice(0, 5).forEach((t, i) => next.push(row(`r${t.n}`, i === 0 && !going ? '▸' : ' ', ACCENT, t.n, t.title, t.tier)))
+      // Each starts on its own, out of the Frontier's order, while no Run is going or starting.
+      const startOne = (n: number) =>
+        going || starting ? undefined : <Button key={`start:${n}`} label="Start ›" plain onPress={() => void start($, p, ['--ticket', String(n)])} />
+      ready
+        .slice(0, 5)
+        .forEach((t, i) => next.push(row(`r${t.n}`, i === 0 && !going ? '▸' : ' ', ACCENT, t.n, t.title, t.tier, 0, startOne(t.n))))
       if (ready.length > 5) next.push(<Text key="more" color={DIM}>  +{ready.length - 5} more ready</Text>)
       if (ready.length === 0 && !f.error) next.push(<Text key="none" color={DIM}>Nothing is ready.</Text>)
     }

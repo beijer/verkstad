@@ -52,7 +52,7 @@ const SESSIONS: Record<string, [number, string]> = {
 function world(
   on: On,
   logs: Record<string, string>,
-  options: { alive?: boolean; runProcess?: boolean; desktop?: boolean; brokenCli?: boolean; contract?: string } = {},
+  options: { alive?: boolean; runProcess?: boolean; desktop?: boolean; brokenCli?: boolean; contract?: string; claimed?: number } = {},
 ) {
   const ran: string[][] = []
   const launched: string[][] = []
@@ -99,6 +99,9 @@ function world(
       if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --dry-run --parallel 2')
         return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget); #50, on the light Tier (sonnet, low effort, $10 budget).\n')
+      if (args.join(' ') === `run --dry-run --ticket ${options.claimed}`) return ok('', 1, `verkstad run: #${options.claimed} is already claimed by @owner\n`)
+      if (args.join(' ') === 'run --dry-run --ticket 50')
+        return ok('Ticket: #50 Next thing (light).\nNext: #50, on the light Tier (sonnet, low effort, $10 budget).\n')
       if (args.join(' ') === 'run --stop' && options.brokenCli) return { deny: 'could not start: permission denied' }
       if (args.join(' ') === 'run --stop') return ok('The Run stops after #49.\n')
       if (args.join(' ') === 'run --abort') return ok('The Run aborts #49 and discards its work.\n')
@@ -480,3 +483,53 @@ test('a Project whose Contract caps a Run above two is offered each count up to 
   expect((await ui.find({ key: 'parallel:3' }))?.props.label).toBe('3 at a time')
   expect(await ui.find({ key: 'parallel:4' })).toBeUndefined()
 })
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`Start › on a Ticket up next runs verkstad run --ticket with it, out of the Frontier's order, on ${surface}`, async ($, on) => {
+    const w = world(on, {})
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+
+    expect((await ui.find({ key: 'start:49' }))?.props.label).toBe('Start ›')
+    expect((await ui.find({ key: 'start:50' }))?.props.label).toBe('Start ›')
+    expect(await ui.find({ key: 'start:51' })).toBeUndefined()
+
+    await ui.press({ key: 'start:50' })
+    expect(w.ran).toContainEqual(['run', '--dry-run', '--ticket', '50'])
+    expect(w.launched).toEqual([['run', '--ticket', '50']])
+    expect(await text(ui, /^Starting:/)).toBe('Starting: #50, on the light Tier (sonnet, low effort, $10 budget)')
+    expect(await text(ui, /Starting…/)).toBe('◌ Starting…')
+    expect(await ui.find({ key: 'start:49' })).toBeUndefined()
+    await ui.unmount()
+  })
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`Start › on a Ticket the CLI refuses shows its message and starts nothing, on ${surface}`, async ($, on) => {
+    const w = world(on, {}, { claimed: 49 })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+
+    await ui.press({ key: 'start:49' })
+    expect(w.ran).toContainEqual(['run', '--dry-run', '--ticket', '49'])
+    expect(w.launched).toEqual([])
+    expect(await text(ui, /claimed/)).toBe('verkstad run: #49 is already claimed by @owner')
+    await ui.unmount()
+  })
+}
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`while a Run is going, the Tickets up next have no Start › button, on ${surface}`, async ($, on) => {
+    const w = world(on, { 'run-2026-10-08T17-50-00-000Z.jsonl': LIVE })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+
+    expect(await text(ui, /Running/)).toBe('● Running')
+    expect(await text(ui, /^Next thing$/)).toBe('Next thing')
+    expect(await ui.find({ key: 'start:50' })).toBeUndefined()
+    await ui.unmount()
+  })
+}
