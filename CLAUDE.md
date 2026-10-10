@@ -36,7 +36,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 
 One seam: a test runs `bin/verkstad` as a process and observes exit code, stdout, stderr, the bare origin's git state, the stub's state and the `gh` and `claude` calls it recorded. Tests never import from `src/`.
 
-The sidebar is the one exception: its tests, `hooks/sidebar/*.test.ts`, use Claude Code's own kit (`claude-code/testing`), which loads the plugin's hooks module, answers its `$` calls (`process.run`, `fs.*`) from the test, and draws its pane on the terminal and desktop surfaces. The Gate's `sidebar` step runs them with `scripts/test-sidebar.sh`, skipped where `claude` is not installed, as in CI.
+The sidebar is the one exception: its tests, `hooks/sidebar/*.test.ts`, use Claude Code's own kit (`claude-code/testing`), which loads the plugin's hooks module, answers its `$` calls (`process.run`, `fs.*`) from the test, and draws its pane on the terminal and desktop surfaces. The Gate's `sidebar` step runs them with `scripts/test-sidebar.sh`, skipped where `claude` is not installed.
 
 - `project(t, seed)` (test/project.ts) builds a throwaway Project in a temp dir: a git repo with a Contract whose `origin` is a local bare repo, the stub `gh` and the stub `claude` first on the PATH, and a clean environment, so nothing reaches GitHub, Claude or the owner's git config.
 - The stub `claude` (test/stub/claude.ts) plays the headless sessions a test scripts, in order: commands run in the session's working directory, as an agent would, and written to the session's transcript with the failed tool calls a test scripts, then the report it prints, checked against the call's `--json-schema`. It accepts only the flags verkstad passes.
