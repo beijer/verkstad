@@ -21,6 +21,12 @@
 // file a Ticket to declare the Surface and teach the Verify skill to drive it,
 // which it works next; in a Project with no Verify skill yet it stops instead.
 //
+// Before it claims a Ticket, it checks that no commit on the base branch lands
+// it already (`Refs #<n>`); one that does it closes with a note instead. A gh
+// call GitHub refuses for its rate limit waits until the limit resets and is
+// tried once more (src/gh.ts), and a Landing whose push landed but whose close
+// GitHub refused is closed with the comment Landing kept.
+//
 // Every routing rule and every budget is here, in code (docs/contract.md lists
 // them): a Ticket gets one Resume, one Fix round and one finished conflict, a
 // session that ends without a report is resumed once to give one, and a
@@ -51,15 +57,16 @@
 // origin and its review record; the Ticket goes back on the Frontier, unassigned.
 
 import { spawnSync } from "node:child_process";
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
 import { CONTRACT_PATH, readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { type Entry, type Listing, readFrontier } from "./frontier.ts";
-import { currentRepo, gh, ghJson, ghJsonUnlessMissing } from "./gh.ts";
+import { currentRepo, gh, ghJson, ghJsonUnlessMissing, waitOutRateLimits } from "./gh.ts";
 import { ensureLogDirectory, fetch, git, inLinkedWorktree, logDirectory, tryGit, worktreeRoot } from "./git.ts";
+import { closingCommentPath } from "./land.ts";
 import {
   CONFLICT_SCHEMA,
   conflictPrompt,
@@ -852,6 +859,8 @@ function land(run: Run, t: Ticket): Step {
           "Narrowing the Contract's Surfaces or its verify is the owner's, through verkstad:maintain-verify; an implementer may only add to them.",
       };
     case "github-failed": {
+      const closed = closeLanded(run, t, message);
+      if (closed) return closed;
       const line = `landed, but updating #${t.n} failed: ${firstLine(message)}`;
       log(run, { ticket: t.n, landed: line });
       return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [], awaitsMerge: false } };
@@ -859,6 +868,29 @@ function land(run: Run, t: Ticket): Step {
     default:
       throw new Failure(`#${t.n} did not land (${reason}): ${message}`);
   }
+}
+
+/**
+ * Closes Ticket t, which landed but whose Landing could not close it, with the comment the Landing kept, once
+ * GitHub lets it; null when there is no such comment (the Landing was a pull request's or a Park's) or closing
+ * fails again.
+ */
+function closeLanded(run: Run, t: Ticket, message: string): Step | null {
+  const kept = closingCommentPath(run.logDir, t.n);
+  const sha = /^#\d+ landed on \S+ in ([0-9a-f]+), but closing it failed/m.exec(message)?.[1];
+  if (!sha || !existsSync(kept)) return null;
+  try {
+    gh(["issue", "close", String(t.n), "--comment", readFileSync(kept, "utf8")]);
+  } catch (error) {
+    if (!(error instanceof Failure)) throw error;
+    say(run, t.n, `closing it failed again: ${firstLine(error.message)}`);
+    return null;
+  }
+  rmSync(kept);
+  const line = `landed on ${run.base} in ${sha}; the Run closed it after GitHub refused Landing's close`;
+  say(run, t.n, `${line}.`);
+  log(run, { ticket: t.n, landed: line, commit: sha });
+  return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [], awaitsMerge: false } };
 }
 
 /** A Landing that conflicted goes to the conflict prompt, on the light Tier, in a fresh worktree. */
@@ -943,6 +975,25 @@ function fileSurfaceTicket(run: Run, n: number, surface: NewSurface, awaitsMerge
   }
   log(run, { ticket: n, filed: number, surface: surface.name, globs: surface.globs });
   return { number, title, labels: ["ready-for-agent"], assignees: [], open_blockers: [] };
+}
+
+/** The newest commit on origin's base branch that lands Ticket #n, by the `Refs #<n>` its message ends with; or null. */
+function landedCommit(run: Run, n: number): { sha: string; subject: string } | null {
+  const found = git(run.main, ["log", "-1", "--extended-regexp", `--grep=Refs #${n}$`, "--format=%h %s", run.upstream]).trim();
+  if (!found) return null;
+  const space = found.indexOf(" ");
+  return { sha: found.slice(0, space), subject: found.slice(space + 1) };
+}
+
+/** Closes ready Ticket `entry`, already landed in `commit`, with a note instead of claiming it, and says how it ended. */
+function closeAlreadyLanded(run: Run, entry: Entry, commit: { sha: string; subject: string }): string {
+  const n = entry.number;
+  const where = `already landed on ${run.base} in ${commit.sha}`;
+  const note = `Already landed on ${run.base} in ${commit.sha} (${commit.subject}), so verkstad run closed it instead of claiming it.`;
+  gh(["issue", "close", String(n), "--comment", note]);
+  say(run, n, `${entry.title}: ${where} (${commit.subject}); closed, not claimed.`);
+  log(run, { ticket: n, closed: where, commit: commit.sha });
+  return `${where}; closed, not claimed`;
 }
 
 /**
@@ -1069,6 +1120,13 @@ export async function run(args: string[]): Promise<void> {
     return ask(args[0] === "--stop" ? "stop" : "abort");
   }
   const options = parseArgs(args);
+  // The event log, once the Run has one, hears of each wait too.
+  let events: string | null = null;
+  waitOutRateLimits((until, call) => {
+    const when = until.toISOString().replace(/\.\d{3}Z$/, "Z");
+    process.stdout.write(`GitHub's rate limit refused ${call}; waiting until ${when}, then trying it once more.\n`);
+    if (events) appendFileSync(events, JSON.stringify({ at: new Date().toISOString(), waiting: when, refused: call }) + "\n");
+  });
   if (options.ticket !== null && goingRun()) throw new Failure(`a Run is going; start #${options.ticket} when it has ended`);
   const prepared = prepare(options);
   const { owner, name } = currentRepo();
@@ -1094,10 +1152,13 @@ export async function run(args: string[]): Promise<void> {
     forReflect: new Map(),
     inFlight: new Map(),
   };
+  events = r.events;
   log(r, { run: "started", pid: process.pid, main: r.main, base: r.base, ready: ready.map((e) => e.number) });
 
   const finished: Array<{ n: number; line: string }> = [];
   const tried = new Set<number>();
+  /** The Tickets of `tried` closed because they had already landed, which --max does not count. */
+  let closedLanded = 0;
   const failures: Failure[] = [];
   /** The Tickets an abort ended before they landed or were Parked, whose work it discards. */
   const abortedTickets: number[] = [];
@@ -1114,11 +1175,25 @@ export async function run(args: string[]): Promise<void> {
     if (ask === "abort") aborted = true;
     if (ask !== null) stopping = true;
     const starting: Entry[] = [];
-    while (!stopping && working.size + starting.length < r.parallel && (max === null || tried.size < max)) {
+    while (!stopping && working.size + starting.length < r.parallel && (max === null || tried.size - closedLanded < max)) {
       const next = filed.shift() ?? frontier.find((e) => !tried.has(e.number));
       if (!next) break;
       tried.add(next.number);
-      starting.push(next);
+      const commit = landedCommit(r, next.number);
+      if (commit === null) {
+        starting.push(next);
+        continue;
+      }
+      closedLanded++;
+      try {
+        finished.push({ n: next.number, line: closeAlreadyLanded(r, next, commit) });
+      } catch (error) {
+        if (!(error instanceof Failure)) throw error;
+        stopping = true;
+        failures.push(error);
+        forReflect(r, next.number, "stopped the Run");
+        log(r, { ticket: next.number, failed: error.message });
+      }
     }
     // Every Ticket is in flight before any implementer is told which others are.
     for (const entry of starting) r.inFlight.set(entry.number, entry.title);
@@ -1166,7 +1241,7 @@ export async function run(args: string[]): Promise<void> {
         say(r, n, `added a Surface the Contract lacks: ${named(surface)}; filed #${filedEntry.number} to declare it, ${when}.`);
         if (!outcome.awaitsMerge) filed.push(filedEntry);
       }
-      if (!stopping && (max === null || tried.size < max)) frontier = readFrontier().ready;
+      if (!stopping && (max === null || tried.size - closedLanded < max)) frontier = readFrontier().ready;
     } catch (error) {
       stopping = true;
       if (!(error instanceof Failure)) unexpected ??= { error };

@@ -236,6 +236,20 @@ function issues(v: Variables, state: StubState, query: string) {
 // --- gh api <endpoint>: REST routes -----------------------------------------
 
 const rest: RestRoute[] = [
+  // What is left of each of the viewer's rate limits, and when each resets.
+  {
+    method: "GET",
+    path: /^rate_limit$/,
+    handle: (_match, _fields, state) => {
+      const limited = state.rateLimit && Date.now() < state.rateLimit.reset * 1000 ? state.rateLimit : null;
+      const fresh = Math.floor(Date.now() / 1000) + 3600;
+      const resource = (name: string) =>
+        limited?.resource === name
+          ? { limit: 5000, used: 5000, remaining: 0, reset: limited.reset }
+          : { limit: 5000, used: 0, remaining: 5000, reset: fresh };
+      return { resources: { core: resource("core"), graphql: resource("graphql") }, rate: resource("core") };
+    },
+  },
   // An issue, or a pull request's issue (which carries `pull_request`).
   {
     method: "GET",
@@ -527,6 +541,17 @@ function main(): number {
   if (failure) {
     process.stderr.write(failure.stderr + "\n");
     return failure.code ?? 1;
+  }
+  const limit = state.rateLimit;
+  if (limit && limit.refusals > 0 && args.join(" ") !== "api rate_limit" && args.join(" ").startsWith(limit.command ?? "")) {
+    limit.refusals--;
+    writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");
+    process.stderr.write(
+      limit.resource === "graphql"
+        ? "GraphQL: API rate limit already exceeded for user ID 1. (RATE_LIMIT)\n"
+        : "gh: API rate limit exceeded for user ID 1. (HTTP 403)\n",
+    );
+    return 1;
   }
   const reply = dispatch(args, state);
   writeFileSync(statePath, JSON.stringify(state, null, 2) + "\n");

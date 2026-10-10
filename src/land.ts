@@ -18,6 +18,9 @@
 // branch goes to origin, its worktree (if a failed Landing left one) is
 // removed, it is labelled needs-info, unassigned and told why.
 //
+// A push that landed, whose close failed, keeps the closing comment in the log
+// directory (close-<n>.md) for a Run, or the owner, to close the Ticket with.
+//
 // Every failure ends in a line `reason: <code>` a Run routes on
 // (docs/contract.md says what each leaves behind). A Landing that failed before
 // its push touches no issue and keeps the branch. After a refusal or an error
@@ -30,7 +33,7 @@
 // and the rebase: nothing changes, the worktree included.
 
 import { spawnSync } from "node:child_process";
-import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync } from "node:fs";
+import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { type Checking, committedChecking, type LandingMode, narrowings, readChecking, readContract, readLandingMode } from "./contract.ts";
 import { Failure } from "./fail.ts";
@@ -63,6 +66,11 @@ class LandingFailure extends Failure {
   constructor(reason: Reason, message: string) {
     super(`${message}\nreason: ${reason}`, reason === "refused" ? 2 : 1);
   }
+}
+
+/** Where a Landing that pushed but could not close Ticket #n keeps the comment it would have closed it with. */
+export function closingCommentPath(logDir: string, n: number): string {
+  return join(logDir, `close-${n}.md`);
 }
 
 function refused(why: string): LandingFailure {
@@ -377,8 +385,8 @@ function removeWorktreeAndBranch(ticket: Ticket): string {
 function pushToBase(ticket: Ticket, base: string, report: string): void {
   const { sha, checked } = rebaseCheckGatePush(ticket, base);
   let closing: Failure | null = null;
+  const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeGate(checked)}${describeVerification(checked.check)}`;
   try {
-    const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeGate(checked)}${describeVerification(checked.check)}`;
     gh(["issue", "close", String(ticket.n), "--comment", comment]);
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
@@ -388,11 +396,14 @@ function pushToBase(ticket: Ticket, base: string, report: string): void {
   const dir = logDirectory(ticket.main);
   const pruned = describePruned(dir, pruneLogDirectory(dir));
   if (closing) {
+    // Kept for whoever closes it: a Run, once GitHub lets it, or the owner.
+    const kept = closingCommentPath(dir, ticket.n);
+    writeFileSync(kept, comment);
     process.stdout.write(notes + pruned);
     throw new LandingFailure(
       "github-failed",
       `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\n` +
-        "Close it by hand, with the report and the Verdict as the comment.",
+        `Close it by hand, with ${kept} as the comment.`,
     );
   }
   process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);

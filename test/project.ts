@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import type { TestContext } from "node:test";
 import { fileURLToPath } from "node:url";
-import type { StubClaudeCall, StubFailure, StubIssue, StubLabel, StubPullRequest, StubSession, StubState } from "./stub/state.ts";
+import type { StubClaudeCall, StubFailure, StubIssue, StubLabel, StubPullRequest, StubRateLimit, StubSession, StubState } from "./stub/state.ts";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const verkstad = join(root, "bin", "verkstad");
@@ -29,6 +29,7 @@ export interface Seed {
   labels?: StubLabel[];
   pageSize?: number;
   failures?: StubFailure[];
+  rateLimit?: StubRateLimit;
   /** The Project's `.claude/harness.json`, or null for a Project without one. */
   contract?: object | null;
   /** More files to commit in the Project, path → content. */
@@ -110,6 +111,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
     labels: seed.labels ?? [],
     ...(seed.pageSize ? { pageSize: seed.pageSize } : {}),
     ...(seed.failures ? { failures: seed.failures } : {}),
+    ...(seed.rateLimit ? { rateLimit: seed.rateLimit } : {}),
   };
   writeFileSync(join(stubDir, "state.json"), JSON.stringify(state, null, 2) + "\n");
   writeFileSync(join(stubDir, "calls.jsonl"), "");

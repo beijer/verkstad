@@ -1,5 +1,11 @@
 // verkstad's only way to GitHub: the `gh` CLI. It always asks gh for JSON and
 // parses it here, never through gh's --jq.
+//
+// A call GitHub refuses for its rate limit, primary or secondary, fails like any
+// other, unless the process has asked to wait rate limits out
+// (waitOutRateLimits), as a Run does: then it waits until the limit resets, as
+// `gh api rate_limit` reports it, or a minute for a secondary limit, and tries
+// the call once more. A second refusal fails.
 
 import { spawnSync } from "node:child_process";
 import { Failure } from "./fail.ts";
@@ -27,7 +33,53 @@ export function ghJsonUnlessMissing<T>(args: string[]): T | null {
   throw new Failure(`${describe(args)} failed: ${r.stderr}`);
 }
 
+/** What gh says of a call GitHub refused for its rate limit, primary or secondary. */
+const RATE_LIMITED = /API rate limit (already )?exceeded|secondary rate limit/i;
+
+/** How long to wait out a limit `gh api rate_limit` shows nothing used up for: a secondary one. */
+const SECONDARY_WAIT_MS = 60_000;
+
+/** Told, before each wait, until when it waits and which call GitHub refused; null when calls fail at once. */
+let waiting: ((until: Date, call: string) => void) | null = null;
+
+/**
+ * From now on, a call GitHub refuses for its rate limit waits until the limit resets, then is tried once more;
+ * `told` hears of each wait before it starts. The wait blocks the process: everything it does waits on GitHub.
+ */
+export function waitOutRateLimits(told: (until: Date, call: string) => void): void {
+  waiting = told;
+}
+
 function run(args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const r = once(args);
+  if (r.ok || waiting === null || !RATE_LIMITED.test(r.stderr)) return r;
+  const until = resetTime();
+  waiting(until, describe(args));
+  // A second past the reset, which GitHub gives in whole seconds.
+  sleep(until.getTime() + 1000 - Date.now());
+  return once(args);
+}
+
+/** When the rate limits used up reset, the latest of them, as GitHub reports it; in a minute when it shows none. */
+function resetTime(): Date {
+  const r = once(["api", "rate_limit"]);
+  let resets: number[] = [];
+  try {
+    const { resources } = JSON.parse(r.stdout) as { resources: Record<string, { remaining: number; reset: number }> };
+    resets = Object.values(resources)
+      .filter((limit) => limit.remaining === 0)
+      .map((limit) => limit.reset * 1000);
+  } catch {
+    // gh could not say: wait as for a secondary limit.
+  }
+  return new Date(resets.length ? Math.max(...resets) : Date.now() + SECONDARY_WAIT_MS);
+}
+
+function sleep(ms: number): void {
+  if (ms > 0) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+function once(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const r = spawnSync("gh", args, { encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
   if (r.error) throw new Failure(`could not run gh: ${r.error.message}`);
   return { ok: r.status === 0, stdout: r.stdout, stderr: r.stderr.trim() || `exit ${r.status}` };

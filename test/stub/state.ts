@@ -54,6 +54,20 @@ export interface StubState {
   pageSize?: number;
   /** Calls that fail as GitHub would: the first whose `command` prefixes the argv (e.g. "api graphql") wins. */
   failures?: StubFailure[];
+  /** GitHub's rate limit, refusing calls until it lets them through. */
+  rateLimit?: StubRateLimit;
+}
+
+/**
+ * A rate limit the stub enforces: it refuses the first `refusals` calls `command` prefixes (every call, without
+ * one), except `api rate_limit`, which reports `resource` used up until `reset`.
+ */
+export interface StubRateLimit {
+  command?: string;
+  resource: "core" | "graphql";
+  /** When GitHub says the limit resets, in seconds since the epoch. */
+  reset: number;
+  refusals: number;
 }
 
 export interface StubFailure {

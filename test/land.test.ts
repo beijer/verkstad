@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
 import { project, type Project } from "./project.ts";
@@ -498,7 +498,7 @@ test("Landing refuses a Landing mode it does not know, touching nothing", (t) =>
   assert.deepEqual(p.calls(), []);
 });
 
-test("when closing the Ticket fails after the push, the Landing still cleans up and exits with github-failed", (t) => {
+test("when closing the Ticket fails after the push, the Landing still cleans up, keeps the comment it would have closed it with and exits with github-failed", (t) => {
   const p = project(t, {
     issues: [claimed(7)],
     contract: contract([{ name: "build", command: "true" }]),
@@ -510,8 +510,13 @@ test("when closing the Ticket fails after the push, the Landing still cleans up 
 
   assert.equal(r.code, 1);
   const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
-  assert.match(r.stderr, new RegExp(`^verkstad land: #7 landed on main in ${sha}, but closing it failed: gh issue close failed: HTTP 502: Bad Gateway`));
-  assert.equal(reason(r.stderr), "reason: github-failed");
+  const kept = join(realpathSync(p.dir), ".claude", "verkstad", "close-7.md");
+  assert.equal(
+    r.stderr,
+    `verkstad land: #7 landed on main in ${sha}, but closing it failed: gh issue close failed: HTTP 502: Bad Gateway\n` +
+      `Close it by hand, with ${kept} as the comment.\nreason: github-failed\n`,
+  );
+  assert.match(readFileSync(kept, "utf8"), new RegExp(`^Landed on main in ${sha}\\.\\n\\n${REPORT.trim()}\\n\\n.*Verification state: test-verified\\.`, "s"));
   assert.equal(originLog(p)[0], "Adds feature.txt. Refs #7");
   assert.equal(existsSync(wt), false);
   assert.deepEqual(localBranches(p), []);

@@ -1269,3 +1269,133 @@ test("run --ticket needs a positive whole number and goes with neither --max nor
   }
   assert.deepEqual(p.state().issues[0].assignees, []);
 });
+
+/** Seconds since the epoch, `ahead` seconds from now: far enough that the Run is refused before then. */
+function inSeconds(ahead: number): number {
+  return Math.floor(Date.now() / 1000) + ahead;
+}
+
+/** A time in seconds since the epoch, as a Run names it. */
+function utc(seconds: number): string {
+  return new Date(seconds * 1000).toISOString().replace(/\.\d{3}Z$/, "Z");
+}
+
+test("run waits until a rate limit that refused its claim resets, as GitHub reports it, then claims the Ticket and lands it", (t) => {
+  const reset = inSeconds(4);
+  const p = project(t, {
+    issues: [ready(7)],
+    sessions: [implemented(7, "a.txt")],
+    contract: contract(),
+    files: { ".gitignore": GITIGNORE },
+    rateLimit: { command: "issue edit", resource: "core", reset, refusals: 1 },
+  });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(Date.now() >= reset * 1000, "the Run tried the call again before the limit reset");
+  const lines = r.stdout.split("\n");
+  assert.equal(lines[0], `GitHub's rate limit refused gh issue edit; waiting until ${utc(reset)}, then trying it once more.`);
+  assert.equal(lines[1], "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).");
+  assert.match(r.stdout, /\n {2}#7 landed on main in [0-9a-f]+\n/);
+  const issue = p.state().issues[0];
+  assert.equal(issue.state, "closed");
+  assert.deepEqual(issue.assignees, ["owner"]);
+  const claims = p.calls().filter((c) => c[0] === "issue" && c[1] === "edit" || c.join(" ") === "api rate_limit");
+  assert.deepEqual(claims, [
+    ["issue", "edit", "7", "--add-assignee", "@me"],
+    ["api", "rate_limit"],
+    ["issue", "edit", "7", "--add-assignee", "@me"],
+  ]);
+  assert.deepEqual(
+    eventLog(p).filter((e) => "waiting" in e).map(({ waiting, refused }) => ({ waiting, refused })),
+    [{ waiting: utc(reset), refused: "gh issue edit" }],
+  );
+});
+
+test("run ends with the refusal as its reason when GitHub refuses the call again after the wait", (t) => {
+  const reset = inSeconds(4);
+  const p = project(t, {
+    issues: [ready(7)],
+    sessions: [implemented(7, "a.txt")],
+    contract: contract(),
+    files: { ".gitignore": GITIGNORE },
+    rateLimit: { command: "issue edit", resource: "core", reset, refusals: 2 },
+  });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr, "verkstad run: gh issue edit failed: gh: API rate limit exceeded for user ID 1. (HTTP 403)\n");
+  assert.equal(
+    r.stdout,
+    `GitHub's rate limit refused gh issue edit; waiting until ${utc(reset)}, then trying it once more.\n` +
+      "Run stopped: 0 sessions, $0.00.\nSomething for /verkstad:reflect to learn from: #7 stopped the Run.\n",
+  );
+  assert.deepEqual(p.claudeCalls(), []);
+  assert.equal(eventLog(p).at(-1)?.run, "stopped");
+});
+
+test("run closes a Ticket whose Landing pushed but was refused its close for a rate limit, with Landing's comment, once the limit lifts", (t) => {
+  const reset = inSeconds(6);
+  const p = project(t, {
+    issues: [ready(7)],
+    sessions: [implemented(7, "a.txt")],
+    contract: contract(),
+    files: { ".gitignore": GITIGNORE },
+    // Landing's close, and the Run's first.
+    rateLimit: { command: "issue close", resource: "graphql", reset, refusals: 2 },
+  });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  const sha = originSha(p);
+  assert.match(
+    r.stdout,
+    new RegExp(
+      "\\n#7 Landing failed: github-failed\\.\\n" +
+        `GitHub's rate limit refused gh issue close; waiting until ${utc(reset)}, then trying it once more\\.\\n` +
+        `#7 landed on main in ${sha}; the Run closed it after GitHub refused Landing's close\\.\\n` +
+        "Run finished: 1 session, \\$0\\.25\\.\\n" +
+        `  #7 landed on main in ${sha}; the Run closed it after GitHub refused Landing's close\\n` +
+        "Something for /verkstad:reflect to learn from: #7 Landing failed \\(github-failed\\)\\.\\n$",
+    ),
+  );
+  assert.ok(Date.now() >= reset * 1000);
+  const issue = p.state().issues[0];
+  assert.equal(issue.state, "closed");
+  assert.equal(issue.comments.length, 1);
+  assert.match(issue.comments[0].body, new RegExp(`^Landed on main in ${sha}\\.\\n\\nstatus: done\\nWhat was built: the feature\\.\\n`));
+  assert.match(issue.comments[0].body, /Verification state: test-verified\./);
+  assert.deepEqual(readdirSync(join(p.dir, ".claude", "verkstad")).filter((e) => e.startsWith("close-")), []);
+  assert.deepEqual(eventLog(p).filter((e) => e.ticket === 7 && "landed" in e).map((e) => [e.landed, e.commit]), [
+    [`landed on main in ${sha}; the Run closed it after GitHub refused Landing's close`, sha],
+  ]);
+});
+
+test("run closes with a note, and does not claim, a ready Ticket whose commits are already on the base branch", (t) => {
+  const p = runProject(t, [ready(7), ready(9)], [implemented(9, "b.txt")]);
+  for (const [path, message] of [["a.txt", "Adds a.txt. Refs #7"], ["c.txt", "Adds c.txt. Refs #97"]]) {
+    writeFileSync(join(p.dir, path), "landed\n");
+    p.git("add", path);
+    p.git("commit", "--quiet", "-m", message);
+  }
+  p.git("push", "--quiet", "origin", "main");
+  const landed = p.git("rev-parse", "--short", "HEAD~1");
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, new RegExp(`^#7 Ticket 7: already landed on main in ${landed} \\(Adds a\\.txt\\. Refs #7\\); closed, not claimed\\.\\n#9 Ticket 9: claimed, `));
+  assert.match(r.stdout, new RegExp(`\\nRun finished: 1 session, \\$0\\.25\\.\\n  #7 already landed on main in ${landed}; closed, not claimed\\n  #9 landed on main in [0-9a-f]+\\nThe Run was clean: `));
+  const [seven, nine] = p.state().issues;
+  assert.equal(seven.state, "closed");
+  assert.deepEqual(seven.assignees, []);
+  assert.deepEqual(seven.comments.map((c) => c.body), [
+    `Already landed on main in ${landed} (Adds a.txt. Refs #7), so verkstad run closed it instead of claiming it.`,
+  ]);
+  assert.equal(nine.state, "closed");
+  assert.deepEqual(p.calls().filter((c) => c[1] === "edit").map((c) => c[2]), ["9"]);
+  assert.equal(p.claudeCalls().length, 1);
+});
