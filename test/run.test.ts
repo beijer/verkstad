@@ -1399,3 +1399,26 @@ test("run closes with a note, and does not claim, a ready Ticket whose commits a
   assert.deepEqual(p.calls().filter((c) => c[1] === "edit").map((c) => c[2]), ["9"]);
   assert.equal(p.claudeCalls().length, 1);
 });
+
+test("run logs a wait for a rate limit that refused gh repo view before its event log existed", (t) => {
+  const reset = inSeconds(4);
+  const p = project(t, {
+    issues: [ready(7)],
+    sessions: [implemented(7, "a.txt")],
+    contract: contract(),
+    files: { ".gitignore": GITIGNORE },
+    rateLimit: { command: "repo view", resource: "graphql", reset, refusals: 1 },
+  });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stdout.split("\n")[0], `GitHub's rate limit refused gh repo view; waiting until ${utc(reset)}, then trying it once more.`);
+  const log = eventLog(p);
+  assert.equal(log[0].run, "started");
+  assert.deepEqual(
+    log.filter((e) => "waiting" in e).map(({ waiting, refused }) => ({ waiting, refused })),
+    [{ waiting: utc(reset), refused: "gh repo view" }],
+  );
+  assert.equal(p.state().issues[0].state, "closed");
+});

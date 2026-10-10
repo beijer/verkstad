@@ -859,10 +859,9 @@ function land(run: Run, t: Ticket): Step {
           "Narrowing the Contract's Surfaces or its verify is the owner's, through verkstad:maintain-verify; an implementer may only add to them.",
       };
     case "github-failed": {
-      const closed = closeLanded(run, t, message);
-      if (closed) return closed;
-      const line = `landed, but updating #${t.n} failed: ${firstLine(message)}`;
-      log(run, { ticket: t.n, landed: line });
+      const closed = closeLanded(run, t);
+      const line = closed ?? `landed, but updating #${t.n} failed: ${firstLine(message)}`;
+      if (!closed) log(run, { ticket: t.n, landed: line });
       return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [], awaitsMerge: false } };
     }
     default:
@@ -872,15 +871,17 @@ function land(run: Run, t: Ticket): Step {
 
 /**
  * Closes Ticket t, which landed but whose Landing could not close it, with the comment the Landing kept, once
- * GitHub lets it; null when there is no such comment (the Landing was a pull request's or a Park's) or closing
- * fails again.
+ * GitHub lets it, and returns the summary's line; null when there is no such comment (the Landing was a pull
+ * request's or a Park's) or closing fails again.
  */
-function closeLanded(run: Run, t: Ticket, message: string): Step | null {
+function closeLanded(run: Run, t: Ticket): string | null {
   const kept = closingCommentPath(run.logDir, t.n);
-  const sha = /^#\d+ landed on \S+ in ([0-9a-f]+), but closing it failed/m.exec(message)?.[1];
-  if (!sha || !existsSync(kept)) return null;
+  if (!existsSync(kept)) return null;
+  const comment = readFileSync(kept, "utf8");
+  const sha = /^Landed on \S+ in ([0-9a-f]+)\./.exec(comment)?.[1];
+  if (!sha) return null;
   try {
-    gh(["issue", "close", String(t.n), "--comment", readFileSync(kept, "utf8")]);
+    gh(["issue", "close", String(t.n), "--comment", comment]);
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
     say(run, t.n, `closing it failed again: ${firstLine(error.message)}`);
@@ -890,7 +891,7 @@ function closeLanded(run: Run, t: Ticket, message: string): Step | null {
   const line = `landed on ${run.base} in ${sha}; the Run closed it after GitHub refused Landing's close`;
   say(run, t.n, `${line}.`);
   log(run, { ticket: t.n, landed: line, commit: sha });
-  return { to: "done", outcome: { line, newSurfaces: t.report?.newSurfaces ?? [], awaitsMerge: false } };
+  return line;
 }
 
 /** A Landing that conflicted goes to the conflict prompt, on the light Tier, in a fresh worktree. */
@@ -1120,12 +1121,15 @@ export async function run(args: string[]): Promise<void> {
     return ask(args[0] === "--stop" ? "stop" : "abort");
   }
   const options = parseArgs(args);
-  // The event log, once the Run has one, hears of each wait too.
+  // The event log hears of each wait too, once the Run has one: a wait before then is logged when it starts.
   let events: string | null = null;
+  const earlyWaits: string[] = [];
   waitOutRateLimits((until, call) => {
     const when = until.toISOString().replace(/\.\d{3}Z$/, "Z");
     process.stdout.write(`GitHub's rate limit refused ${call}; waiting until ${when}, then trying it once more.\n`);
-    if (events) appendFileSync(events, JSON.stringify({ at: new Date().toISOString(), waiting: when, refused: call }) + "\n");
+    const line = JSON.stringify({ at: new Date().toISOString(), waiting: when, refused: call }) + "\n";
+    if (events) appendFileSync(events, line);
+    else earlyWaits.push(line);
   });
   if (options.ticket !== null && goingRun()) throw new Failure(`a Run is going; start #${options.ticket} when it has ended`);
   const prepared = prepare(options);
@@ -1152,13 +1156,14 @@ export async function run(args: string[]): Promise<void> {
     forReflect: new Map(),
     inFlight: new Map(),
   };
-  events = r.events;
   log(r, { run: "started", pid: process.pid, main: r.main, base: r.base, ready: ready.map((e) => e.number) });
+  events = r.events;
+  for (const line of earlyWaits) appendFileSync(events, line);
 
   const finished: Array<{ n: number; line: string }> = [];
   const tried = new Set<number>();
-  /** The Tickets of `tried` closed because they had already landed, which --max does not count. */
-  let closedLanded = 0;
+  /** How many of `tried` were closed because they had already landed, which --max does not count. */
+  let alreadyLanded = 0;
   const failures: Failure[] = [];
   /** The Tickets an abort ended before they landed or were Parked, whose work it discards. */
   const abortedTickets: number[] = [];
@@ -1175,7 +1180,7 @@ export async function run(args: string[]): Promise<void> {
     if (ask === "abort") aborted = true;
     if (ask !== null) stopping = true;
     const starting: Entry[] = [];
-    while (!stopping && working.size + starting.length < r.parallel && (max === null || tried.size - closedLanded < max)) {
+    while (!stopping && working.size + starting.length < r.parallel && (max === null || tried.size - alreadyLanded < max)) {
       const next = filed.shift() ?? frontier.find((e) => !tried.has(e.number));
       if (!next) break;
       tried.add(next.number);
@@ -1184,7 +1189,7 @@ export async function run(args: string[]): Promise<void> {
         starting.push(next);
         continue;
       }
-      closedLanded++;
+      alreadyLanded++;
       try {
         finished.push({ n: next.number, line: closeAlreadyLanded(r, next, commit) });
       } catch (error) {
@@ -1241,7 +1246,7 @@ export async function run(args: string[]): Promise<void> {
         say(r, n, `added a Surface the Contract lacks: ${named(surface)}; filed #${filedEntry.number} to declare it, ${when}.`);
         if (!outcome.awaitsMerge) filed.push(filedEntry);
       }
-      if (!stopping && (max === null || tried.size - closedLanded < max)) frontier = readFrontier().ready;
+      if (!stopping && (max === null || tried.size - alreadyLanded < max)) frontier = readFrontier().ready;
     } catch (error) {
       stopping = true;
       if (!(error instanceof Failure)) unexpected ??= { error };

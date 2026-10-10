@@ -398,12 +398,16 @@ function pushToBase(ticket: Ticket, base: string, report: string): void {
   if (closing) {
     // Kept for whoever closes it: a Run, once GitHub lets it, or the owner.
     const kept = closingCommentPath(dir, ticket.n);
-    writeFileSync(kept, comment);
+    let byHand = `with ${kept} as the comment`;
+    try {
+      writeFileSync(kept, comment);
+    } catch (error) {
+      byHand = `with the report and the Verdict as the comment (keeping it in ${kept} failed: ${(error as Error).message})`;
+    }
     process.stdout.write(notes + pruned);
     throw new LandingFailure(
       "github-failed",
-      `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\n` +
-        `Close it by hand, with ${kept} as the comment.`,
+      `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\nClose it by hand, ${byHand}.`,
     );
   }
   process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);

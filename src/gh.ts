@@ -40,21 +40,21 @@ const RATE_LIMITED = /API rate limit (already )?exceeded|secondary rate limit/i;
 const SECONDARY_WAIT_MS = 60_000;
 
 /** Told, before each wait, until when it waits and which call GitHub refused; null when calls fail at once. */
-let waiting: ((until: Date, call: string) => void) | null = null;
+let toldOfWait: ((until: Date, call: string) => void) | null = null;
 
 /**
  * From now on, a call GitHub refuses for its rate limit waits until the limit resets, then is tried once more;
  * `told` hears of each wait before it starts. The wait blocks the process: everything it does waits on GitHub.
  */
 export function waitOutRateLimits(told: (until: Date, call: string) => void): void {
-  waiting = told;
+  toldOfWait = told;
 }
 
 function run(args: string[]): { ok: boolean; stdout: string; stderr: string } {
   const r = once(args);
-  if (r.ok || waiting === null || !RATE_LIMITED.test(r.stderr)) return r;
+  if (r.ok || toldOfWait === null || !RATE_LIMITED.test(r.stderr)) return r;
   const until = resetTime();
-  waiting(until, describe(args));
+  toldOfWait(until, describe(args));
   // A second past the reset, which GitHub gives in whole seconds.
   sleep(until.getTime() + 1000 - Date.now());
   return once(args);
