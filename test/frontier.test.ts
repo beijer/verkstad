@@ -197,3 +197,71 @@ test("an unknown argument is a usage error and asks GitHub nothing", (t) => {
   assert.equal(r.stderr, "verkstad frontier: unknown argument '--jsn'; usage: verkstad frontier [--json]\n");
   assert.deepEqual(p.calls(), []);
 });
+
+/** The variables a `gh api graphql` argv passes: `-f`/`-F key=value`, and `key[]=value` gathered into a list. */
+function variables(argv: string[]): Record<string, string | string[]> {
+  const vars: Record<string, string | string[]> = {};
+  for (let i = 0; i < argv.length; i++) {
+    if (argv[i] !== "-f" && argv[i] !== "-F") continue;
+    const field = argv[++i];
+    const key = field.slice(0, field.indexOf("="));
+    const value = field.slice(field.indexOf("=") + 1);
+    if (key.endsWith("[]")) vars[key.slice(0, -2)] = [...((vars[key.slice(0, -2)] as string[] | undefined) ?? []), value];
+    else vars[key] = value;
+  }
+  return vars;
+}
+
+/**
+ * What GitHub charges for one GraphQL query, from the connection sizes it asks for: each connection
+ * (`first: n`) needs one request per node its parent can hold, a list by ids holds as many nodes as
+ * it names, and the query costs a point per 100 requests, rounded, and at least one.
+ */
+function points(argv: string[]): number {
+  const vars = variables(argv);
+  const tokens: string[] = String(vars.query).match(/\$?[A-Za-z_]\w*|-?\d+|\S/g) ?? [];
+  let i = tokens.indexOf("{");
+  const size = (value: string) => (value.startsWith("$") ? vars[value.slice(1)] : value);
+  let requests = 0;
+  const nodes = [1];
+  let next = 1;
+  for (; i < tokens.length; i++) {
+    const token = tokens[i];
+    const holds = nodes[nodes.length - 1];
+    if (token === "{") nodes.push(next);
+    else if (token === "}") nodes.pop();
+    else if (tokens[i + 1] === "(") {
+      next = holds;
+      for (i += 2; tokens[i] !== ")"; i++) {
+        const value = size(tokens[i + 2] ?? "");
+        if (tokens[i] === "first" && tokens[i + 1] === ":") {
+          requests += holds;
+          next = holds * Number(value);
+        } else if (tokens[i] === "ids" && tokens[i + 1] === ":") {
+          requests += holds;
+          next = holds * (value as string[]).length;
+        }
+      }
+    } else next = holds;
+  }
+  return Math.max(1, Math.round(requests / 100));
+}
+
+test("the Frontier of 100 Tickets, each behind an open blocker of its own, costs at most 15 points, and marks the owner's blockers as before", (t) => {
+  const p = project(t, {
+    issues: Array.from({ length: 100 }, (_, i) => [
+      { number: 1 + i, title: `Ticket ${1 + i}`, labels: [READY], blockedBy: [101 + i] },
+      { number: 101 + i, title: `Blocker ${101 + i}`, labels: i % 2 ? ["ready-for-human"] : ["needs-triage"] },
+    ]).flat(),
+  });
+
+  const r = p.run("frontier");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^ {2}#1 Ticket 1 {2}<- #101$/m);
+  assert.match(r.stdout, /^ {2}#2 Ticket 2 {2}<- #102 \[human\]$/m);
+  assert.match(r.stdout, /^ {2}#100 Ticket 100 {2}<- #200 \[human\]$/m);
+  const queries = p.calls().filter((argv) => argv[0] === "api" && argv[1] === "graphql");
+  const cost = queries.reduce((sum, argv) => sum + points(argv), 0);
+  assert.ok(cost <= 15, `the Frontier cost ${cost} points over ${queries.length} queries`);
+});

@@ -8,7 +8,7 @@
 //   - the rest are the Frontier: ready.
 
 import { Failure } from "./fail.ts";
-import { allIssues, currentRepo } from "./gh.ts";
+import { allIssues, currentRepo, graphql } from "./gh.ts";
 import { staleCopyWarning } from "./plugin-copy.ts";
 
 const READY_LABEL = "ready-for-agent";
@@ -18,6 +18,9 @@ const OWNER_MARKERS: Array<[label: string, marker: string]> = [
   ["needs-info", "[needs-info]"],
 ];
 
+// What GitHub charges for a query grows with the nodes its connections can hold, so the Frontier asks for
+// blockers without their labels, then for the labels of the blockers still open, by id: about 4 points for
+// 100 issues in place of the 53 that labels on every blocker cost.
 const QUERY = `query Frontier($owner: String!, $name: String!, $label: String!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     issues(first: $first, after: $after, states: OPEN, labels: [$label], orderBy: {field: CREATED_AT, direction: ASC}) {
@@ -28,11 +31,17 @@ const QUERY = `query Frontier($owner: String!, $name: String!, $label: String!, 
         labels(first: 50) { nodes { name } }
         assignees(first: 20) { nodes { login } }
         subIssues { totalCount }
-        blockedBy(first: 50) { totalCount nodes { number state title labels(first: 20) { nodes { name } } } }
+        blockedBy(first: 50) { totalCount nodes { id number state title } }
       }
     }
   }
 }`;
+
+const BLOCKER_LABELS = `query BlockerLabels($ids: [ID!]!) {
+  nodes(ids: $ids) { ... on Issue { id labels(first: 20) { nodes { name } } } }
+}`;
+/** The most ids GitHub's `nodes` takes at once. */
+const IDS_PER_QUERY = 100;
 
 /** A GraphQL connection, as far as the query reads it. */
 interface Connection<T> {
@@ -45,7 +54,7 @@ interface IssueNode {
   labels: Connection<{ name: string }>;
   assignees: Connection<{ login: string }>;
   subIssues: { totalCount: number };
-  blockedBy: Connection<{ number: number; state: "OPEN" | "CLOSED"; title: string; labels: Connection<{ name: string }> }> & {
+  blockedBy: Connection<{ id: string; number: number; state: "OPEN" | "CLOSED"; title: string }> & {
     totalCount: number;
   };
 }
@@ -86,14 +95,28 @@ export function frontier(args: string[]): void {
 
 /** The Frontier and the rest of the issues labelled ready-for-agent, from GitHub, in number order. */
 export function readFrontier(): Listing {
-  return classify(fetchLabelled(READY_LABEL));
+  const nodes = fetchLabelled(READY_LABEL);
+  return classify(nodes, fetchBlockerLabels(nodes));
 }
 
 function fetchLabelled(label: string): IssueNode[] {
   return allIssues<IssueNode>(QUERY, { ...currentRepo(), label });
 }
 
-function classify(nodes: IssueNode[]): Listing {
+/** The labels of every open blocker of `nodes`, by the blocker's id. */
+function fetchBlockerLabels(nodes: IssueNode[]): Map<string, string[]> {
+  const ids = [...new Set(nodes.flatMap((n) => n.blockedBy.nodes.filter((b) => b.state === "OPEN").map((b) => b.id)))];
+  const labels = new Map<string, string[]>();
+  for (let i = 0; i < ids.length; i += IDS_PER_QUERY) {
+    const reply = graphql<{ nodes: Array<{ id: string; labels: Connection<{ name: string }> } | null> }>(BLOCKER_LABELS, {
+      ids: ids.slice(i, i + IDS_PER_QUERY),
+    });
+    for (const node of reply.nodes) if (node) labels.set(node.id, node.labels.nodes.map((l) => l.name));
+  }
+  return labels;
+}
+
+function classify(nodes: IssueNode[], blockerLabels: Map<string, string[]>): Listing {
   const result: Listing = { ready: [], in_progress: [], waiting: [], specs_labelled: [] };
   for (const node of [...nodes].sort((a, b) => a.number - b.number)) {
     if (node.blockedBy.totalCount > node.blockedBy.nodes.length) {
@@ -107,7 +130,7 @@ function classify(nodes: IssueNode[]): Listing {
       open_blockers: node.blockedBy.nodes
         .filter((b) => b.state === "OPEN")
         .sort((a, b) => a.number - b.number)
-        .map((b) => ({ number: b.number, title: b.title, labels: b.labels.nodes.map((l) => l.name) })),
+        .map((b) => ({ number: b.number, title: b.title, labels: blockerLabels.get(b.id) ?? [] })),
     };
     if (node.subIssues.totalCount > 0) result.specs_labelled.push(entry);
     else if (entry.assignees.length > 0) result.in_progress.push(entry);

@@ -48,12 +48,13 @@ export function currentRepo(): { owner: string; name: string } {
   return { owner, name };
 }
 
-/** Runs a GraphQL query. Strings go as raw fields, numbers and null as typed ones. */
-export function graphql<T>(query: string, variables: Record<string, string | number | null>): T {
+/** Runs a GraphQL query. Strings go as raw fields, numbers and null as typed ones, a list as one `key[]` field per item. */
+export function graphql<T>(query: string, variables: Record<string, string | number | string[] | null>): T {
   const args = ["api", "graphql", "-f", `query=${query}`];
   for (const [key, value] of Object.entries(variables)) {
     if (value === null) continue;
-    args.push(typeof value === "string" ? "-f" : "-F", `${key}=${value}`);
+    if (Array.isArray(value)) for (const item of value) args.push("-f", `${key}[]=${item}`);
+    else args.push(typeof value === "string" ? "-f" : "-F", `${key}=${value}`);
   }
   const reply = ghJson<{ data?: T; errors?: Array<{ message: string }> }>(args);
   if (reply.errors?.length || !reply.data) {

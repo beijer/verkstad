@@ -191,7 +191,18 @@ const graphql: Record<string, GraphqlOperation> = {
   Frontier: (v, state, query) => issues(v, state, query),
   // Open issues with their bodies and the native links they have: parent and blockers.
   OpenIssueLinks: (v, state, query) => issues(v, state, query),
+  // Issues by node id, in the order asked, null for an id that names none.
+  BlockerLabels: (v, state) => {
+    if (!Array.isArray(v.ids)) throw new Error("Variable $ids of type [ID!]! was provided invalid value");
+    if (v.ids.length > 100) throw new Error(`You may not provide more than 100 ids; you provided ${v.ids.length}.`);
+    return { nodes: v.ids.map((id) => state.issues.find((issue) => nodeId(issue) === id) ?? null).map((issue) => issue && issueRef(state, issue.number)) };
+  },
 };
+
+/** An issue's GraphQL node id, as GitHub gives one: opaque, and not its number. */
+function nodeId(issue: StubIssue): string {
+  return `I_kw${issue.id}`;
+}
 
 /** A page of the repo's issues, filtered as the query asks, each with every field an operation reads. */
 function issues(v: Variables, state: StubState, query: string) {
@@ -316,7 +327,9 @@ function api(args: string[], state: StubState): Reply {
   const fields: Variables = {};
   for (const raw of [...(flags.get("-f") ?? []), ...(flags.get("--raw-field") ?? [])]) {
     const [key, value] = splitField(raw);
-    fields[key] = value;
+    // `key[]=value`, once per item, passes a list, as gh does.
+    if (key.endsWith("[]")) fields[key.slice(0, -2)] = [...((fields[key.slice(0, -2)] as string[] | undefined) ?? []), value];
+    else fields[key] = value;
   }
   for (const typed of [...(flags.get("-F") ?? []), ...(flags.get("--field") ?? [])]) {
     const [key, value] = splitField(typed);
@@ -369,6 +382,13 @@ function select(query: string, data: unknown): unknown {
   const selection = (): Selection => {
     const fields: Selection = new Map();
     for (i++; tokens[i] !== "}"; ) {
+      // An inline fragment (`... on Issue { … }`): its fields are the node's own, every node here being of that type.
+      if (tokens[i] === "." && tokens[i + 1] === "." && tokens[i + 2] === ".") {
+        if (tokens[i + 3] !== "on") throw new Error("only inline fragments with a type condition are supported");
+        i += 5;
+        for (const [name, sub] of selection()) fields.set(name, sub);
+        continue;
+      }
       const name = tokens[i++];
       if (tokens[i] === ":") throw new Error(`aliases are not supported (${name})`);
       skipArguments();
@@ -397,6 +417,7 @@ function issueRef(state: StubState, number: number) {
   const issue = findIssue(state, number);
   if (!issue) throw new Error(`issue #${number} is not in the stub's state`);
   return {
+    id: nodeId(issue),
     number: issue.number,
     state: issue.state.toUpperCase(),
     title: issue.title,
