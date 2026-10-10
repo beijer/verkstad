@@ -3,7 +3,9 @@
 // It reads what verkstad leaves behind (the Runs' event logs, `verkstad frontier --json`, the issues and CI on
 // GitHub, the transcripts of the sessions working its Tickets) and draws one pane, opened by `/verkstad:sidebar`:
 // the Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past
-// Runs. The controls only run verkstad's own commands: Start launches `verkstad run` detached, so it outlives this
+// Runs. It reads GitHub only while its pane is shown, and at most once every two minutes between the sessions of a
+// Project: each read is left in the log directory (`sidebar-github.json`) for the others. The controls only run
+// verkstad's own commands: Start launches `verkstad run` detached, so it outlives this
 // session, with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, `--max 1` for One
 // Ticket, or `--ticket <n>` for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks
 // the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
@@ -39,7 +41,10 @@ const PANE = 'verkstad-run'
 const POLL_MS = 2000
 const ALIVE_MS = 10_000
 const ACTIVITY_MS = 5000
+/** How old the Project's read of GitHub may grow before a session whose pane is shown reads it again. */
 const GITHUB_MS = 2 * 60_000
+/** How long a session's read of GitHub, once begun, holds off the other sessions' reads. */
+const READING_MS = 60_000
 /** How long a Start waits for its Run's event log before showing what the Run printed. */
 const START_MS = 30_000
 /** How long a control's notice stays: long enough to read, and a failure's longer. */
@@ -78,7 +83,10 @@ let lastNewest = ''
 let lastSize = -1
 let aliveAt = 0
 let activityAt = 0
+/** When the read of GitHub this session shows was made; 0 to look again at the next poll. */
 let githubAt = 0
+/** A read of GitHub made before this is stale: the Run moved since. */
+let freshAfter = 0
 const summaries = new Map<string, { size: number; summary: RunSummary }>()
 
 function verkstad($: EngineInterface, p: Project, args: string[], timeoutMs = 60_000) {
@@ -111,14 +119,8 @@ async function findProject($: EngineInterface, cwd: string): Promise<Project | n
   } catch {
     // verkstad says what is wrong with it when a Run starts
   }
-  const repo = await $.process.run(['gh', 'repo', 'view', '--json', 'nameWithOwner'], { cwd: main })
-  let nameWithOwner = ''
-  try {
-    nameWithOwner = repo.exitCode === 0 ? String(JSON.parse(repo.stdout).nameWithOwner ?? '') : ''
-  } catch {
-    // issues show as plain numbers
-  }
-  return { main, logDir: `${main}/.claude/verkstad`, repo: nameWithOwner, base, name: main.split('/').pop() ?? 'project', parallel }
+  // The repo's name comes with the first read of GitHub (readGithub); until then issues show as plain numbers.
+  return { main, logDir: `${main}/.claude/verkstad`, repo: '', base, name: main.split('/').pop() ?? 'project', parallel }
 }
 
 /** A Run is going while its log has no end line and its process is there; until that is asked, it is not. */
@@ -143,38 +145,116 @@ async function isRunAlive($: EngineInterface, p: Project, r: RunView): Promise<b
   return found.stdout.trim() !== ''
 }
 
+/** One read of GitHub for the Project, as the sessions share it in the log directory. */
+type GithubRead = {
+  /** When the read began. */
+  at: number
+  /** While a session reads GitHub again: when it began, so that the others wait for its read. */
+  readingSince?: number
+  /** owner/name, or '' when gh could not tell. */
+  repo: string
+  /** What `verkstad frontier --json` printed, or why it failed. */
+  frontier: string
+  frontierError: string
+  /** The open issues and pull requests and CI on the base branch, as gh lists them, or why one failed. */
+  issues: unknown[]
+  pulls: unknown[]
+  ci: unknown[]
+  ownerError: string
+}
+
+function cacheFile(p: Project): string {
+  return `${p.logDir}/sidebar-github.json`
+}
+
+async function readCache($: EngineInterface, p: Project): Promise<GithubRead | null> {
+  if (!(await $.fs.exists(cacheFile(p)))) return null
+  try {
+    const got = JSON.parse(String(await $.fs.read(cacheFile(p))))
+    return typeof got?.at === 'number' ? (got as GithubRead) : null
+  } catch {
+    // a read cut short or from another version: read GitHub again
+    return null
+  }
+}
+
+/** Whether the sidebar's pane is drawn where the owner sees it, and not a tab behind another or waiting unplaced. */
+async function isShown($: EngineInterface): Promise<boolean> {
+  return (await $.ui.panes()).some(pane => pane.id === PANE && pane.isShown && pane.isPlaced)
+}
+
+/**
+ * Brings the view of GitHub up to date: from the read another session left, while it is under GITHUB_MS old and
+ * newer than the Run's last change, or while another session is reading; else from GitHub, for them all.
+ */
+async function syncGithub($: EngineInterface, p: Project, now: number): Promise<void> {
+  const cached = await readCache($, p)
+  const isFresh = cached !== null && now - cached.at < GITHUB_MS && cached.at >= freshAfter
+  const isBeingRead = cached?.readingSince !== undefined && now - cached.readingSince < READING_MS
+  if (cached && (isFresh || isBeingRead)) {
+    // While another session reads, look again at the next poll.
+    githubAt = isFresh ? cached.at : 0
+    return show($, p, cached)
+  }
+  await readGithub($, p)
+}
+
+/** Reads GitHub now, leaves the read for the Project's other sessions, and shows it. */
 async function readGithub($: EngineInterface, p: Project): Promise<void> {
   const now = await $.clock.now()
   githubAt = now
-  const f = await verkstad($, p, ['frontier', '--json'])
-  let fv: FrontierView
-  try {
-    if (f.exitCode !== 0) throw new Error(firstLine(f.stderr) || `exit ${f.exitCode}`)
-    fv = frontierView(f.stdout, now)
-  } catch (err) {
-    const previous = await read($, frontier)
-    fv = { ...(previous ?? { ready: [], inProgress: [], waiting: [], specsLabelled: [] }), at: now, error: (err as Error).message }
-  }
-  await update($, frontier, () => fv)
+  const previous = await readCache($, p)
+  if (previous) await $.fs.write(cacheFile(p), JSON.stringify({ ...previous, readingSince: now }))
 
   const gh = async (args: string[]) => {
     const r = await $.process.run(['gh', ...args], { cwd: p.main, timeoutMs: 30_000 })
     if (r.exitCode !== 0) throw new Error(firstLine(r.stderr) || `gh ${args[0]} failed`)
     return JSON.parse(r.stdout)
   }
-  let view: OwnerView
+  const fresh: GithubRead = { at: now, repo: p.repo, frontier: '', frontierError: '', issues: [], pulls: [], ci: [], ownerError: '' }
+  const f = await verkstad($, p, ['frontier', '--json'])
+  if (f.exitCode === 0) fresh.frontier = f.stdout
+  else fresh.frontierError = firstLine(f.stderr) || `exit ${f.exitCode}`
+  if (!fresh.repo) {
+    try {
+      fresh.repo = String((await gh(['repo', 'view', '--json', 'nameWithOwner'])).nameWithOwner ?? '')
+    } catch {
+      // issues show as plain numbers until a read tells
+    }
+  }
   try {
-    const [issues, pulls, ci] = [
-      await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels']),
-      await gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,url']),
-      await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url']),
-    ]
+    fresh.issues = await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels'])
+    fresh.pulls = await gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,url'])
+    fresh.ci = await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url'])
+  } catch (err) {
+    fresh.ownerError = (err as Error).message
+  }
+  await $.fs.write(cacheFile(p), JSON.stringify(fresh))
+  await show($, p, fresh)
+}
+
+/** Draws a read of GitHub: the Frontier, and what waits on the owner; a part that failed keeps what was shown before. */
+async function show($: EngineInterface, p: Project, fresh: GithubRead): Promise<void> {
+  if (fresh.repo && fresh.repo !== p.repo) await update($, project, was => (was ? { ...was, repo: fresh.repo } : was))
+  let fv: FrontierView
+  try {
+    if (fresh.frontierError) throw new Error(fresh.frontierError)
+    fv = frontierView(fresh.frontier, fresh.at)
+  } catch (err) {
+    const previous = await read($, frontier)
+    fv = { ...(previous ?? { ready: [], inProgress: [], waiting: [], specsLabelled: [] }), at: fresh.at, error: (err as Error).message }
+  }
+  await update($, frontier, () => fv)
+
+  let view: OwnerView
+  if (fresh.ownerError) {
+    const previous = await read($, owner)
+    view = { items: previous?.items ?? [], at: fresh.at, error: fresh.ownerError }
+  } else {
     const r = await read($, run)
     const working = isGoing(r, await read($, isAlive)) ? (r?.inFlight ?? []) : []
-    view = { items: attention({ issues, pulls, ci, frontier: fv, repo: p.repo, base: p.base, working }), at: now, error: '' }
-  } catch (err) {
-    const previous = await read($, owner)
-    view = { items: previous?.items ?? [], at: now, error: (err as Error).message }
+    const { issues, pulls, ci } = fresh as { issues: never; pulls: never; ci: never }
+    view = { items: attention({ issues, pulls, ci, frontier: fv, repo: fresh.repo || p.repo, base: p.base, working }), at: fresh.at, error: '' }
   }
   await update($, owner, () => view)
 }
@@ -197,7 +277,10 @@ async function readRuns($: EngineInterface, p: Project, now: number): Promise<vo
     await update($, activity, () => [])
   }
   const outcomes = (r: RunView | null) => r?.tickets.map(t => `${t.n}${t.outcome}`).join() ?? ''
-  if (before?.file !== view.file || outcomes(before) !== outcomes(view) || Boolean(before?.ended) !== Boolean(view.ended)) githubAt = 0
+  if (before?.file !== view.file || outcomes(before) !== outcomes(view) || Boolean(before?.ended) !== Boolean(view.ended)) {
+    githubAt = 0
+    freshAfter = Date.parse(view.lastAt) || 0
+  }
 
   const started = await read($, startingAt)
   if (started && Date.parse(view.startedAt) >= started - 10_000) {
@@ -273,7 +356,7 @@ async function poll($: EngineInterface): Promise<void> {
       await say($, `The Run did not start: ${firstLine(out, 300) || 'it printed nothing'}`, true)
     }
 
-    if (now - githubAt > GITHUB_MS) await readGithub($, p)
+    if ((now - githubAt >= GITHUB_MS || githubAt < freshAfter) && (await isShown($))) await syncGithub($, p, now)
     // Ages redraw every poll while something moves, and every half minute otherwise.
     const step = going || started ? POLL_MS : 30_000
     if (now - (await read($, tick)) >= step) await update($, tick, () => now)

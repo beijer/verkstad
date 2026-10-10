@@ -52,9 +52,21 @@ const SESSIONS: Record<string, [number, string]> = {
 function world(
   on: On,
   logs: Record<string, string>,
-  options: { alive?: boolean; runProcess?: boolean; desktop?: boolean; brokenCli?: boolean; contract?: string; claimed?: number } = {},
+  options: {
+    alive?: boolean
+    runProcess?: boolean
+    desktop?: boolean
+    brokenCli?: boolean
+    contract?: string
+    claimed?: number
+    /** Whether the pane the session opens unasked is placed, as on a terminal wide enough; true unless said. */
+    placed?: boolean
+    frontier?: string
+  } = {},
 ) {
   const ran: string[][] = []
+  /** Every read of GitHub: a `gh` call, or `verkstad frontier`, which reads it. */
+  const github: string[][] = []
   const launched: string[][] = []
   const clock = mock.clock(on, { now: NOW })
   mock.env(on, { HOME })
@@ -72,6 +84,7 @@ function world(
     const [cmd, ...rest] = e.argv
     if (cmd === 'git') return ok(`${MAIN}/.git\n`)
     if (cmd === 'kill') return ok('', options.alive === false ? 1 : 0)
+    if (cmd === 'gh' || (cmd?.endsWith('/bin/verkstad') && rest[0] === 'frontier')) github.push(e.argv)
     if (cmd === 'gh' && rest[0] === 'repo') return ok('{"nameWithOwner":"owner/project"}')
     if (cmd === 'gh' && rest[0] === 'issue') return ok(ISSUES)
     if (cmd === 'gh' && rest[0] === 'pr') return ok('[]')
@@ -94,7 +107,7 @@ function world(
     if (cmd?.endsWith('/bin/verkstad')) {
       const args = rest
       ran.push(args)
-      if (args[0] === 'frontier') return ok(FRONTIER)
+      if (args[0] === 'frontier') return ok(options.frontier ?? FRONTIER)
       if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --dry-run --parallel 2')
@@ -117,7 +130,13 @@ function world(
     ),
   )
   on('fs.read', (_$, e) => value(files[e.path] ?? ''))
+  on('fs.write', (_$, e) => {
+    files[e.path] = e.text
+    return value(undefined)
+  })
   const opened: string[] = []
+  /** The session's panes, as the surface holds them: the first open is unasked, from session.start. */
+  const panes = new Map<string, { isShown: boolean; isPlaced: boolean }>()
   const spawned: unknown[] = []
   const filled: string[] = []
   on('tool.list', () => value(options.desktop ? [{ name: 'mcp__ccd_session__spawn_task', description: '', mcp: true }] : []))
@@ -130,10 +149,15 @@ function world(
     return { isFilled: true, text: e.text }
   })
   on('ui.open', (_$, e) => {
+    const isPlaced = opened.length > 0 || options.placed !== false
     opened.push(e.id)
-    return value({ isPlaced: true as const })
+    panes.set(e.id, { isShown: isPlaced, isPlaced })
+    return value(isPlaced ? { isPlaced: true as const } : { isPlaced: false as const, reason: 'the terminal is 100 columns wide; an unasked pane needs 144' })
   })
-  return { clock, ran, launched, opened, spawned, filled, append }
+  on('ui.panes', () => value([...panes].map(([id, pane]) => ({ id, title: 'verkstad', isFocused: false, ...pane }))))
+  /** The person closing the pane. */
+  const close = (id = 'verkstad-run') => panes.delete(id)
+  return { clock, ran, launched, opened, spawned, filled, append, github, files, close }
 }
 
 const PANE = {
@@ -533,3 +557,156 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.unmount()
   })
 }
+
+const CACHE = `${LOGS}/sidebar-github.json`
+/** A Frontier no `verkstad frontier` in these tests prints: only a read of the cache shows it. */
+const OTHERS_FRONTIER = JSON.stringify({
+  ready: [{ number: 60, title: 'Read by another session', labels: ['ready-for-agent'], assignees: [], open_blockers: [] }],
+  in_progress: [],
+  waiting: [],
+  specs_labelled: [],
+})
+/** The Project's GitHub read as another session's sidebar left it in the log directory. */
+const othersRead = (at: number, readingSince?: number) =>
+  JSON.stringify({
+    at,
+    ...(readingSince ? { readingSince } : {}),
+    repo: 'owner/project',
+    frontier: OTHERS_FRONTIER,
+    frontierError: '',
+    issues: JSON.parse(ISSUES),
+    pulls: [],
+    ci: JSON.parse(CI),
+    ownerError: '',
+  })
+/** What one read of GitHub runs: the Frontier, the repo's name, the open issues and pull requests, and CI. */
+const ONE_READ = ['frontier', 'gh repo', 'gh issue', 'gh pr', 'gh run']
+/** A read once the repo's name is known, from an earlier read, this session's or another's. */
+const NEXT_READ = ['frontier', 'gh issue', 'gh pr', 'gh run']
+const reads = (w: ReturnType<typeof world>) => w.github.map(argv => (argv[0] === 'gh' ? `gh ${argv[1]}` : argv[1]!))
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a session whose pane is not shown reads nothing from GitHub, and reads it once the owner opens the pane, on ${surface}`, async ($, on) => {
+    const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { placed: false })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    await w.clock.advance(10 * 60_000)
+    expect(w.opened).toEqual(['verkstad-run'])
+    expect(w.github).toEqual([])
+
+    await $.command.run({ command: 'verkstad:sidebar', args: '', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 100 } })
+    await w.clock.advance(2000)
+    expect(reads(w)).toEqual(ONE_READ)
+    const ui = await open($, surface)
+    expect(await text(ui, /Next thing/)).toBe('Next thing')
+    await ui.unmount()
+  })
+}
+
+test('a session whose pane the owner closed reads GitHub no more', async ($, on) => {
+  const w = world(on, {})
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  expect(reads(w)).toEqual(ONE_READ)
+
+  w.close()
+  await w.clock.advance(10 * 60_000)
+  expect(reads(w)).toEqual(ONE_READ)
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`a session shows the read another session left under two minutes ago without reading GitHub, and reads it once when that read is two minutes old, on ${surface}`, async ($, on) => {
+    const w = world(on, { 'sidebar-github.json': othersRead(NOW - 60_000) })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+
+    expect(w.github).toEqual([])
+    expect(await text(ui, /Read by another session/)).toBe('Read by another session')
+    expect(await text(ui, /A new idea/)).toBe('A new idea')
+    expect((await ui.find({ type: 'Markdown', text: /#60\]/ }))?.props.text).toBe('[#60](https://github.com/owner/project/issues/60)')
+
+    await w.clock.advance(58_000)
+    expect(w.github).toEqual([])
+    await w.clock.advance(4000)
+    expect(reads(w)).toEqual(NEXT_READ)
+    expect(await text(ui, /Read by another session/)).toBeUndefined()
+    expect(await text(ui, /^Next thing$/)).toBe('Next thing')
+    const written = JSON.parse(w.files[CACHE]!)
+    expect(written.at).toBeGreaterThan(NOW)
+    expect(written.repo).toBe('owner/project')
+    expect(JSON.parse(written.frontier).ready.map((t: { number: number }) => t.number)).toEqual([49, 50])
+    expect(written.issues).toEqual(JSON.parse(ISSUES))
+
+    await w.clock.advance(2 * 60_000)
+    expect(reads(w)).toEqual([...NEXT_READ, ...NEXT_READ])
+    await ui.unmount()
+  })
+}
+
+test('two minutes of polls in two sessions over one log directory read GitHub once between them', async ($, on) => {
+  // The kit runs one session per test, so the second is played here by the cache it shares: while this
+  // session reads, the other finds the claim; once it has read, the other finds a read under two minutes old.
+  const w = world(on, {})
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  expect(reads(w)).toEqual(ONE_READ)
+  const first = JSON.parse(w.files[CACHE]!)
+  expect(first.at).toBe(NOW)
+  expect(first.readingSince).toBeUndefined()
+
+  // The other session's refresh button reads GitHub a minute later, and this one finds that read when its own ages.
+  await w.clock.advance(60_000)
+  w.files[CACHE] = othersRead(NOW + 60_000)
+  await w.clock.advance(60_000 + 4000)
+  expect(reads(w)).toEqual(ONE_READ)
+  const ui = await open($, 'desktop')
+  expect(await text(ui, /Read by another session/)).toBe('Read by another session')
+})
+
+test('while another session is reading GitHub for the Project, this one waits for its read, up to a minute', async ($, on) => {
+  const w = world(on, { 'sidebar-github.json': othersRead(NOW - 5 * 60_000, NOW - 5000) })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'terminal')
+  expect(w.github).toEqual([])
+  expect(await text(ui, /Read by another session/)).toBe('Read by another session')
+
+  await w.clock.advance(50_000)
+  expect(w.github).toEqual([])
+  await w.clock.advance(10_000)
+  expect(reads(w)).toEqual(NEXT_READ)
+  expect(await text(ui, /^Next thing$/)).toBe('Next thing')
+})
+
+for (const surface of ['terminal', 'desktop'] as const) {
+  test(`the refresh button reads GitHub at once, though another session read it a minute ago, and leaves its read for the others, on ${surface}`, async ($, on) => {
+    const w = world(on, { 'sidebar-github.json': othersRead(NOW - 60_000) })
+    await $.session.start({ cwd: MAIN, surface, isInteractive: true })
+    await w.clock.settle()
+    const ui = await open($, surface)
+    expect(w.github).toEqual([])
+
+    await ui.press({ key: 'refresh' })
+    expect(reads(w)).toEqual(NEXT_READ)
+    expect(await text(ui, /^Next thing$/)).toBe('Next thing')
+    const written = JSON.parse(w.files[CACHE]!)
+    expect(written.at).toBe(NOW)
+    expect(JSON.parse(written.frontier).ready.map((t: { number: number }) => t.number)).toEqual([49, 50])
+    await ui.unmount()
+  })
+}
+
+test('a Ticket landing after the last read of GitHub has it read again, though that read is under two minutes old', async ($, on) => {
+  const w = world(on, { [TWO]: TWO_LIVE })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  expect(reads(w)).toEqual(ONE_READ)
+
+  await w.clock.advance(30_000)
+  w.append(TWO, line({ at: new Date(NOW + 30_000).toISOString(), ticket: 49, landed: 'landed on main in a1b2c3d', commit: 'a1b2c3d' }))
+  await w.clock.advance(2000)
+  expect(reads(w)).toEqual([...ONE_READ, ...NEXT_READ])
+  await w.clock.advance(60_000)
+  expect(reads(w)).toEqual([...ONE_READ, ...NEXT_READ])
+})
