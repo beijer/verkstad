@@ -62,6 +62,8 @@ function world(
     /** Whether the pane the session opens unasked is placed, as on a terminal wide enough; true unless said. */
     placed?: boolean
     frontier?: string
+    /** What `verkstad frontier` fails with, as when GitHub's allowance runs out. */
+    frontierFails?: string
   } = {},
 ) {
   const ran: string[][] = []
@@ -107,6 +109,7 @@ function world(
     if (cmd?.endsWith('/bin/verkstad')) {
       const args = rest
       ran.push(args)
+      if (args[0] === 'frontier' && options.frontierFails) return ok('', 1, options.frontierFails)
       if (args[0] === 'frontier') return ok(options.frontier ?? FRONTIER)
       if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
@@ -664,7 +667,7 @@ test('two minutes of polls in two sessions over one log directory read GitHub on
   expect(await text(ui, /Read by another session/)).toBe('Read by another session')
 })
 
-test('while another session is reading GitHub for the Project, this one waits for its read, up to a minute', async ($, on) => {
+test('while another session is reading GitHub for the Project, this one waits for its read, up to three minutes', async ($, on) => {
   const w = world(on, { 'sidebar-github.json': othersRead(NOW - 5 * 60_000, NOW - 5000) })
   await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
   await w.clock.settle()
@@ -672,7 +675,7 @@ test('while another session is reading GitHub for the Project, this one waits fo
   expect(w.github).toEqual([])
   expect(await text(ui, /Read by another session/)).toBe('Read by another session')
 
-  await w.clock.advance(50_000)
+  await w.clock.advance(170_000)
   expect(w.github).toEqual([])
   await w.clock.advance(10_000)
   expect(reads(w)).toEqual(NEXT_READ)
@@ -709,4 +712,36 @@ test('a Ticket landing after the last read of GitHub has it read again, though t
   expect(reads(w)).toEqual([...ONE_READ, ...NEXT_READ])
   await w.clock.advance(60_000)
   expect(reads(w)).toEqual([...ONE_READ, ...NEXT_READ])
+})
+
+test("while another session makes the Project's first read of GitHub, this one waits for it and reads nothing", async ($, on) => {
+  const claim = JSON.stringify({ at: 0, readingSince: NOW - 1000, repo: '', frontier: '', frontierError: '', issues: [], pulls: [], ci: [], ownerError: '' })
+  const w = world(on, { 'sidebar-github.json': claim })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect(w.github).toEqual([])
+  expect(await text(ui, /Reading the Frontier/)).toBe('Reading the Frontier…')
+  w.files[CACHE] = othersRead(NOW + 5000)
+  await w.clock.advance(6000)
+  expect(w.github).toEqual([])
+  expect(await text(ui, /Read by another session/)).toBe('Read by another session')
+})
+
+test('a read of GitHub that fails keeps the last read for every session, beside why it failed', async ($, on) => {
+  const limit = 'verkstad frontier: gh api graphql failed: GraphQL: API rate limit already exceeded'
+  const w = world(on, { 'sidebar-github.json': othersRead(NOW - 3 * 60_000) }, { frontierFails: `${limit}\n` })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'terminal')
+
+  expect(reads(w)).toEqual(NEXT_READ)
+  expect(await text(ui, /Read by another session/)).toBe('Read by another session')
+  expect(await text(ui, /rate limit/)).toBe(`verkstad frontier: ${limit}`)
+  const written = JSON.parse(w.files[CACHE]!)
+  expect(written.at).toBe(NOW)
+  expect(written.readingSince).toBeUndefined()
+  expect(written.frontier).toBe(OTHERS_FRONTIER)
+  expect(written.frontierError).toBe(limit)
 })

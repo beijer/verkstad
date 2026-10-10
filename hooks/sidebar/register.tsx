@@ -5,13 +5,12 @@
 // the Run going, each Ticket in flight and the controls, what waits on the owner, the Tickets up next, and past
 // Runs. It reads GitHub only while its pane is shown, and at most once every two minutes between the sessions of a
 // Project: each read is left in the log directory (`sidebar-github.json`) for the others. The controls only run
-// verkstad's own commands: Start launches `verkstad run` detached, so it outlives this
-// session, with no count (the Run's default), `--parallel <n>` for a count up to the Contract's cap, `--max 1` for One
-// Ticket, or `--ticket <n>` for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks
-// the whole Run to stop after its Tickets in flight (`verkstad run --stop`); Abort, once
-// confirmed, ends it and discards their work (`verkstad run --abort`). Every routing decision stays in
-// `verkstad run`. The commands are this plugin copy's own `bin/verkstad`, so the sidebar drives the version the
-// Project installed.
+// verkstad's own commands: Start launches `verkstad run` detached, so it outlives this session, with no count (the
+// Run's default), `--parallel <n>` for a count up to the Contract's cap, `--max 1` for One Ticket, or `--ticket <n>`
+// for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks the whole Run to stop
+// after its Tickets in flight (`verkstad run --stop`); Abort, once confirmed, ends it and discards their work
+// (`verkstad run --abort`). Every routing decision stays in `verkstad run`. The commands are this plugin copy's own
+// `bin/verkstad`, so the sidebar drives the version the Project installed.
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
@@ -36,6 +35,7 @@ import {
   usd,
   when,
 } from './events'
+import type { CiRun, Issue, Pull } from './events'
 
 const PANE = 'verkstad-run'
 const POLL_MS = 2000
@@ -43,8 +43,8 @@ const ALIVE_MS = 10_000
 const ACTIVITY_MS = 5000
 /** How old the Project's read of GitHub may grow before a session whose pane is shown reads it again. */
 const GITHUB_MS = 2 * 60_000
-/** How long a session's read of GitHub, once begun, holds off the other sessions' reads. */
-const READING_MS = 60_000
+/** How long a session's read of GitHub, once begun, holds off the other sessions' reads: the longest one takes. */
+const READING_MS = 3 * 60_000
 /** How long a Start waits for its Run's event log before showing what the Run printed. */
 const START_MS = 30_000
 /** How long a control's notice stays: long enough to read, and a failure's longer. */
@@ -145,23 +145,28 @@ async function isRunAlive($: EngineInterface, p: Project, r: RunView): Promise<b
   return found.stdout.trim() !== ''
 }
 
-/** One read of GitHub for the Project, as the sessions share it in the log directory. */
+/**
+ * One read of GitHub for the Project, as the sessions share it in the log directory. A part that failed keeps the
+ * last read's data beside why it failed, so every session goes on showing it.
+ */
 type GithubRead = {
-  /** When the read began. */
+  /** When the read began; 0 before the Project's first read ends. */
   at: number
   /** While a session reads GitHub again: when it began, so that the others wait for its read. */
   readingSince?: number
   /** owner/name, or '' when gh could not tell. */
   repo: string
-  /** What `verkstad frontier --json` printed, or why it failed. */
+  /** What `verkstad frontier --json` printed, and why it failed this time, if it did. */
   frontier: string
   frontierError: string
-  /** The open issues and pull requests and CI on the base branch, as gh lists them, or why one failed. */
-  issues: unknown[]
-  pulls: unknown[]
-  ci: unknown[]
+  /** The open issues and pull requests and CI on the base branch, as gh lists them, and why it failed this time. */
+  issues: Issue[]
+  pulls: Pull[]
+  ci: CiRun[]
   ownerError: string
 }
+
+const NO_READ: GithubRead = { at: 0, repo: '', frontier: '', frontierError: '', issues: [], pulls: [], ci: [], ownerError: '' }
 
 function cacheFile(p: Project): string {
   return `${p.logDir}/sidebar-github.json`
@@ -189,74 +194,74 @@ async function isShown($: EngineInterface): Promise<boolean> {
  */
 async function syncGithub($: EngineInterface, p: Project, now: number): Promise<void> {
   const cached = await readCache($, p)
-  const isFresh = cached !== null && now - cached.at < GITHUB_MS && cached.at >= freshAfter
+  const isFresh = cached !== null && cached.at > 0 && now - cached.at < GITHUB_MS && cached.at >= freshAfter
   const isBeingRead = cached?.readingSince !== undefined && now - cached.readingSince < READING_MS
-  if (cached && (isFresh || isBeingRead)) {
-    // While another session reads, look again at the next poll.
-    githubAt = isFresh ? cached.at : 0
-    return show($, p, cached)
-  }
-  await readGithub($, p)
+  if (!cached || !(isFresh || isBeingRead)) return readGithub($, p)
+  // While another session reads, look again at the next poll.
+  githubAt = isFresh ? cached.at : 0
+  if (cached.at > 0) await show($, p, cached)
 }
 
-/** Reads GitHub now, leaves the read for the Project's other sessions, and shows it. */
+/**
+ * Reads GitHub now, leaves the read for the Project's other sessions, and shows it. The read is claimed first, so
+ * that the others wait for it; a read that throws gives the claim back.
+ */
 async function readGithub($: EngineInterface, p: Project): Promise<void> {
   const now = await $.clock.now()
   githubAt = now
-  const previous = await readCache($, p)
-  if (previous) await $.fs.write(cacheFile(p), JSON.stringify({ ...previous, readingSince: now }))
+  const last = (await readCache($, p)) ?? NO_READ
+  const { readingSince: _, ...unclaimed } = last
+  await $.fs.write(cacheFile(p), JSON.stringify({ ...unclaimed, readingSince: now }))
 
   const gh = async (args: string[]) => {
     const r = await $.process.run(['gh', ...args], { cwd: p.main, timeoutMs: 30_000 })
     if (r.exitCode !== 0) throw new Error(firstLine(r.stderr) || `gh ${args[0]} failed`)
     return JSON.parse(r.stdout)
   }
-  const fresh: GithubRead = { at: now, repo: p.repo, frontier: '', frontierError: '', issues: [], pulls: [], ci: [], ownerError: '' }
-  const f = await verkstad($, p, ['frontier', '--json'])
-  if (f.exitCode === 0) fresh.frontier = f.stdout
-  else fresh.frontierError = firstLine(f.stderr) || `exit ${f.exitCode}`
-  if (!fresh.repo) {
-    try {
-      fresh.repo = String((await gh(['repo', 'view', '--json', 'nameWithOwner'])).nameWithOwner ?? '')
-    } catch {
-      // issues show as plain numbers until a read tells
-    }
-  }
+  const got: GithubRead = { ...unclaimed, at: now, repo: p.repo || last.repo, frontierError: '', ownerError: '' }
   try {
-    fresh.issues = await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels'])
-    fresh.pulls = await gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,url'])
-    fresh.ci = await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url'])
+    const f = await verkstad($, p, ['frontier', '--json'])
+    if (f.exitCode === 0) got.frontier = f.stdout
+    else got.frontierError = firstLine(f.stderr) || `exit ${f.exitCode}`
+    if (!got.repo) {
+      try {
+        got.repo = String((await gh(['repo', 'view', '--json', 'nameWithOwner'])).nameWithOwner ?? '')
+      } catch {
+        // issues show as plain numbers until a read tells
+      }
+    }
+    try {
+      const issues = await gh(['issue', 'list', '--state', 'open', '--limit', '200', '--json', 'number,title,labels'])
+      const pulls = await gh(['pr', 'list', '--state', 'open', '--json', 'number,title,headRefName,url'])
+      const ci = await gh(['run', 'list', '--branch', p.base, '--limit', '5', '--json', 'name,status,conclusion,headSha,url'])
+      Object.assign(got, { issues, pulls, ci })
+    } catch (err) {
+      got.ownerError = (err as Error).message
+    }
   } catch (err) {
-    fresh.ownerError = (err as Error).message
+    await $.fs.write(cacheFile(p), JSON.stringify(unclaimed))
+    throw err
   }
-  await $.fs.write(cacheFile(p), JSON.stringify(fresh))
-  await show($, p, fresh)
+  await $.fs.write(cacheFile(p), JSON.stringify(got))
+  await show($, p, got)
 }
 
-/** Draws a read of GitHub: the Frontier, and what waits on the owner; a part that failed keeps what was shown before. */
-async function show($: EngineInterface, p: Project, fresh: GithubRead): Promise<void> {
-  if (fresh.repo && fresh.repo !== p.repo) await update($, project, was => (was ? { ...was, repo: fresh.repo } : was))
+/** Draws a read of GitHub: the Frontier, and what waits on the owner, each with why it failed this time, if it did. */
+async function show($: EngineInterface, p: Project, shared: GithubRead): Promise<void> {
+  if (shared.repo && shared.repo !== p.repo) await update($, project, was => (was ? { ...was, repo: shared.repo } : was))
   let fv: FrontierView
   try {
-    if (fresh.frontierError) throw new Error(fresh.frontierError)
-    fv = frontierView(fresh.frontier, fresh.at)
+    if (!shared.frontier) throw new Error(shared.frontierError || 'verkstad frontier printed nothing')
+    fv = { ...frontierView(shared.frontier, shared.at), error: shared.frontierError }
   } catch (err) {
-    const previous = await read($, frontier)
-    fv = { ...(previous ?? { ready: [], inProgress: [], waiting: [], specsLabelled: [] }), at: fresh.at, error: (err as Error).message }
+    fv = { ready: [], inProgress: [], waiting: [], specsLabelled: [], at: shared.at, error: (err as Error).message }
   }
   await update($, frontier, () => fv)
 
-  let view: OwnerView
-  if (fresh.ownerError) {
-    const previous = await read($, owner)
-    view = { items: previous?.items ?? [], at: fresh.at, error: fresh.ownerError }
-  } else {
-    const r = await read($, run)
-    const working = isGoing(r, await read($, isAlive)) ? (r?.inFlight ?? []) : []
-    const { issues, pulls, ci } = fresh as { issues: never; pulls: never; ci: never }
-    view = { items: attention({ issues, pulls, ci, frontier: fv, repo: fresh.repo || p.repo, base: p.base, working }), at: fresh.at, error: '' }
-  }
-  await update($, owner, () => view)
+  const r = await read($, run)
+  const working = isGoing(r, await read($, isAlive)) ? (r?.inFlight ?? []) : []
+  const items = attention({ issues: shared.issues, pulls: shared.pulls, ci: shared.ci, frontier: fv, repo: shared.repo || p.repo, base: p.base, working })
+  await update($, owner, () => ({ items, at: shared.at, error: shared.ownerError }) satisfies OwnerView)
 }
 
 async function readRuns($: EngineInterface, p: Project, now: number): Promise<void> {
@@ -279,7 +284,8 @@ async function readRuns($: EngineInterface, p: Project, now: number): Promise<vo
   const outcomes = (r: RunView | null) => r?.tickets.map(t => `${t.n}${t.outcome}`).join() ?? ''
   if (before?.file !== view.file || outcomes(before) !== outcomes(view) || Boolean(before?.ended) !== Boolean(view.ended)) {
     githubAt = 0
-    freshAfter = Date.parse(view.lastAt) || 0
+    // Not after now, so that a log written by a clock ahead of this session's does not have every poll read GitHub.
+    freshAfter = Math.min(Date.parse(view.lastAt) || 0, now)
   }
 
   const started = await read($, startingAt)
@@ -301,7 +307,6 @@ async function readRuns($: EngineInterface, p: Project, now: number): Promise<vo
     }
   }
   await update($, history, () => list)
-  void now
 }
 
 /** What the session working each Ticket in flight did last, from the newest transcript of its worktree. */

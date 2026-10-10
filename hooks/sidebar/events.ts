@@ -182,9 +182,9 @@ export function frontierView(json: string, at: number): FrontierView {
   }
 }
 
-type Issue = { number: number; title: string; labels: Array<{ name: string }> }
-type Pull = { number: number; title: string; headRefName: string; url: string }
-type CiRun = { name: string; status: string; conclusion: string; headSha: string; url: string }
+export type Issue = { number: number; title: string; labels: Array<{ name: string }> }
+export type Pull = { number: number; title: string; headRefName: string; url: string }
+export type CiRun = { name: string; status: string; conclusion: string; headSha: string; url: string }
 
 /**
  * What waits on the owner: a red CI on the base branch, a Ticket's pull request to merge, issues labelled for
