@@ -2,7 +2,6 @@
 export type RunTicket = {
   n: number;
   title: string;
-  tier: string;
   /** The Run's last line about it, and when. */
   say: string;
   sayAt: string;
@@ -53,7 +52,6 @@ export type RunSummary = {
 export type FrontierEntry = {
   n: number;
   title: string;
-  tier: string;
   assignees: string[];
   /** Its open blockers, `#12` or `#12 [human]`. */
   waitsOn: string[];

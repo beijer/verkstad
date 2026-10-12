@@ -26,17 +26,17 @@ verkstad run-log                     # the log directory's last Run
 verkstad run-log --run <file>        # the event log named, run-<time>.jsonl in the log directory
 ```
 
-`verkstad run` writes its event log, `run-<time>.jsonl`, in the log directory (`.claude/verkstad/`). The digest gives, per Ticket, the Tier it ran on (and the one it was Resumed on), each session with its role (implementer, Verifier, conflict finisher), how it ended (ended, stopped at its turn limit, spent its budget, ran out of time), its cost, turns and reported status, each failed Landing with its reason and each other failed CLI call, and whether it landed (in which commit) or was Parked (the Park reason's first line); then the Run's totals and how it ended. Under each session it names the session's transcript, found by its id among Claude Code's transcripts for the main checkout and its worktrees (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/`), with its failed tool calls by kind: hook refusals, permission denials and failed commands. A session's subagents (its reviewers) have their transcripts in `<id>/subagents/` beside it. When there is no Run, it says so; ask the owner whether there was one.
+`verkstad run` writes its event log, `run-<time>.jsonl`, in the log directory (`.claude/verkstad/`). The digest gives, per Ticket, each session with its role (implementer, Verifier, conflict finisher), how it ended (ended, stopped at its turn limit, spent its budget, ran out of time), its cost, turns and reported status, each Resume and why, each failed Landing with its reason and each other failed CLI call, and whether it landed (in which commit) or was Parked (the Park reason's first line); then the Run's totals and how it ended. Under each session it names the session's transcript, found by its id among Claude Code's transcripts for the main checkout and its worktrees (`~/.claude/projects/`, or `$CLAUDE_CONFIG_DIR/projects/`), with its failed tool calls by kind: hook refusals, permission denials and failed commands. A session's subagents (its reviewers) have their transcripts in `<id>/subagents/` beside it. When there is no Run, it says so; ask the owner whether there was one.
 
 ## 2. Read the evidence behind each signal
 
-Read the Contract (`.claude/harness.json`, `docs/agents/project.md`) with its Gate's steps and the scripts they run, and what a Run is made of: its routing and limits in `${CLAUDE_PLUGIN_ROOT}/src/run.ts` (`LIMITS`, the Tiers, one Resume, one Fix round, one finished conflict), the prompts it fills in (`${CLAUDE_PLUGIN_ROOT}/prompts/`) and the agents it runs them on (`${CLAUDE_PLUGIN_ROOT}/agents/`). Then go through the digest. Each signal is a question:
+Read the Contract (`.claude/harness.json`, `docs/agents/project.md`) with its Gate's steps and the scripts they run, and what a Run is made of: its routing and limits in `${CLAUDE_PLUGIN_ROOT}/src/run.ts` (`LIMITS`, the implementer and the conflict finisher, one Resume, one Fix round, one finished conflict), the prompts it fills in (`${CLAUDE_PLUGIN_ROOT}/prompts/`) and the agents it runs them on (`${CLAUDE_PLUGIN_ROOT}/agents/`). Then go through the digest. Each signal is a question:
 
 | Signal | Ask |
 | --- | --- |
 | A Ticket with more than one implementer session | A wrap-up, a Resume, a review asked for or a Fix round: why? Read the session's transcript before the one that followed. |
-| A session stopped at its turn limit, spent its budget or ran out of time | Was the Ticket too large, its Tier too low, the limit wrong, or the agent stuck on something a script would do? |
-| A Tier, then a higher one | What did the lower Tier lack: the model, the budget, or a pointer in the prompt? |
+| A session stopped at its turn limit, spent its budget or ran out of time | Was the Ticket too large, the limit wrong, or the agent stuck on something a script would do? |
+| A Resume after a `partial` report | Was the Ticket too large for one session, were its limits wrong (the model, the budget), or did the prompt lack a pointer? |
 | A failed Landing, a Park | The `reason:` and the Gate log's failing step; the Park reason, posted on the Ticket. |
 | Hook refusals | Which command, and what form would the hook have let through; or does the hook refuse too much? |
 | Permission denials | Which action, and is it one the loop needs (a prompt, a Project rule, an `--add-dir`) or one agents must stop trying? |
@@ -67,8 +67,8 @@ Propose removals too. When a proposal adds a check, the same proposal removes th
 
 Each proposal names one change and where it goes:
 
-- a prompt `verkstad run` fills in (`prompts/*-prompt.md`), a Tier agent or the Verifier (`agents/<name>.md`), or a skill (`skills/<name>/SKILL.md`) in verkstad;
-- `verkstad run`'s routing or its limits (a budget, a turn fuse, when a Ticket goes a Tier up), the CLI or a script: anything that needs code and tests is proposed as a Ticket for verkstad (or the Project), in the format of `${CLAUDE_PLUGIN_ROOT}/docs/formats/ticket.md`, so a Run builds it test-first;
+- a prompt `verkstad run` fills in (`prompts/*-prompt.md`), the implementer, the conflict finisher or the Verifier (`agents/<name>.md`), or a skill (`skills/<name>/SKILL.md`) in verkstad;
+- `verkstad run`'s routing or its limits (a budget, a turn fuse, when a Ticket is Resumed), the CLI or a script: anything that needs code and tests is proposed as a Ticket for verkstad (or the Project), in the format of `${CLAUDE_PLUGIN_ROOT}/docs/formats/ticket.md`, so a Run builds it test-first;
 - the Contract: a field in `.claude/harness.json` (as `${CLAUDE_PLUGIN_ROOT}/docs/contract.md` describes it) or a line in `docs/agents/project.md` (in the format of `${CLAUDE_PLUGIN_ROOT}/docs/formats/agent-docs.md`);
 - a bug in the Project itself: a Ticket in the Project.
 

@@ -1,6 +1,6 @@
 # The implementing prompt
 
-The prompt a Tier agent gets for one Ticket. Replace:
+The prompt the implementer gets for one Ticket. Replace:
 
 - `{N}`: the Ticket's number. `{REPO}`: the Project's repo, `owner/name` (`gh repo view --json nameWithOwner`).
 - `{BASE}`: the Contract's `baseBranch`.
@@ -52,7 +52,6 @@ Acceptance criteria: one line each, how it was verified: the test, and what you 
 surfaces: <the Surfaces in .claude/harness.json your change can alter, by name, comma-separated, whether or not the diff touches their globs; or none. The Verifier Walks each one named here or touched by the diff, so name one the globs miss>
 new surface: <what your change lets a user or another system observe that no Surface in .claude/harness.json covers (the first UI, a CLI's first command, an HTTP route, a file written for someone else): a short name for it, the path globs whose changes can alter it, and one line on what a user observes; or none. Files the Project keeps for itself (its own data or state) are not a Surface. A Run files a Ticket to declare each one and teach the Verify skill to drive it.>
 Uncertain or undone: <or "none">
-tier: ok | too low (too low if you had to guess at a design or ran out of room)
 
 Pick the status by what is left, not by how long it took:
 - done: every acceptance criterion is met and the Gate passes. Uncertain lists your guesses and what you could not run, never a known bug.

@@ -154,7 +154,7 @@ export function conflictPrompt(v: ConflictValues): string {
 export const IMPLEMENT_SCHEMA = {
   type: "object",
   additionalProperties: false,
-  required: ["status", "worktree", "commits", "what_was_built", "acceptance_criteria", "surfaces", "new_surfaces", "uncertain", "known_bug", "reviewed", "tier", "report"],
+  required: ["status", "worktree", "commits", "what_was_built", "acceptance_criteria", "surfaces", "new_surfaces", "uncertain", "known_bug", "reviewed", "report"],
   properties: {
     status: { enum: ["done", "blocked", "partial"] },
     worktree: { type: "string" },
@@ -187,7 +187,6 @@ export const IMPLEMENT_SCHEMA = {
     uncertain: { type: "array", items: { type: "string" } },
     known_bug: { type: "boolean" },
     reviewed: { type: "boolean" },
-    tier: { enum: ["ok", "too low"] },
     report: { type: "string", description: "The whole final report, in the format the prompt gives" },
   },
 };

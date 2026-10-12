@@ -112,13 +112,13 @@ function world(
       ran.push(args)
       if (args[0] === 'frontier' && options.frontierFails) return ok('', 1, options.frontierFails)
       if (args[0] === 'frontier') return ok(options.frontier ?? FRONTIER)
-      if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
-      if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget).\n')
+      if (args.join(' ') === 'run --dry-run') return ok('Ready: #49 …, #50 ….\nNext: #49, by the implementer (opus, medium effort, $25 budget).\n')
+      if (args.join(' ') === 'run --dry-run --parallel 1') return ok('Ready: #49 …, #50 ….\nNext: #49, by the implementer (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --dry-run --parallel 2')
-        return ok('Ready: #49 …, #50 ….\nNext: #49, on the standard Tier (opus, medium effort, $25 budget); #50, on the light Tier (sonnet, low effort, $10 budget).\n')
+        return ok('Ready: #49 …, #50 ….\nNext: #49, by the implementer (opus, medium effort, $25 budget); #50, by the implementer (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === `run --dry-run --ticket ${options.claimed}`) return ok('', 1, `verkstad run: #${options.claimed} is already claimed by @owner\n`)
       if (args.join(' ') === 'run --dry-run --ticket 50')
-        return ok('Ticket: #50 Next thing (light).\nNext: #50, on the light Tier (sonnet, low effort, $10 budget).\n')
+        return ok('Ticket: #50 Next thing.\nNext: #50, by the implementer (opus, medium effort, $25 budget).\n')
       if (args.join(' ') === 'run --stop' && options.brokenCli) return { deny: 'could not start: permission denied' }
       if (args.join(' ') === 'run --stop') return ok('The Run stops after #49.\n')
       if (args.join(' ') === 'run --abort') return ok('The Run aborts #49 and discards its work.\n')
@@ -203,6 +203,8 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'triage:39' })).toBeUndefined()
     expect(await text(ui, /untriaged/)).toBe('? asks you something · ! yours to act on · • untriaged')
     expect(await text(ui, /Next thing/)).toBe('Next thing')
+    // #50 is labelled tier:light, which no longer means anything.
+    expect(await text(ui, /^light$/)).toBeUndefined()
     expect(await text(ui, /^WAITING ON A BLOCKER$/)).toBe('WAITING ON A BLOCKER')
     expect((await ui.find({ type: 'Markdown', text: /#50\]/ }))?.props.text).toBe('[#50](https://github.com/owner/project/issues/50)')
     expect(await text(ui, /After the next thing/)).toBe('After the next thing')
@@ -216,7 +218,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'start' })
     expect(w.ran).toContainEqual(['run', '--dry-run'])
     expect(w.launched).toEqual([['run']])
-    expect(await text(ui, /^Starting:/)).toBe('Starting: #49, on the standard Tier (opus, medium effort, $25 budget)')
+    expect(await text(ui, /^Starting:/)).toBe('Starting: #49, by the implementer (opus, medium effort, $25 budget)')
     expect(await text(ui, /Starting…/)).toBe('◌ Starting…')
     await ui.unmount()
   })
@@ -231,7 +233,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     expect(await text(ui, /Running/)).toBe('● Running')
     expect(await text(ui, /The owner can stop a Run/)).toBe('The owner can stop a Run')
-    expect(await text(ui, /^standard · /)).toBe('standard · implementing 9m')
+    expect(await text(ui, /^implementing \d+m$/)).toBe('implementing 9m')
     expect(await text(ui, /^✓ claim/)).toBe('✓ claim  ›  build  ›  verify  ›  land')
         expect(await text(ui, /tool calls/)).toBe('↳ 12 tool calls')
     expect(await text(ui, /^· Bash/)).toBe('· Bash: npm test')
@@ -456,9 +458,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
 
     expect(await text(ui, /Running/)).toBe('● Running')
     expect(await text(ui, /The owner can stop a Run/)).toBe('The owner can stop a Run')
-    expect(await text(ui, /^standard · /)).toBe('standard · implementing 9m')
+    expect(await text(ui, /^implementing \d+m$/)).toBe('implementing 9m')
     expect(await text(ui, /^Next thing$/)).toBe('Next thing')
-    expect(await text(ui, /^light · /)).toBe('light · verifying 4m')
+    expect(await text(ui, /^verifying \d+m$/)).toBe('verifying 4m')
+    // Its event log is from before Tiers went: it names one for each Ticket, and the pane shows none.
+    expect(await text(ui, /\b(standard|light)\b/)).toBeUndefined()
     const stages = (await ui.findAll({ type: 'Text', text: /claim .* land$/ })).map(t => t.text)
     expect(stages).toEqual(['✓ claim  ›  build  ›  verify  ›  land', '✓ claim  ›  ✓ build  ›  verify  ›  land'])
     const calls = (await ui.findAll({ type: 'Text', text: /tool calls$/ })).map(t => t.text)
@@ -480,7 +484,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await text(ui, /^· Skill/)).toBe('· Skill: verkstad:tdd')
     expect(await text(ui, /^· Bash/)).toBeUndefined()
     expect(await text(ui, /^THIS RUN$/)).toBe('THIS RUN')
-    expect(await text(ui, /^standard · implementing/)).toBe('standard · implementing 1m')
+    expect(await text(ui, /^implementing \d+m$/)).toBe('implementing 1m')
     expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #50 and #51')
     await ui.unmount()
   })
@@ -514,7 +518,7 @@ test('a Ticket whose failure stops the Run is no longer in flight while the othe
   const ui = await open($, 'desktop')
 
   expect((await ui.findAll({ type: 'Text', text: /tool calls$/ })).map(t => t.text)).toEqual(['↳ 3 tool calls'])
-  expect(await text(ui, /^standard · /)).toBeUndefined()
+  expect(await text(ui, /^implementing \d+m$/)).toBeUndefined()
   expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #50')
   expect(await text(ui, /^failed:/)).toBe('failed: git push failed: remote hung up')
 })
@@ -547,7 +551,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(w.ran).toContainEqual(['run', '--dry-run', '--parallel', '2'])
     expect(w.launched).toEqual([['run', '--parallel', '2']])
     expect(await text(ui, /^Starting:/)).toBe(
-      'Starting: #49, on the standard Tier (opus, medium effort, $25 budget); #50, on the light Tier (sonnet, low effort, $10 budget)',
+      'Starting: #49, by the implementer (opus, medium effort, $25 budget); #50, by the implementer (opus, medium effort, $25 budget)',
     )
     await ui.unmount()
   })
@@ -564,7 +568,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(await ui.find({ key: 'parallel:2' })).toBeUndefined()
     await ui.press({ key: 'parallel:1' })
     expect(w.launched).toEqual([['run', '--parallel', '1']])
-    expect(await text(ui, /^Starting:/)).toBe('Starting: #49, on the standard Tier (opus, medium effort, $25 budget)')
+    expect(await text(ui, /^Starting:/)).toBe('Starting: #49, by the implementer (opus, medium effort, $25 budget)')
   })
 }
 
@@ -592,7 +596,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     await ui.press({ key: 'start:50' })
     expect(w.ran).toContainEqual(['run', '--dry-run', '--ticket', '50'])
     expect(w.launched).toEqual([['run', '--ticket', '50']])
-    expect(await text(ui, /^Starting:/)).toBe('Starting: #50, on the light Tier (sonnet, low effort, $10 budget)')
+    expect(await text(ui, /^Starting:/)).toBe('Starting: #50, by the implementer (opus, medium effort, $25 budget)')
     expect(await text(ui, /Starting…/)).toBe('◌ Starting…')
     expect(await ui.find({ key: 'start:49' })).toBeUndefined()
     await ui.unmount()

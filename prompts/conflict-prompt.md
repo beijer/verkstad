@@ -1,6 +1,6 @@
 # The conflict prompt
 
-For a Ticket whose implementation is done but whose Landing ended in `reason: conflict`. Goes to `verkstad:ticket-light`. Replace `{N}`, `{REPO}` and `{BASE}` as in the implementing prompt, `{COMMITS}` (the branch's commits, `git log --oneline origin/{BASE}..issue-{N}`), `{CONFLICT_FILES}` (from `verkstad land`'s message) and `{LANDED}`: one line per Ticket that landed since issue-{N} branched, with its commits and what it added.
+For a Ticket whose implementation is done but whose Landing ended in `reason: conflict`. Goes to `verkstad:conflict-finisher`. Replace `{N}`, `{REPO}` and `{BASE}` as in the implementing prompt, `{COMMITS}` (the branch's commits, `git log --oneline origin/{BASE}..issue-{N}`), `{CONFLICT_FILES}` (from `verkstad land`'s message) and `{LANDED}`: one line per Ticket that landed since issue-{N} branched, with its commits and what it added.
 
 ```
 You are finishing Ticket #{N} of {REPO}. Your working directory is a git worktree of your own; stay in it. The `verkstad` command is on your PATH.

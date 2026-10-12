@@ -670,7 +670,7 @@ export const register: Register = on => {
     const cards = inFlight.map(t => {
       const doing = phase(t.say)
       const at = stage(doing)
-      const facts = [t.tier, `${doing} ${age(t.sayAt, now)}`, t.cost ? `${usd(t.cost)} so far` : '']
+      const facts = [`${doing} ${age(t.sayAt, now)}`, t.cost ? `${usd(t.cost)} so far` : '']
       const act = acts.find(one => one.ticket === t.n)
       return (
         <Box key={`card:${t.n}`} flexDirection="column" borderStyle="round" borderColor={ACCENT} paddingX={2} paddingY={1} marginTop={1} width={width}>
@@ -796,7 +796,7 @@ export const register: Register = on => {
         going || starting ? undefined : <Button key={`start:${n}`} label="Start ›" plain onPress={() => void start($, p, ['--ticket', String(n)])} />
       ready
         .slice(0, 5)
-        .forEach((t, i) => next.push(row(`r${t.n}`, i === 0 && !going ? '▸' : ' ', ACCENT, t.n, t.title, t.tier, 0, startOne(t.n))))
+        .forEach((t, i) => next.push(row(`r${t.n}`, i === 0 && !going ? '▸' : ' ', ACCENT, t.n, t.title, '', 0, startOne(t.n))))
       if (ready.length > 5) next.push(<Text key="more" color={DIM}>  +{ready.length - 5} more ready</Text>)
       if (ready.length === 0 && !f.error) next.push(<Text key="none" color={DIM}>Nothing is ready.</Text>)
     }

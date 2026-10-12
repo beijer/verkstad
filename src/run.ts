@@ -5,7 +5,7 @@
 // which files a Ticket will touch (ADR 0008): it claims each Ticket, gives it a
 // worktree under .claude/worktrees/, and has a headless Claude Code session
 // (src/claude.ts) implement it with the implementing prompt (prompts/) on the
-// Ticket's Tier, told which other Tickets are in flight. Then it routes on the
+// implementer agent, told which other Tickets are in flight. Then it routes on the
 // session's structured report: a branch with no recorded review goes back to
 // the same session to review it; one touching a Surface goes to a Verifier
 // session; a finished one goes to `verkstad land`; what cannot finish is Parked
@@ -30,9 +30,9 @@
 // Every routing rule and every budget is here, in code (docs/contract.md lists
 // them): a Ticket gets one Resume, one Fix round and one finished conflict, a
 // session that ends without a report is resumed once to give one, and a
-// Verifier that records nothing runs once more. A Tier comes from the Ticket's
-// `tier:light` or `tier:hard` label, standard without one, and a partial
-// report goes one Tier up. A session is bounded by its dollar budget, which it
+// Verifier that records nothing runs once more. Every Ticket is implemented by
+// the implementer agent, its Resume too; a Landing that conflicts is finished
+// by the conflict-finisher agent. A session is bounded by its dollar budget, which it
 // is told and sees shrink; its turns and its time are only fuses (LIMITS).
 // What needs the owner and is not a Park (a session that failed outright, a
 // Landing that cannot run) stops the Run, the Ticket still claimed, once the
@@ -98,9 +98,6 @@ const ASK_POLL_MS = 1000;
 /** Thrown up to the Run when the owner aborts it: not a Failure, since nothing failed. */
 class Aborted extends Error {}
 
-const TIERS = ["light", "standard", "hard"] as const;
-type Tier = (typeof TIERS)[number];
-
 /**
  * What a session may spend, in USD, how many turns it may take, and how long it may run. The budget is the
  * bound: Claude Code shows the session what is left, and the prompt tells it to wrap up near the end. The
@@ -112,11 +109,10 @@ interface Limits {
   hours: number;
 }
 
-/** By agent; from the cost and turns of the Tier agents' past sessions, about twice the most one took. */
+/** By agent; from the cost and turns of each agent's past sessions, about twice the most one took. */
 const LIMITS: Record<string, Limits> = {
-  "ticket-light": { usd: 5, turns: 200, hours: 1 },
-  "ticket-standard": { usd: 25, turns: 250, hours: 2 },
-  "ticket-hard": { usd: 35, turns: 400, hours: 3 },
+  implementer: { usd: 25, turns: 250, hours: 2 },
+  "conflict-finisher": { usd: 5, turns: 200, hours: 1 },
   verifier: { usd: 10, turns: 120, hours: 1 },
 };
 
@@ -378,7 +374,6 @@ function toReport(value: Record<string, unknown>): Report {
 /** One Ticket as the Run works it, with the budgets it has used. */
 interface Ticket {
   n: number;
-  tier: Tier;
   worktree: string;
   /** The implementer's last session, which a review or a wrap-up resumes. */
   session: string | null;
@@ -418,21 +413,14 @@ type Step =
   | { to: "park"; why: string }
   | { to: "done"; outcome: Outcome };
 
-function tierOf(labels: string[]): Tier {
-  for (const label of labels) {
-    const tier = /^tier:(\w+)$/.exec(label)?.[1];
-    if (tier && (TIERS as readonly string[]).includes(tier)) return tier as Tier;
-  }
-  return "standard";
-}
-
 function budgetOf(budget: number | undefined, agent: string): number {
   return budget ?? LIMITS[agent].usd;
 }
 
-function describeTier(tier: Tier, budget: number | undefined): string {
-  const agent = readAgent(`ticket-${tier}`);
-  return `${tier} Tier (${agent.model}, ${agent.effort} effort, ${usdText(budgetOf(budget, agent.name))} budget)`;
+/** `implementer (opus, medium effort, $25 budget)`. */
+function describeImplementer(budget: number | undefined): string {
+  const agent = readAgent(IMPLEMENTER.agent);
+  return `${IMPLEMENTER.name} (${agent.model}, ${agent.effort} effort, ${usdText(budgetOf(budget, agent.name))} budget)`;
 }
 
 /** What a session does, for the line that names it, and how it is bounded and told so. */
@@ -442,12 +430,9 @@ interface Role {
   walks: boolean;
 }
 
-function implementer(t: Ticket): Role {
-  return { name: "implementer", agent: `ticket-${t.tier}`, walks: false };
-}
-
+const IMPLEMENTER: Role = { name: "implementer", agent: "implementer", walks: false };
 const VERIFIER: Role = { name: "Verifier", agent: "verifier", walks: true };
-const CONFLICT_FINISHER: Role = { name: "conflict finisher", agent: "ticket-light", walks: false };
+const CONFLICT_FINISHER: Role = { name: "conflict finisher", agent: "conflict-finisher", walks: false };
 
 /** Starts a session, or resumes one, for `role`, within its limits, counting what it cost. */
 async function runSession(run: Run, t: Ticket, role: Role, cwd: string, prompt: string, schema: object, resume?: string): Promise<SessionResult> {
@@ -571,7 +556,6 @@ async function runTicket(run: Run, entry: Entry): Promise<Outcome> {
   const n = entry.number;
   const t: Ticket = {
     n,
-    tier: tierOf(entry.labels),
     worktree: join(run.main, ".claude", "worktrees", `issue-${n}`),
     session: null,
     report: null,
@@ -587,8 +571,8 @@ async function runTicket(run: Run, entry: Entry): Promise<Outcome> {
     sessions: new Map(),
   };
   gh(["issue", "edit", String(n), "--add-assignee", "@me"]);
-  say(run, n, `${entry.title}: claimed, ${describeTier(t.tier, run.budget)}.`);
-  log(run, { ticket: n, claimed: entry.title, tier: t.tier });
+  say(run, n, `${entry.title}: claimed, ${describeImplementer(run.budget)}.`);
+  log(run, { ticket: n, claimed: entry.title });
   const step: Step = hasBranch(run, n)
     ? { to: "implement", why: { kind: "resume", reason: `an earlier Run or a Park left the branch issue-${n}; continue it from where it is.` } }
     : { to: "implement" };
@@ -643,7 +627,7 @@ async function implement(run: Run, t: Ticket, why?: { kind: "resume" | "fix"; re
     findings: why?.kind === "fix" ? why.reason : undefined,
     others: [...run.inFlight].filter(([n]) => n !== t.n).map(([n, title]) => ({ n, title })),
   });
-  const result = await runSession(run, t, implementer(t), wt, prompt, IMPLEMENT_SCHEMA);
+  const result = await runSession(run, t, IMPLEMENTER, wt, prompt, IMPLEMENT_SCHEMA);
   t.session = result.sessionId;
   return reported(run, t, result);
 }
@@ -661,7 +645,7 @@ function reported(run: Run, t: Ticket, result: SessionResult): Step {
   const theReport = `The implementer's report:\n${report.text}`;
   if (report.status === "blocked") return { to: "park", why: `blocked: ${uncertain}\n\n${theReport}` };
   if (report.status === "partial") {
-    return resumeOrPark(run, t, `partial: ${uncertain}`, `Resumed once, and it is partial again: ${uncertain}\n\n${theReport}`, true);
+    return resumeOrPark(run, t, `partial: ${uncertain}`, `Resumed once, and it is partial again: ${uncertain}\n\n${theReport}`);
   }
   if (report.knownBug) {
     return resumeOrPark(run, t, `done, with a known bug: ${uncertain}`, `Resumed once, and it is done with a known bug again: ${uncertain}\n\n${theReport}`);
@@ -685,17 +669,16 @@ function fromGit(run: Run, t: Ticket): Step {
   const what = done ? `it gave no report, even when asked; its branch has\n${done}` : "it gave no report, even when asked, and committed nothing";
   say(run, t.n, `implementer gave no report; ${done ? "its commits make it partial" : "it committed nothing"}.`);
   forReflect(run, t.n, "read from its branch");
-  return resumeOrPark(run, t, `partial: ${what}`, `Resumed once, and ${what}`, true);
+  return resumeOrPark(run, t, `partial: ${what}`, `Resumed once, and ${what}`);
 }
 
-/** The Ticket's one Resume, one Tier up when `up`; Parked with `parkWhy` when it had it. */
-function resumeOrPark(run: Run, t: Ticket, reason: string, parkWhy: string, up = false): Step {
+/** The Ticket's one Resume; Parked with `parkWhy` when it had it. */
+function resumeOrPark(run: Run, t: Ticket, reason: string, parkWhy: string): Step {
   if (t.resumed) return { to: "park", why: parkWhy };
   t.resumed = true;
-  if (up) t.tier = TIERS[Math.min(TIERS.indexOf(t.tier) + 1, TIERS.length - 1)];
   forReflect(run, t.n, "Resumed");
-  say(run, t.n, `Resuming on the ${t.tier} Tier: ${firstLine(reason)}`);
-  log(run, { ticket: t.n, resumed: firstLine(reason), tier: t.tier });
+  say(run, t.n, `Resuming: ${firstLine(reason)}`);
+  log(run, { ticket: t.n, resumed: firstLine(reason) });
   return { to: "implement", why: { kind: "resume", reason } };
 }
 
@@ -712,7 +695,7 @@ async function review(run: Run, t: Ticket): Promise<Step> {
     `No review of ${branch} is recorded. Run \`git merge-base HEAD ${run.upstream}\` on its own, review the branch with ` +
     "Skill verkstad:review against the commit it prints, fix the real findings, run `verkstad gate`, commit, leave the " +
     "worktree clean, and give the final report again as your structured output.";
-  return reported(run, t, await runSession(run, t, implementer(t), t.worktree, prompt, IMPLEMENT_SCHEMA, t.session));
+  return reported(run, t, await runSession(run, t, IMPLEMENTER, t.worktree, prompt, IMPLEMENT_SCHEMA, t.session));
 }
 
 /**
@@ -786,7 +769,7 @@ function routeVerdict(run: Run, t: Ticket, touched: boolean, cost: string): Step
       t.fixRound = true;
       t.failedVerdict = criteriaLines(verdict);
       forReflect(run, t.n, "a Fix round");
-      say(run, t.n, `Fix round on the ${t.tier} Tier.`);
+      say(run, t.n, "Fix round.");
       return { to: "implement", why: { kind: "fix", reason: `${t.verifierReport}\nEvidence: ${verdict.evidence}` } };
     case "blocked":
       return { to: "park", why: `The Verifier needs the owner.\n\n${theReport}` };
@@ -894,9 +877,9 @@ function closeLanded(run: Run, t: Ticket): string | null {
   return line;
 }
 
-/** A Landing that conflicted goes to the conflict prompt, on the light Tier, in a fresh worktree. */
+/** A Landing that conflicted goes to the conflict prompt, on the conflict finisher, in a fresh worktree. */
 async function finishConflict(run: Run, t: Ticket, files: string): Promise<Step> {
-  say(run, t.n, `conflicts with ${run.base} in ${files}; finishing it on the light Tier.`);
+  say(run, t.n, `conflicts with ${run.base} in ${files}; finishing it with the conflict finisher.`);
   const wt = freshWorktree(run, t);
   const branch = `issue-${t.n}`;
   const prompt = conflictPrompt({
@@ -1022,8 +1005,8 @@ function closeAlreadyLanded(run: Run, entry: Entry, commit: { sha: string; subje
  * `count` at most.
  */
 function plan(ready: Entry[], budget: number | undefined, count: number, chosen: boolean): string {
-  const next = ready.slice(0, count).map((e) => `#${e.number}, on the ${describeTier(tierOf(e.labels), budget)}`);
-  const listed = ready.map((e) => `#${e.number} ${e.title} (${tierOf(e.labels)})`).join(", ");
+  const next = ready.slice(0, count).map((e) => `#${e.number}, by the ${describeImplementer(budget)}`);
+  const listed = ready.map((e) => `#${e.number} ${e.title}`).join(", ");
   return `${chosen ? "Ticket" : "Ready"}: ${listed}.\nNext: ${next.join("; ")}.\n`;
 }
 

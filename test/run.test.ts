@@ -41,7 +41,6 @@ function report(status: "done" | "blocked" | "partial", more: Record<string, unk
     uncertain: [],
     known_bug: false,
     reviewed: true,
-    tier: "ok",
     report: `status: ${status}\nWhat was built: the feature.`,
     ...more,
   };
@@ -92,7 +91,7 @@ test("run implements the one ready Ticket in a worktree of its own, lands it and
   assert.equal(
     r.stdout,
     [
-      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).",
       "#7 implementing in .claude/worktrees/issue-7.",
       "#7 implementer reported done ($0.25).",
       "#7 touches no Surface; landing.",
@@ -122,6 +121,10 @@ test("run implements the one ready Ticket in a worktree of its own, lands it and
   assert.match(flag(call.args, "--session-id") ?? "", /^[0-9a-f-]{36}$/);
   assert.match(flag(call.args, "--append-system-prompt") ?? "", /^You implement one Ticket of a Project in a git worktree of your own\. The prompt names the Ticket/);
   assert.match(call.prompt, /^You are implementing Ticket #7 of owner\/project\. /);
+  assert.doesNotMatch(call.prompt, /\btier\b/i);
+  const schema = JSON.parse(flag(call.args, "--json-schema") ?? "{}") as { required: string[]; properties: Record<string, unknown> };
+  assert.equal(schema.required.includes("tier"), false);
+  assert.equal("tier" in schema.properties, false);
   assert.match(call.prompt, /`verkstad start 7`/);
   assert.doesNotMatch(call.prompt, /\{[A-Z_]+\}|^Resume:|^Fix round:|Spec is #/m);
   assert.match(call.prompt, /\n\nThis session has a budget of \$25, and system reminders show what is left\. .* When about 15% is left, start no new work: /);
@@ -129,13 +132,13 @@ test("run implements the one ready Ticket in a worktree of its own, lands it and
   assert.equal(readdirSync(join(p.dir, ".claude", "verkstad")).filter((e) => /^run-.*\.jsonl$/.test(e)).length, 1);
 });
 
-test("run --budget gives every session that budget instead of its Tier's", (t) => {
+test("run --budget gives every session that budget instead of its agent's", (t) => {
   const p = runProject(t, [ready(7)], [implemented(7, "a.txt")]);
 
   const r = p.run("run", "--budget", "7");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^#7 Ticket 7: claimed, standard Tier \(opus, medium effort, \$7 budget\)\.\n/);
+  assert.match(r.stdout, /^#7 Ticket 7: claimed, implementer \(opus, medium effort, \$7 budget\)\.\n/);
   assert.equal(flag(p.claudeCalls()[0].args, "--max-budget-usd"), "7");
   assert.match(p.claudeCalls()[0].prompt, /This session has a budget of \$7,/);
 });
@@ -176,12 +179,12 @@ test("run --max 1 starts one Ticket and leaves the rest of the Frontier", (t) =>
   assert.deepEqual(p.state().issues[1].assignees, []);
 });
 
-test("run --dry-run says which Ticket it would start, on which Tier, and claims nothing", (t) => {
+test("run --dry-run says which Ticket it would start, by the implementer with its model, effort and budget, and claims nothing", (t) => {
   const p = runProject(t, [ready(7, { labels: ["ready-for-agent", "tier:hard"] }), ready(9)], []);
 
   const r = p.run("run", "--parallel", "1", "--dry-run");
 
-  assert.equal(r.stdout, "Ready: #7 Ticket 7 (hard), #9 Ticket 9 (standard).\nNext: #7, on the hard Tier (opus, high effort, $35 budget).\n");
+  assert.equal(r.stdout, "Ready: #7 Ticket 7, #9 Ticket 9.\nNext: #7, by the implementer (opus, medium effort, $25 budget).\n");
   assert.equal(r.code, 0);
   assert.deepEqual(p.state().issues[0].assignees, []);
 });
@@ -239,7 +242,7 @@ test("run nudges a session stopped at its turn limit to commit and report, and r
   assert.equal(p.state().issues[0].state, "closed");
 });
 
-test("run reads a session that gave no report even when asked once more from its branch: its commits make it partial, Resumed one Tier up", (t) => {
+test("run reads a session that gave no report even when asked once more from its branch: its commits make it partial, Resumed", (t) => {
   const silent: StubSession = { run: ["verkstad start 7", ...commitFile(7, "a.txt", "half")], subtype: "error_max_budget_usd" };
   const resumed: StubSession = { run: ["verkstad start 7 --resume", ...commitFile(7, "b.txt", "rest"), "verkstad review record"], report: report("done") };
   const p = runProject(t, [ready(7)], [silent, { subtype: "error_max_turns" }, resumed]);
@@ -249,16 +252,17 @@ test("run reads a session that gave no report even when asked once more from its
   assert.equal(r.code, 0, r.stderr);
   assert.match(
     r.stdout,
-    /\n#7 implementer spent its budget without a report; asking it to commit and report\.\n#7 implementer gave no report; its commits make it partial\.\n#7 Resuming on the hard Tier: partial: it gave no report, even when asked; its branch has\n/,
+    /\n#7 implementer spent its budget without a report; asking it to commit and report\.\n#7 implementer gave no report; its commits make it partial\.\n#7 Resuming: partial: it gave no report, even when asked; its branch has\n/,
   );
   const third = p.claudeCalls()[2];
-  assert.equal(flag(third.args, "--effort"), "high");
+  assert.equal(flag(third.args, "--model"), "opus");
+  assert.equal(flag(third.args, "--effort"), "medium");
   assert.match(third.prompt, /Why it came back: partial: it gave no report, even when asked; its branch has\n[0-9a-f]+ Adds a\.txt\. Refs #7\n/);
   assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 implementer asked to wrap up, read from its branch, Resumed\.\n$/);
   assert.equal(p.state().issues[0].state, "closed");
 });
 
-test("run Resumes a partial Ticket once, one Tier up, with what was left as the reason", (t) => {
+test("run Resumes a partial Ticket once, on the implementer, with what was left as the reason", (t) => {
   const partial: StubSession = {
     run: ["verkstad start 7", ...commitFile(7, "a.txt", "half")],
     report: report("partial", { uncertain: ["The second criterion is not built."] }),
@@ -269,12 +273,69 @@ test("run Resumes a partial Ticket once, one Tier up, with what was left as the 
   const r = p.run("run");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /^#7 Ticket 7: claimed, light Tier \(sonnet, medium effort, \$5 budget\)\.\n/);
-  assert.match(r.stdout, /\n#7 Resuming on the standard Tier: partial: The second criterion is not built\.\n/);
-  const second = p.claudeCalls()[1];
+  assert.match(r.stdout, /^#7 Ticket 7: claimed, implementer \(opus, medium effort, \$25 budget\)\.\n/);
+  assert.match(r.stdout, /\n#7 Resuming: partial: The second criterion is not built\.\n/);
+  const [first, second] = p.claudeCalls();
   assert.equal(flag(second.args, "--model"), "opus");
+  assert.equal(flag(second.args, "--effort"), "medium");
+  assert.equal(flag(second.args, "--append-system-prompt"), flag(first.args, "--append-system-prompt"));
   assert.match(second.prompt, /^Resume: this Ticket was started before\. .*Why it came back: partial: The second criterion is not built\.$/m);
   assert.deepEqual(p.git("--git-dir", p.origin, "log", "--format=%s", "-2", "main").split("\n"), ["Adds b.txt. Refs #7", "Adds a.txt. Refs #7"]);
+});
+
+test("run gives a Ticket labelled tier:hard, one labelled tier:light and one with neither the same implementer, and logs no tier", (t) => {
+  const p = runProject(
+    t,
+    [ready(7, { labels: ["ready-for-agent", "tier:hard"] }), ready(9, { labels: ["ready-for-agent", "tier:light"] }), ready(11)],
+    [implemented(7, "a.txt"), implemented(9, "b.txt"), implemented(11, "c.txt")],
+  );
+
+  const r = p.run("run", "--parallel", "1");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(
+    r.stdout.split("\n").filter((l) => l.includes(": claimed, ")),
+    [
+      "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).",
+      "#9 Ticket 9: claimed, implementer (opus, medium effort, $25 budget).",
+      "#11 Ticket 11: claimed, implementer (opus, medium effort, $25 budget).",
+    ],
+  );
+  const agents = p.claudeCalls().map((c) => ["--model", "--effort", "--max-turns", "--max-budget-usd", "--append-system-prompt"].map((f) => flag(c.args, f)));
+  assert.equal(agents.length, 3);
+  assert.deepEqual(agents[1], agents[0]);
+  assert.deepEqual(agents[2], agents[0]);
+  assert.deepEqual(agents[0].slice(0, 4), ["opus", "medium", "250", "25"]);
+  assert.deepEqual(
+    eventLog(p).filter((e) => "claimed" in e).map(({ at: _, ...e }) => e),
+    [{ ticket: 7, claimed: "Ticket 7" }, { ticket: 9, claimed: "Ticket 9" }, { ticket: 11, claimed: "Ticket 11" }],
+  );
+  assert.deepEqual(p.state().issues.map((i) => i.state), ["closed", "closed", "closed"]);
+});
+
+test("run Parks a Ticket that reports partial again after its one Resume on the implementer", (t) => {
+  const partial = (resume: boolean, left: string): StubSession => ({
+    run: [`verkstad start 7${resume ? " --resume" : ""}`, ...commitFile(7, resume ? "b.txt" : "a.txt", "half")],
+    report: report("partial", { uncertain: [left] }),
+  });
+  const p = runProject(t, [ready(7)], [partial(false, "The second criterion is not built."), partial(true, "The third criterion is not built.")]);
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /\n#7 Resuming: partial: The second criterion is not built\.\n/);
+  assert.match(r.stdout, /\n#7 parked: Resumed once, and it is partial again: The third criterion is not built\.\n/);
+  const [first, second] = p.claudeCalls();
+  assert.equal(p.claudeCalls().length, 2);
+  assert.deepEqual(
+    ["--model", "--effort", "--append-system-prompt"].map((f) => flag(second.args, f)),
+    ["--model", "--effort", "--append-system-prompt"].map((f) => flag(first.args, f)),
+  );
+  assert.deepEqual(
+    eventLog(p).filter((e) => "resumed" in e).map(({ at: _, ...e }) => e),
+    [{ ticket: 7, resumed: "partial: The second criterion is not built." }],
+  );
+  assert.deepEqual(p.state().issues[0].labels, ["needs-info"]);
 });
 
 test("run Resumes a Ticket whose Landing's Gate failed, and Parks it when the Gate fails again", (t) => {
@@ -287,7 +348,7 @@ test("run Resumes a Ticket whose Landing's Gate failed, and Parks it when the Ga
   const r = p.run("run");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\n#7 Landing failed: gate-failed\.\n#7 Resuming on the standard Tier: Landing failed \(gate-failed\): /);
+  assert.match(r.stdout, /\n#7 Landing failed: gate-failed\.\n#7 Resuming: Landing failed \(gate-failed\): /);
   assert.match(r.stdout, /\n#7 parked: Resumed once, and Landing failed again \(gate-failed\)\.\n/);
   assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 Landing failed \(gate-failed\), Resumed, Parked\.\n$/);
   assert.match(p.claudeCalls()[1].prompt, /^Resume: .*Why it came back: Landing failed \(gate-failed\): #7 did not land: the Gate failed: /m);
@@ -356,7 +417,7 @@ test("run sends a failed Verdict back to the implementer as its Fix round, Walks
   const r = p.run("run");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\n#7 Verdict: failed \(\$0\.25\)\.\n#7 Fix round on the standard Tier\.\n/);
+  assert.match(r.stdout, /\n#7 Verdict: failed \(\$0\.25\)\.\n#7 Fix round\.\n/);
   assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 a Fix round\.\n$/);
   const [, , fix, verifier] = p.claudeCalls();
   assert.match(fix.prompt, /^Fix round: this Ticket is implemented on issue-7, .*Its findings: verdict: failed\nCriteria: It works: saw it\./m);
@@ -408,10 +469,13 @@ test("run has the conflict prompt finish a Ticket whose Landing conflicted with 
   const r = p.run("run");
 
   assert.equal(r.code, 0, r.stderr);
-  assert.match(r.stdout, /\n#7 Landing failed: conflict\.\n#7 conflicts with main in a\.txt; finishing it on the light Tier\.\n#7 conflict finisher reported done \(\$0\.25\)\.\n/);
+  assert.match(r.stdout, /\n#7 Landing failed: conflict\.\n#7 conflicts with main in a\.txt; finishing it with the conflict finisher\.\n#7 conflict finisher reported done \(\$0\.25\)\.\n/);
   assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 Landing failed \(conflict\)\.\n$/);
   const finisher = p.claudeCalls()[1];
   assert.equal(flag(finisher.args, "--model"), "sonnet");
+  assert.equal(flag(finisher.args, "--effort"), "medium");
+  assert.equal(flag(finisher.args, "--max-budget-usd"), "5");
+  assert.match(flag(finisher.args, "--append-system-prompt") ?? "", /^You finish one Ticket of a Project whose Landing hit a rebase conflict/);
   assert.match(finisher.prompt, /^You are finishing Ticket #7 of owner\/project\. /);
   assert.match(finisher.prompt, /rebasing onto origin\/main conflicted in a\.txt\. Since issue-7 branched, these landed on main:\n[0-9a-f]+ Another Ticket landed\n/);
   assert.equal(p.git("--git-dir", p.origin, "show", "main:a.txt"), "ours and theirs");
@@ -697,7 +761,7 @@ test("run --stop lets the Run land the Ticket it is on, then end without claimin
   assert.equal(
     r.stdout,
     [
-      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).",
       "#7 implementing in .claude/worktrees/issue-7.",
       "#7 implementer reported done ($0.25).",
       "#7 touches no Surface; landing.",
@@ -749,7 +813,7 @@ test("run --abort kills the implementer session and what it started, discards th
   assert.equal(
     r.stdout,
     [
-      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).",
       "#7 implementing in .claude/worktrees/issue-7.",
       "Run aborted: 1 session, $0.00.",
       "Aborted at the owner's request: #7's work was discarded: the worktree .claude/worktrees/issue-7, the branch issue-7, its review record.",
@@ -848,7 +912,7 @@ test("run --stop and --abort fail with no Run going: no event log, one that ende
   refused(["--stop", "--abort"]);
 
   const gone = spawnSync("true").pid;
-  const killed = '{"run":"started","pid":' + gone + "}\n" + '{"ticket":7,"claimed":"Ticket 7","tier":"standard"}\n';
+  const killed = '{"run":"started","pid":' + gone + "}\n" + '{"ticket":7,"claimed":"Ticket 7"}\n';
   writeFileSync(join(dir, "run-2026-10-08T11-00-00-000Z.jsonl"), killed);
   refused(["--stop", "--abort"]);
   assert.equal(readFileSync(join(dir, "run-2026-10-08T11-00-00-000Z.jsonl"), "utf8"), killed);
@@ -892,9 +956,9 @@ test("run --parallel 2 works two ready Tickets side by side, tells each implemen
   assert.equal(
     r.stdout,
     [
-      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).",
       "#7 implementing in .claude/worktrees/issue-7.",
-      "#9 Ticket 9: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#9 Ticket 9: claimed, implementer (opus, medium effort, $25 budget).",
       "#9 implementing in .claude/worktrees/issue-9.",
       "#7 implementer reported done ($0.25).",
       "#7 touches no Surface; landing.",
@@ -928,14 +992,14 @@ test("run --parallel 2 has a conflict session finish the second of two Tickets t
 
   assert.equal(r.code, 0, r.stderr);
   assert.ok(
-    r.stdout.includes("\n#9 Landing failed: conflict.\n#9 conflicts with main in a.txt; finishing it on the light Tier.\n#9 conflict finisher reported done ($0.25).\n"),
+    r.stdout.includes("\n#9 Landing failed: conflict.\n#9 conflicts with main in a.txt; finishing it with the conflict finisher.\n#9 conflict finisher reported done ($0.25).\n"),
     r.stdout,
   );
   assert.equal(p.git("--git-dir", p.origin, "show", "main:a.txt"), "seven and nine");
   assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"]]);
   assert.deepEqual(
     eventLog(p).filter((e) => typeof e.say === "string" && e.say.startsWith("conflicts")).map(({ at: _, ...e }) => e),
-    [{ ticket: 9, say: "conflicts with main in a.txt; finishing it on the light Tier." }],
+    [{ ticket: 9, say: "conflicts with main in a.txt; finishing it with the conflict finisher." }],
   );
 });
 
@@ -965,8 +1029,8 @@ test("run --parallel 2 --dry-run names the two Tickets it would start, and claim
 
   assert.equal(
     r.stdout,
-    "Ready: #7 Ticket 7 (hard), #9 Ticket 9 (standard), #11 Ticket 11 (standard).\n" +
-      "Next: #7, on the hard Tier (opus, high effort, $35 budget); #9, on the standard Tier (opus, medium effort, $25 budget).\n",
+    "Ready: #7 Ticket 7, #9 Ticket 9, #11 Ticket 11.\n" +
+      "Next: #7, by the implementer (opus, medium effort, $25 budget); #9, by the implementer (opus, medium effort, $25 budget).\n",
   );
   assert.equal(r.code, 0);
   assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
@@ -1049,8 +1113,8 @@ test("run --dry-run without --parallel names the two Tickets it would start", (t
 
   assert.equal(
     r.stdout,
-    "Ready: #7 Ticket 7 (standard), #9 Ticket 9 (standard), #11 Ticket 11 (standard).\n" +
-      "Next: #7, on the standard Tier (opus, medium effort, $25 budget); #9, on the standard Tier (opus, medium effort, $25 budget).\n",
+    "Ready: #7 Ticket 7, #9 Ticket 9, #11 Ticket 11.\n" +
+      "Next: #7, by the implementer (opus, medium effort, $25 budget); #9, by the implementer (opus, medium effort, $25 budget).\n",
   );
   assert.equal(r.code, 0);
   assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
@@ -1093,9 +1157,9 @@ test("run --abort while two implementers are running kills both sessions and dis
   assert.equal(
     r.stdout,
     [
-      "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).",
       "#7 implementing in .claude/worktrees/issue-7.",
-      "#9 Ticket 9: claimed, standard Tier (opus, medium effort, $25 budget).",
+      "#9 Ticket 9: claimed, implementer (opus, medium effort, $25 budget).",
       "#9 implementing in .claude/worktrees/issue-9.",
       "Run aborted: 2 sessions, $0.00.",
       `Aborted at the owner's request: ${discarded(7)} ${discarded(9)}`,
@@ -1171,7 +1235,7 @@ test("run --ticket 9 claims #9 before the lower #7, lands it and ends without cl
   assert.equal(
     r.stdout,
     [
-      "#9 Ticket 9: claimed, light Tier (sonnet, medium effort, $5 budget).",
+      "#9 Ticket 9: claimed, implementer (opus, medium effort, $25 budget).",
       "#9 implementing in .claude/worktrees/issue-9.",
       "#9 implementer reported done ($0.25).",
       "#9 touches no Surface; landing.",
@@ -1240,13 +1304,13 @@ test("run --ticket refuses a Ticket that is not ready, and any while a Run is go
   assert.deepEqual(p.claudeCalls(), []);
 });
 
-test("run --ticket --dry-run names the chosen Ticket and the Tier it would run on, and claims nothing", (t) => {
+test("run --ticket --dry-run names the chosen Ticket and the implementer it would run on, and claims nothing", (t) => {
   const p = runProject(t, [ready(7), ready(9, { labels: ["ready-for-agent", "tier:hard"] })], []);
 
   const r = p.run("run", "--ticket", "9", "--dry-run");
 
   assert.equal(r.stderr, "");
-  assert.equal(r.stdout, "Ticket: #9 Ticket 9 (hard).\nNext: #9, on the hard Tier (opus, high effort, $35 budget).\n");
+  assert.equal(r.stdout, "Ticket: #9 Ticket 9.\nNext: #9, by the implementer (opus, medium effort, $25 budget).\n");
   assert.equal(r.code, 0);
   assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], []]);
   assert.equal(existsSync(join(p.dir, ".claude", "verkstad")) && readdirSync(join(p.dir, ".claude", "verkstad")).some((e) => e.startsWith("run-")), false);
@@ -1296,7 +1360,7 @@ test("run waits until a rate limit that refused its claim resets, as GitHub repo
   assert.ok(Date.now() >= reset * 1000, "the Run tried the call again before the limit reset");
   const lines = r.stdout.split("\n");
   assert.equal(lines[0], `GitHub's rate limit refused gh issue edit; waiting until ${utc(reset)}, then trying it once more.`);
-  assert.equal(lines[1], "#7 Ticket 7: claimed, standard Tier (opus, medium effort, $25 budget).");
+  assert.equal(lines[1], "#7 Ticket 7: claimed, implementer (opus, medium effort, $25 budget).");
   assert.match(r.stdout, /\n {2}#7 landed on main in [0-9a-f]+\n/);
   const issue = p.state().issues[0];
   assert.equal(issue.state, "closed");

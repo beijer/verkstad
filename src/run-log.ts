@@ -2,10 +2,11 @@
 // Run's turns and dollars went without reading every transcript.
 //
 // A Run (src/run.ts) writes its event log, `run-<time>.jsonl` in the log directory, one JSON object per line:
-// a Ticket claimed on its Tier, each session (role, id, ending, cost, turns, status), a Resume and its Tier,
+// a Ticket claimed, each session (role, id, ending, cost, turns, status), a Resume and why,
 // each CLI call (what a failed one said), each Landing, each Park, each abort and each failure that stopped the Run, and
 // the Run's start and end; each line about a Ticket names it, since the lines of Tickets worked side by side
-// interleave. The digest reads the last one, or the one `--run` names, and for each session finds its
+// interleave. A field an older log carries that the digest no longer reads, it ignores.
+// The digest reads the last one, or the one `--run` names, and for each session finds its
 // transcript by its id among Claude Code's transcripts for the Project's main checkout and worktrees
 // (src/transcripts.ts) and counts the tool calls that failed there, by kind.
 
@@ -67,7 +68,6 @@ function failureMessage(stderr: string): string {
 interface Ticket {
   n: number;
   title: string;
-  tiers: string[];
   lines: string[];
   cost: number;
   outcome: "landed" | "parked" | "aborted" | "stopped" | null;
@@ -111,7 +111,7 @@ export function runLog(args: string[]): void {
   let current: Ticket | undefined;
   const ticketOf = (n: number): Ticket => {
     let t = tickets.get(n);
-    if (!t) tickets.set(n, (t = { n, title: "", tiers: [], lines: [], cost: 0, outcome: null }));
+    if (!t) tickets.set(n, (t = { n, title: "", lines: [], cost: 0, outcome: null }));
     return (current = t);
   };
   /** Failed CLI calls made while the Run was on no Ticket. */
@@ -141,8 +141,7 @@ export function runLog(args: string[]): void {
     if (typeof e.ticket !== "number") continue;
     const t = ticketOf(e.ticket);
     if (typeof e.claimed === "string") t.title = e.claimed;
-    if (typeof e.tier === "string" && t.tiers[t.tiers.length - 1] !== e.tier) t.tiers.push(e.tier);
-    if (typeof e.resumed === "string") t.lines.push(`  Resumed on the ${str(e.tier)} Tier: ${firstLine(e.resumed)}`);
+    if (typeof e.resumed === "string") t.lines.push(`  Resumed: ${firstLine(e.resumed)}`);
     if (typeof e.session === "string") {
       const id = str(e.id);
       const subtype = str(e.subtype);
@@ -183,7 +182,7 @@ export function runLog(args: string[]): void {
   const until = last.slice(0, 10) === first.slice(0, 10) ? last.slice(11, 16) : utc(last);
   const out = [`Run ${basename(file)}, ${utc(first)} to ${until} UTC: ${ending}`, `  Event log: ${file}`, ...outside, ""];
   for (const t of tickets.values()) {
-    out.push(`#${t.n} ${t.title || "(untitled)"}: ${t.tiers.length ? `${t.tiers[0]} Tier${t.tiers.slice(1).map((tier) => `, then ${tier}`).join("")}` : "Tier unknown"}, ${usd(t.cost)}`);
+    out.push(`#${t.n} ${t.title || "(untitled)"}: ${usd(t.cost)}`);
     out.push(...t.lines);
     if (!t.outcome) out.push(`  no outcome: the Run ended before #${t.n} landed or was Parked`);
     out.push("");

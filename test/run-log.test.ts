@@ -53,7 +53,7 @@ const DENIED = "Permission for this action was denied by the Claude Code auto mo
 const UNGRANTED = "Claude requested permissions to use Bash, but you haven't granted it yet.";
 const FAILED = "Exit code 1\nmake: *** [all] Error 1";
 
-/** A Run of two Tickets: #7 Resumed one Tier up, then landed after a conflict; #8 Parked. */
+/** A Run of two Tickets, from before Tiers went, so its claims and Resumes carry `tier`: #7 Resumed, then landed after a conflict; #8 Parked. */
 function seedRun(p: Project): string {
   const wt7 = worktree(p, 7);
   const land7 = ["land", "7", wt7, "/tmp/verkstad-run-x/report-7.md"];
@@ -77,7 +77,7 @@ function seedRun(p: Project): string {
   ]);
 }
 
-test("run-log digests the last Run's event log: per Ticket its Tier, sessions, failed Landings and outcome, each session's failed tool calls by kind, and the Run's totals", (t) => {
+test("run-log digests the last Run's event log: per Ticket its sessions, Resumes, failed Landings and outcome, each session's failed tool calls by kind, and the Run's totals", (t) => {
   const p = project(t);
   writeRun(p, "run-2026-09-30T10-00-00-000Z.jsonl", [[0, { run: "started" }]]);
   const file = seedRun(p);
@@ -101,12 +101,12 @@ test("run-log digests the last Run's event log: per Ticket its Tier, sessions, f
       "Run run-2026-10-01T20-00-00-000Z.jsonl, 2026-10-01 20:00 to 21:21 UTC: finished",
       `  Event log: ${file}`,
       "",
-      "#7 Add a widget: standard Tier, then hard, $10.95",
+      "#7 Add a widget: $10.95",
       "  implementer: stopped at its turn limit, $3.10, 60 turns",
       `    ${impl7}: 5 failed tool calls: 1 hook refusal, 2 permission denials, 2 failed commands`,
       "  implementer: ended, $0.40, 5 turns, status partial",
       "    the same session as above",
-      "  Resumed on the hard Tier: partial: the second screen is not done",
+      "  Resumed: partial: the second screen is not done",
       "  implementer: ended, $6.25, 80 turns, status done",
       "    transcript gone: no s-impl-7b.jsonl among the Project's sessions",
       "  Landing failed: conflict: rebasing issue-7 onto origin/main conflicts in src/a.ts",
@@ -114,7 +114,7 @@ test("run-log digests the last Run's event log: per Ticket its Tier, sessions, f
       `    ${conflict7}: no failed tool calls`,
       "  landed on main in abc1234",
       "",
-      "#8 Read the sensor: light Tier, $0.80",
+      "#8 Read the sensor: $0.80",
       "  implementer: ended, $0.80, 9 turns, status blocked",
       `    ${impl8}: 1 failed tool call: 1 failed command`,
       "  parked: blocked: needs a USB device",
@@ -131,7 +131,7 @@ test("run-log --run digests the event log it names, and says how a Run that stop
   seedRun(p);
   const older = writeRun(p, "run-2026-09-30T10-00-00-000Z.jsonl", [
     [0, { run: "started", main: realpathSync(p.dir), base: "main", ready: [5] }],
-    [0, { ticket: 5, claimed: "Fix the build", tier: "standard" }],
+    [0, { ticket: 5, claimed: "Fix the build" }],
     [9, { ticket: 5, session: "implementer", id: "s-impl-5", subtype: "error_during_execution", cost: 0.05, turns: 1 }],
     [9, { verkstad: ["conflicts", "5", "--rebase", worktree(p, 5)], code: 2, stderr: "verkstad conflicts: no branch issue-5\n" }],
     [9, { run: "stopped", sessions: 1, cost: 0.05, finished: [], error: "#5's implementing session failed (error_during_execution) without a report" }],
@@ -146,7 +146,7 @@ test("run-log --run digests the event log it names, and says how a Run that stop
       "Run run-2026-09-30T10-00-00-000Z.jsonl, 2026-10-01 20:00 to 20:09 UTC: stopped: #5's implementing session failed (error_during_execution) without a report",
       `  Event log: ${older}`,
       "",
-      "#5 Fix the build: standard Tier, $0.05",
+      "#5 Fix the build: $0.05",
       "  implementer: error_during_execution, $0.05, 1 turn",
       "    transcript gone: no s-impl-5.jsonl among the Project's sessions",
       "  verkstad conflicts failed: no branch issue-5",
@@ -163,7 +163,7 @@ test("run-log says a Run the owner aborted ended so, and what it discarded of th
   const p = project(t);
   const aborted = writeRun(p, "run-2026-10-01T20-00-00-000Z.jsonl", [
     [0, { run: "started", pid: 4242, main: realpathSync(p.dir), base: "main", ready: [5] }],
-    [0, { ticket: 5, claimed: "Fix the build", tier: "light" }],
+    [0, { ticket: 5, claimed: "Fix the build" }],
     [3, { asked: "abort" }],
     [3, { ticket: 5, session: "implementer", id: "s-impl-5", subtype: "error_aborted", cost: 0, turns: 0 }],
     [3, { ticket: 5, aborted: "the worktree .claude/worktrees/issue-5, the branch issue-5" }],
@@ -184,7 +184,7 @@ test("run-log says a Run the owner aborted ended so, and what it discarded of th
       "Run run-2026-10-01T20-00-00-000Z.jsonl, 2026-10-01 20:00 to 20:03 UTC: aborted by the owner",
       `  Event log: ${aborted}`,
       "",
-      "#5 Fix the build: light Tier, $0",
+      "#5 Fix the build: $0",
       "  implementer: killed when the owner aborted the Run, $0, 0 turns",
       "    transcript gone: no s-impl-5.jsonl among the Project's sessions",
       "  aborted: its work was discarded: the worktree .claude/worktrees/issue-5, the branch issue-5",
@@ -202,7 +202,7 @@ test("run-log says a Run that never wrote its last line did not end, with a fail
   const file = writeRun(p, "run-2026-10-01T23-50-00-000Z.jsonl", [
     [230, { run: "started", main: realpathSync(p.dir), base: "main", ready: [9] }],
     [231, { verkstad: ["frontier", "--json"], code: 1, stderr: "verkstad frontier: gh failed: HTTP 502\n" }],
-    [250, { ticket: 9, claimed: "Ticket 9", tier: "hard" }],
+    [250, { ticket: 9, claimed: "Ticket 9" }],
   ]);
 
   const r = p.run("run-log");
@@ -215,7 +215,7 @@ test("run-log says a Run that never wrote its last line did not end, with a fail
       `  Event log: ${file}`,
       "  verkstad frontier failed: gh failed: HTTP 502",
       "",
-      "#9 Ticket 9: hard Tier, $0",
+      "#9 Ticket 9: $0",
       "  no outcome: the Run ended before #9 landed or was Parked",
       "",
       "Totals: 1 Ticket (0 landed, 0 parked), 0 sessions, $0, 0 turns",
@@ -245,7 +245,6 @@ test("run-log reads the event log verkstad run writes", (t) => {
           uncertain: [],
           known_bug: false,
           reviewed: true,
-          tier: "ok",
           report: "status: done",
         },
       },
@@ -266,7 +265,7 @@ test("run-log reads the event log verkstad run writes", (t) => {
         "^Run run-[0-9TZ-]+\\.jsonl, [0-9-]+ [0-9:]+ to [0-9:]+ UTC: finished",
         "  Event log: .*",
         "",
-        "#7 Ticket 7: standard Tier, \\$0\\.25",
+        "#7 Ticket 7: \\$0\\.25",
         "  implementer: ended, \\$0\\.25, 12 turns, status done",
         `    ${transcriptPath(p, worktree(p, 7), id).replace(/[.]/g, "\\.")}: 2 failed tool calls: 2 failed commands`,
         `  landed on main in ${sha}`,
@@ -283,15 +282,15 @@ test("run-log digests a Run of two Tickets side by side whose lines interleave, 
   const p = project(t);
   const file = writeRun(p, "run-2026-10-01T20-00-00-000Z.jsonl", [
     [0, { run: "started", main: realpathSync(p.dir), base: "main", ready: [7, 9] }],
-    [0, { ticket: 7, claimed: "Add a widget", tier: "standard" }],
-    [0, { ticket: 9, claimed: "Read the sensor", tier: "light" }],
+    [0, { ticket: 7, claimed: "Add a widget" }],
+    [0, { ticket: 9, claimed: "Read the sensor" }],
     [20, { ticket: 9, session: "implementer", id: "s-impl-9", subtype: "success", cost: 1.5, turns: 20, status: "done" }],
     [20, { ticket: 9, say: "touches no Surface; landing." }],
     [25, { ticket: 7, session: "implementer", id: "s-impl-7", subtype: "success", cost: 4, turns: 50, status: "done" }],
     [25, { ticket: 7, verkstad: ["conflicts", "7", "--rebase", worktree(p, 7)], code: 2, stderr: "verkstad conflicts: no branch issue-7\n" }],
     [26, { ticket: 9, verkstad: ["land", "9", worktree(p, 9), "/tmp/r/report-9.md"], code: 1, stderr: "verkstad land: the Gate failed: unit tests\nreason: gate-failed\n" }],
     [26, { ticket: 7, failed: "#7: rebasing it before the Verifier failed: no branch issue-7" }],
-    [40, { ticket: 9, resumed: "Landing failed (gate-failed): the Gate failed: unit tests", tier: "light" }],
+    [40, { ticket: 9, resumed: "Landing failed (gate-failed): the Gate failed: unit tests" }],
     [50, { ticket: 9, session: "implementer", id: "s-impl-9b", subtype: "success", cost: 0.75, turns: 10, status: "done" }],
     [51, { ticket: 9, verkstad: ["land", "9", worktree(p, 9), "/tmp/r/report-9.md"], code: 0 }],
     [51, { ticket: 9, landed: "landed on main in abc1234", commit: "abc1234" }],
@@ -309,17 +308,17 @@ test("run-log digests a Run of two Tickets side by side whose lines interleave, 
       "Run run-2026-10-01T20-00-00-000Z.jsonl, 2026-10-01 20:00 to 20:51 UTC: stopped: #7: rebasing it before the Verifier failed: no branch issue-7",
       `  Event log: ${file}`,
       "",
-      "#7 Add a widget: standard Tier, $4",
+      "#7 Add a widget: $4",
       "  implementer: ended, $4, 50 turns, status done",
       `    ${impl7}: 2 failed tool calls: 2 failed commands`,
       "  verkstad conflicts failed: no branch issue-7",
       "  stopped the Run: #7: rebasing it before the Verifier failed: no branch issue-7",
       "",
-      "#9 Read the sensor: light Tier, $2.25",
+      "#9 Read the sensor: $2.25",
       "  implementer: ended, $1.50, 20 turns, status done",
       `    ${impl9}: 1 failed tool call: 1 hook refusal`,
       "  Landing failed: gate-failed: the Gate failed: unit tests",
-      "  Resumed on the light Tier: Landing failed (gate-failed): the Gate failed: unit tests",
+      "  Resumed: Landing failed (gate-failed): the Gate failed: unit tests",
       "  implementer: ended, $0.75, 10 turns, status done",
       "    transcript gone: no s-impl-9b.jsonl among the Project's sessions",
       "  landed on main in abc1234",

@@ -2,7 +2,7 @@
 //
 // A Run's event log, `run-<time>.jsonl` in the log directory, is one JSON object per line, each with `at`,
 // written by `verkstad run` (src/run.ts). A Ticket's lines carry `ticket`: `say` is the line the Run printed,
-// `claimed` and `tier` its claim, `session` a session's ending with its `cost`, `landed` (with `commit`), `closed`
+// `claimed` its claim, `session` a session's ending with its `cost`, `landed` (with `commit`), `closed`
 // (already landed, so closed and never claimed), `parked`, `aborted` and `failed` (its failure stopped the Run) its outcome. `run` is `started` (with `ready` and `pid`), then `finished`, `stopped`
 // (with `error`) or `aborted`; `asked` is the owner asking the Run to `stop` or `abort`.
 
@@ -65,11 +65,10 @@ export function runView(file: string, events: Event[]): RunView {
     if (typeof e.ticket !== 'number') continue
     let t = tickets.get(e.ticket)
     if (!t) {
-      t = { n: e.ticket, title: '', tier: '', say: '', sayAt: '', cost: 0, outcome: null, detail: '' }
+      t = { n: e.ticket, title: '', say: '', sayAt: '', cost: 0, outcome: null, detail: '' }
       tickets.set(e.ticket, t)
     }
     if (typeof e.claimed === 'string') t.title = e.claimed
-    if (typeof e.tier === 'string') t.tier = e.tier
     if (typeof e.say === 'string') {
       t.say = e.say
       t.sayAt = str(e.at)
@@ -164,12 +163,11 @@ const OWNER_MARKERS: Array<[string, string]> = [
 ]
 
 function entry(e: ListingEntry): FrontierEntry {
-  const tier = e.labels.find(l => /^tier:/.test(l))?.slice(5) ?? 'standard'
   const waitsOn = e.open_blockers.map(b => {
     const marker = OWNER_MARKERS.find(([label]) => b.labels.includes(label))?.[1]
     return marker ? `#${b.number} ${marker}` : `#${b.number}`
   })
-  return { n: e.number, title: e.title, tier, assignees: e.assignees, waitsOn }
+  return { n: e.number, title: e.title, assignees: e.assignees, waitsOn }
 }
 
 /** `verkstad frontier --json`'s listing. */

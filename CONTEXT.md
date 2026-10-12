@@ -42,9 +42,9 @@ _Avoid_: task, story, slice
 The Tickets ready to start now: open, labelled `ready-for-agent`, unassigned, with no open blocker.
 _Avoid_: queue, backlog
 
-**Tier**:
-Which implementing agent a Ticket gets (`ticket-light`, `ticket-standard`, `ticket-hard`), each a fixed model, effort and turn limit.
-_Avoid_: level, size
+**Implementer**:
+The agent (`implementer`) a Run gives every Ticket, and its Resume, to implement in a worktree of its own: one model, effort and budget for all. A Landing that conflicts goes to the conflict finisher (`conflict-finisher`) instead, which only rebases.
+_Avoid_: ticket agent, coder
 
 **Borrowed skill**:
 A verkstad skill that, for now, only says to follow another plugin's skill (e.g. `verkstad:tdd` → `mattpocock-skills:tdd`), until verkstad writes its own.
