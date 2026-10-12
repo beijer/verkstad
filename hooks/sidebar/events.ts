@@ -2,8 +2,8 @@
 //
 // A Run's event log, `run-<time>.jsonl` in the log directory, is one JSON object per line, each with `at`,
 // written by `verkstad run` (src/run.ts). A Ticket's lines carry `ticket`: `say` is the line the Run printed,
-// `claimed` and `tier` its claim, `session` a session's ending with its `cost`, `landed` (with `commit`),
-// `parked`, `aborted` and `failed` (its failure stopped the Run) its outcome. `run` is `started` (with `ready` and `pid`), then `finished`, `stopped`
+// `claimed` and `tier` its claim, `session` a session's ending with its `cost`, `landed` (with `commit`), `closed`
+// (already landed, so closed and never claimed), `parked`, `aborted` and `failed` (its failure stopped the Run) its outcome. `run` is `started` (with `ready` and `pid`), then `finished`, `stopped`
 // (with `error`) or `aborted`; `asked` is the owner asking the Run to `stop` or `abort`.
 
 import type { Attention, FrontierEntry, FrontierView, RunSummary, RunTicket, RunView } from '../../types'
@@ -82,6 +82,10 @@ export function runView(file: string, events: Event[]): RunView {
     if (typeof e.landed === 'string') {
       t.outcome = 'landed'
       t.detail = str(e.commit) || e.landed
+    }
+    if (typeof e.closed === 'string') {
+      t.outcome = 'closed'
+      t.detail = e.closed
     }
     if (typeof e.parked === 'string') {
       t.outcome = 'parked'

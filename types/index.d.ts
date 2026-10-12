@@ -7,8 +7,11 @@ export type RunTicket = {
   say: string;
   sayAt: string;
   cost: number;
-  outcome: 'landed' | 'parked' | 'aborted' | 'failed' | null;
-  /** The commit it landed in, the Park's reason, what an abort discarded, or the failure that stopped the Run. */
+  outcome: 'landed' | 'closed' | 'parked' | 'aborted' | 'failed' | null;
+  /**
+   * The commit it landed in, where a commit already landed it (closed, not claimed), the Park's reason, what an abort
+   * discarded, or the failure that stopped the Run.
+   */
   detail: string;
 };
 

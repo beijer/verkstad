@@ -519,6 +519,17 @@ test('a Ticket whose failure stops the Run is no longer in flight while the othe
   expect(await text(ui, /^failed:/)).toBe('failed: git push failed: remote hung up')
 })
 
+test('a Ticket the Run closed as already landed is not in flight', async ($, on) => {
+  const closed = line({ at: '2026-10-08T17:58:00.000Z', ticket: 47, closed: 'already landed on main in 333ba01', commit: '333ba01' })
+  const w = world(on, { [TWO]: TWO_LIVE + closed })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect((await ui.find({ key: 'stop' }))?.props.label).toBe('■ Stop after #49 and #50')
+  expect(await text(ui, /^closed:/)).toBe('closed: already landed on main in 333ba01')
+})
+
 for (const surface of ['terminal', 'desktop'] as const) {
   test(`Start runs verkstad run with no count, and a count runs it with --parallel, up to two without a cap, on ${surface}`, async ($, on) => {
     const w = world(on, {})

@@ -701,7 +701,7 @@ export const register: Register = on => {
       )
     })
 
-    const glyph = { landed: ['✓', OK], parked: ['⏸', WARN], aborted: ['✕', BAD], failed: ['✗', BAD] } as const
+    const glyph = { landed: ['✓', OK], closed: ['✓', DIM], parked: ['⏸', WARN], aborted: ['✕', BAD], failed: ['✗', BAD] } as const
     const outcome = (t: RunTicket, key: string, indent = 0) => {
       if (!t.outcome) return row(key, '·', DIM, t.n, t.title || 'no outcome', usd(t.cost), indent)
       const [g, c] = glyph[t.outcome]
