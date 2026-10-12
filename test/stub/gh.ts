@@ -197,6 +197,14 @@ const graphql: Record<string, GraphqlOperation> = {
     if (v.ids.length > 100) throw new Error(`You may not provide more than 100 ids; you provided ${v.ids.length}.`);
     return { nodes: v.ids.map((id) => state.issues.find((issue) => nodeId(issue) === id) ?? null).map((issue) => issue && issueRef(state, issue.number)) };
   },
+  // An issue's last reopening (`timelineItems(itemTypes: [REOPENED_EVENT], last: 1)`), none when it never was.
+  LastReopened: (v, state, query) => {
+    checkRepo(state, v);
+    if (!/itemTypes:\s*\[REOPENED_EVENT\],\s*last:\s*1\b/.test(query)) throw new Error("LastReopened asks for the last REOPENED_EVENT only");
+    const issue = findIssue(state, Number(v.number));
+    const nodes = issue?.reopenedAt ? [{ createdAt: issue.reopenedAt }] : [];
+    return { repository: { issue: issue ? { timelineItems: { nodes } } : null } };
+  },
 };
 
 /** An issue's GraphQL node id, as GitHub gives one: opaque, and not its number. */

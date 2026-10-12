@@ -64,7 +64,7 @@ import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from
 import { CONTRACT_PATH, readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { type Entry, type Listing, readFrontier } from "./frontier.ts";
-import { currentRepo, gh, ghJson, ghJsonUnlessMissing, waitOutRateLimits } from "./gh.ts";
+import { currentRepo, gh, ghJson, ghJsonUnlessMissing, graphql, waitOutRateLimits } from "./gh.ts";
 import { ensureLogDirectory, fetch, git, inLinkedWorktree, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 import { closingCommentPath } from "./land.ts";
 import {
@@ -978,12 +978,32 @@ function fileSurfaceTicket(run: Run, n: number, surface: NewSurface, awaitsMerge
   return { number, title, labels: ["ready-for-agent"], assignees: [], open_blockers: [] };
 }
 
-/** The newest commit on origin's base branch that lands Ticket #n, by the `Refs #<n>` its message ends with; or null. */
+/**
+ * The newest commit on origin's base branch that lands Ticket #n, by the `Refs #<n>` its message ends with; or null.
+ * Null too when the Ticket was reopened after that commit: someone said the commit does not land it.
+ */
 function landedCommit(run: Run, n: number): { sha: string; subject: string } | null {
-  const found = git(run.main, ["log", "-1", "--extended-regexp", `--grep=Refs #${n}$`, "--format=%h %s", run.upstream]).trim();
+  const found = git(run.main, ["log", "-1", "--extended-regexp", `--grep=Refs #${n}$`, "--format=%h %cI %s", run.upstream]).trim();
   if (!found) return null;
-  const space = found.indexOf(" ");
-  return { sha: found.slice(0, space), subject: found.slice(space + 1) };
+  const [sha, committed] = found.split(" ", 2);
+  const subject = found.slice(sha.length + committed.length + 2);
+  const reopened = lastReopened(run, n);
+  if (reopened !== null && Date.parse(reopened) > Date.parse(committed)) return null;
+  return { sha, subject };
+}
+
+/** When Ticket #n was last reopened, or null when it never was. */
+function lastReopened(run: Run, n: number): string | null {
+  const [owner, name] = run.repo.split("/");
+  const data = graphql<{ repository: { issue: { timelineItems: { nodes: Array<{ createdAt?: string }> } } | null } | null }>(
+    `query LastReopened($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    issue(number: $number) { timelineItems(itemTypes: [REOPENED_EVENT], last: 1) { nodes { ... on ReopenedEvent { createdAt } } } }
+  }
+}`,
+    { owner, name, number: n },
+  );
+  return data.repository?.issue?.timelineItems.nodes[0]?.createdAt ?? null;
 }
 
 /** Closes ready Ticket `entry`, already landed in `commit`, with a note instead of claiming it, and says how it ended. */

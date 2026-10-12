@@ -1400,6 +1400,25 @@ test("run closes with a note, and does not claim, a ready Ticket whose commits a
   assert.equal(p.claudeCalls().length, 1);
 });
 
+test("run claims, and does not close again, a ready Ticket reopened after the commit that refs it", (t) => {
+  const reopenedAt = new Date(Date.now() + 60_000).toISOString();
+  const p = runProject(t, [ready(7, { reopenedAt }), ready(9)], [implemented(7, "b.txt")], { parallel: 1 });
+  writeFileSync(join(p.dir, "a.txt"), "designed\n");
+  p.git("add", "a.txt");
+  p.git("commit", "--quiet", "-m", "Draws the design. Refs #7");
+  p.git("push", "--quiet", "origin", "main");
+
+  const r = p.run("run", "--max", "1");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^#7 Ticket 7: claimed, /);
+  assert.doesNotMatch(r.stdout, /already landed/);
+  const [seven] = p.state().issues;
+  assert.equal(seven.state, "closed");
+  assert.match(seven.comments[0].body, /^Landed on main in [0-9a-f]+\./);
+  assert.equal(p.claudeCalls().length, 1);
+});
+
 test("run logs a wait for a rate limit that refused gh repo view before its event log existed", (t) => {
   const reset = inSeconds(4);
   const p = project(t, {

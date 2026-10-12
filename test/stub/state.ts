@@ -21,6 +21,8 @@ export interface StubIssue {
   parent: number | null;
   /** Native `blocked_by` dependencies: the issues blocking this one. */
   blockedBy: number[];
+  /** When the issue was last reopened, an ISO 8601 time; never, when left out. */
+  reopenedAt?: string;
 }
 
 export interface StubPullRequest {
