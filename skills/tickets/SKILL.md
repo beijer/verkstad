@@ -4,16 +4,17 @@ description: Break a Spec into Tickets and publish them as its GitHub sub-issues
 disable-model-invocation: true
 ---
 
-This is a Borrowed skill: follow `mattpocock-skills:to-tickets`.
+# Split a Spec into Tickets
 
-That skill is user-only, so the Skill tool cannot invoke it: read it instead. This prints its path:
+Split a Spec (`#<n>`, or the conversation when there is none yet) into Tickets in verkstad's [Ticket format](../../docs/formats/ticket.md), and publish them once the owner approves the breakdown.
 
-    ls ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/plugins/cache/*/mattpocock-skills/*/skills/*/to-tickets/SKILL.md | sort -V | tail -1
-
-If it prints nothing, the mattpocock-skills plugin is not installed: stop and say so. Otherwise follow it as written, with verkstad's rules where they differ:
-
-- The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`; where the skill says to run a setup skill for them, read those instead.
-- Write and publish each Ticket as verkstad's [Ticket format](../../docs/formats/ticket.md) says: a native sub-issue of its Spec, its blockers as native `blocked_by` links, no file paths or line numbers.
-- A Ticket leaves no design decision to the agent: ask the owner each one it raises (or record it in an ADR) and write the answer into the Ticket before publishing it.
-- A Ticket that would lay down several layers at once (a data model, a package, a UI and their tests) is split into a thin first Ticket, end to end, that fixes the shape, and Tickets that widen it, blocked by it.
-- Each issue you show the owner is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`.
+1. **Read.** The Spec with its comments (`gh issue view <n> --comments`), `GLOSSARY.md`, the ADRs that touch the area, and the code it changes. The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`.
+2. **Slice.** Each Ticket is a vertical slice: a narrow path through every layer it needs, verifiable on its own, sized for one implementer session.
+   - A Ticket that would lay down several layers at once (a data model, a package, a UI and their tests) becomes a thin first Ticket, end to end, that fixes the shape, and Tickets that widen it, each blocked by it.
+   - A wide mechanical refactor (a rename, a retyped shared symbol) that no slice can land green becomes expand (the new form beside the old), migrate in batches, each blocked by the expand, then contract (the old form removed), blocked by every batch.
+   - Prefactoring that makes the change easy comes first.
+3. **Leave no decision open.** Ask the owner each design decision a Ticket raises (or record it in an ADR) and write the answer under its Decisions.
+4. **Check coverage.** Every Behaviour item of the Spec is covered by some Ticket's acceptance criteria. List any that is not, and add it or ask the owner whether it is dropped.
+5. **Show a numbered breakdown**: each Ticket's title, what it blocks on and what it delivers end to end. Ask whether the size, the blockers and the splits are right, and revise until the owner approves.
+6. **Publish** only then, blockers first, with `gh issue create`, each labelled `ready-for-agent`, a native sub-issue of the Spec, with its blockers as native `blocked_by` links, made with the calls in the Ticket format. No file paths or line numbers in any Ticket. Leave the Spec itself as it is.
+7. List each Ticket as `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`, and its title.
