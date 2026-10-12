@@ -14,7 +14,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 - `hooks/hooks.json`: the plugin's one command hook, PreToolUse, the `verkstad hook pre-tool-use` subcommand (`src/hook.ts`) run as `"${CLAUDE_PLUGIN_ROOT}"/bin/verkstad`, so that tests reach it through the CLI.
 - `hooks/sidebar/`: the verkstad sidebar, the hooks module `hooks/hooks.json` names under `modules`. A pane (`/verkstad:sidebar`, the user-only skill `skills/sidebar/` that the module answers itself) that reads the Runs' event logs, `verkstad frontier --json`, the issues and CI on GitHub (only while its pane is shown, and once every two minutes between a Project's sessions, through `sidebar-github.json` in the log directory) and the current session's transcript, and whose Start, Stop, Abort and Release buttons run this plugin copy's own `bin/verkstad` (`verkstad run`, `--stop`, `--abort`, `verkstad release`), and whose Triage, Answer and Decide buttons open a triage session: every decision stays in the CLI. It runs in Claude Code's function-hooks environment, not under node: it imports only `claude-code` and its own files, and its state is declared in `types/index.d.ts`, which `plugin.json` names.
 - `docs/`: the Contract (`docs/contract.md`), the Verdict file (`docs/verdict.md`) and, in `docs/formats/`, the formats a Project's files and issues are written in; in `docs/research/`, the dated research an ADR cites as its evidence.
-- `scripts/`: verkstad's own Gate checks that are not node's tests: `check-borrowed.sh`, and `test-sidebar.sh`, which runs the sidebar's tests.
+- `scripts/`: verkstad's own Gate checks that are not node's tests: `test-sidebar.sh`, which runs the sidebar's tests.
 
 ## The CLI
 
@@ -27,8 +27,7 @@ verkstad is also its own Project: its Contract is `.claude/harness.json` plus `d
 
 ## Skills and agents
 
-- A skill, agent or prompt calls another skill by its verkstad name (`verkstad:review`), never another plugin's. Only a Borrowed skill names the skill it borrows (ADR 0002). The Gate's `borrowed` step (`scripts/check-borrowed.sh`) enforces it: it fails on the borrowed plugin's name in `skills/`, `agents/`, `prompts/`, `docs/` outside `docs/adr/` and `docs/research/`, `CLAUDE.md` and `.claude/`, and on a bare slash name of one of its skills (`/to-tickets`) in `skills/`, `agents/` and `prompts/`.
-- A Borrowed skill is one short `skills/<name>/SKILL.md` naming one borrowed skill; `check-borrowed.sh` sets how many lines it may have. It holds a description saying when to use it under its verkstad name, the line ``This is a Borrowed skill: follow `<plugin>:<skill>`.``, how to reach that skill, and any verkstad rule that overrides it. When the borrowed skill is user-only, so is the Borrowed one (`disable-model-invocation: true`), and it says to read the skill's SKILL.md instead of invoking it.
+- A skill, agent or prompt calls another skill by its verkstad name (`verkstad:review`), never another plugin's (ADR 0009).
 - A skill that writes a Project's files or issues follows the formats in `docs/formats/` (ADR 0003).
 - Skills, agents and prompts are generic: nothing in them names a Project. What one Project needs an agent to know goes in that Project's prose doc, `docs/agents/project.md`, which the prompts tell the agent to read. A skill's supporting files sit beside its SKILL.md (`skills/create-verify/references/`); the prompts a Run fills in sit in `prompts/`.
 

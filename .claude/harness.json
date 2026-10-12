@@ -17,10 +17,6 @@
       {
         "name": "sidebar",
         "command": "scripts/test-sidebar.sh"
-      },
-      {
-        "name": "borrowed",
-        "command": "scripts/check-borrowed.sh"
       }
     ]
   },

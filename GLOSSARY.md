@@ -42,10 +42,6 @@ _Avoid_: task, story, slice
 The Tickets ready to start now: open, labelled `ready-for-agent`, unassigned, with no open blocker.
 _Avoid_: queue, backlog
 
-**Borrowed skill**:
-A verkstad skill that, for now, only says to follow another plugin's skill (e.g. `verkstad:review` → `mattpocock-skills:code-review`), until verkstad writes its own.
-_Avoid_: wrapper, alias, dependency
-
 ## Proof
 
 **Walk**:

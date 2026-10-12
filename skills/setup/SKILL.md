@@ -71,7 +71,7 @@ Run each check on what exists. A failed check is a finding for step 3.
 | `.claude/harness.json` | It is valid JSON; `baseBranch` is step 1's base branch; `landing` is absent, `"push"` or `"pull-request"`; `surfaces` is an array, and each Surface's globs match a tracked file (`git ls-files -- '<glob>'`); `verify`, when set, names a skill at `.claude/skills/<verify>/SKILL.md`. Every Surface sign step 1 found is covered: a Surface's globs match its files. `gate.steps` is not `[]` while CI or the package scripts have checks. The Gate is otherwise checked by running it, in step 6. |
 | `docs/agents/project.md` | It is not empty. |
 | `docs/agents/issue-tracker.md` | It says issues are GitHub issues. |
-| `docs/agents/triage-labels.md` | Its middle column maps `ready-for-agent`, `needs-info` and `ready-for-human` to those same strings: verkstad's commands use them as they are. |
+| `docs/agents/triage-labels.md` | Its label column has `ready-for-agent`, `needs-info` and `ready-for-human` as they are: verkstad's commands use those strings. |
 | `docs/agents/domain.md` | It names `GLOSSARY.md` at the repo root, and not the old glossary. |
 | The glossary | There is no old glossary. With the old glossary and no `GLOSSARY.md`, the fix is the rename. With both, there is no fix: setup changes neither and the report tells the owner, who merges them. |
 | `CLAUDE.md` | It has an `## Agent skills` section, and it names the glossary as `GLOSSARY.md`, never by the old glossary's name. |
