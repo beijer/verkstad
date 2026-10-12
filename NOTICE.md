@@ -1,4 +1,4 @@
-`agents/implementer.md` contains rules copied from Ponytail 5 (github.com/DietrichGebert/ponytail, `9b58c1f`), under its MIT licence:
+`agents/implementer.md` contains rules copied from Ponytail 5 (github.com/DietrichGebert/ponytail, `9b58c1f`), under its MIT licence. `skills/audit/` and `skills/review/SKILL.md` adapt Ponytail's `ponytail-audit` and `ponytail-review` (`9b58c1f`), under the same licence:
 
 MIT License
 
