@@ -1079,7 +1079,7 @@ function alive(pid: number): boolean {
 }
 
 /** The Run going in the Project: the one whose event log is the newest, has no end line and whose process is alive. */
-function goingRun(): { file: string; events: Array<Record<string, unknown>> } | null {
+export function goingRun(): { file: string; events: Array<Record<string, unknown>> } | null {
   const dir = logDirectory(process.cwd());
   const newest = existsSync(dir) ? readdirSync(dir).filter((name) => /^run-.*\.jsonl$/.test(name)).sort().pop() : undefined;
   if (!newest) return null;
@@ -1087,6 +1087,17 @@ function goingRun(): { file: string; events: Array<Record<string, unknown>> } | 
   const events = readJsonLines(file);
   const pid = events.find((e) => e.run === "started")?.pid;
   return events.some(isEndLine) || typeof pid !== "number" || !alive(pid) ? null : { file, events };
+}
+
+/** The Tickets a Run's event log has it on: those claimed that have not landed, been Parked or failed since. */
+export function ticketsInFlight(events: Array<Record<string, unknown>>): Set<number> {
+  const inFlight = new Set<number>();
+  for (const e of events) {
+    if (typeof e.ticket !== "number") continue;
+    if (typeof e.claimed === "string") inFlight.add(e.ticket);
+    if (typeof e.landed === "string" || typeof e.parked === "string" || typeof e.failed === "string") inFlight.delete(e.ticket);
+  }
+  return inFlight;
 }
 
 /** `verkstad run --stop|--abort`: asks the Run going in the Project to end, and says what will happen. */
@@ -1099,13 +1110,7 @@ function ask(what: Ask): void {
   const after = readJsonLines(file);
   const end = after.findIndex(isEndLine);
   if (end !== -1 && end < after.findLastIndex((e) => e.asked === what)) throw new Failure("no Run is going", 1);
-  // The Tickets the Run is on: those claimed that have not landed, been Parked or failed since.
-  const inFlight = new Set<number>();
-  for (const e of events) {
-    if (typeof e.ticket !== "number") continue;
-    if (typeof e.claimed === "string") inFlight.add(e.ticket);
-    if (typeof e.landed === "string" || typeof e.parked === "string" || typeof e.failed === "string") inFlight.delete(e.ticket);
-  }
+  const inFlight = ticketsInFlight(events);
   const abort = asked([...events, { asked: what }]) === "abort";
   const tickets = ticketList([...inFlight]);
   if (inFlight.size === 0) {

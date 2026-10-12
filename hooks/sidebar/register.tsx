@@ -9,7 +9,8 @@
 // Run's default), `--parallel <n>` for a count up to the Contract's cap, `--max 1` for One Ticket, or `--ticket <n>`
 // for the Ticket up next whose Start › was pressed, out of the Frontier's order; Stop asks the whole Run to stop
 // after its Tickets in flight (`verkstad run --stop`); Abort, once confirmed, ends it and discards their work
-// (`verkstad run --abort`). Every routing decision stays in `verkstad run`. The commands are this plugin copy's own
+// (`verkstad run --abort`); Release › on what needs the owner runs `verkstad release <n>`. Every routing decision
+// stays in `verkstad run`. The commands are this plugin copy's own
 // `bin/verkstad`, so the sidebar drives the version the Project installed.
 
 import { atom, read, update } from 'claude-code'
@@ -414,37 +415,65 @@ async function control($: EngineInterface, p: Project, what: 'stop' | 'abort'): 
 }
 
 /**
+ * What a triage session is asked to do with an issue, by the button that starts it: Triage › an untriaged one,
+ * Answer › the open questions of one labelled needs-info, Decide › one labelled ready-for-human. The triage skill
+ * holds how; this names the job in the chip and the message.
+ */
+const TRIAGE_JOBS = {
+  triage: { title: 'Triage', ask: '' },
+  answer: { title: 'Answer', ask: ' It is labelled needs-info: ask me its open questions.' },
+  decide: { title: 'Decide', ask: ' It is labelled ready-for-human: decide with me whether it stays mine.' },
+} as const
+type TriageJob = keyof typeof TRIAGE_JOBS
+
+/**
  * Starts triage of issue #n in a session of its own: on the desktop, a task chip the owner clicks to open the
  * session (the app's `spawn_task` tool); elsewhere, the command put in the prompt for the owner to send.
  * The chip's session gets its prompt as a message, not a typed command, and the triage skill is user-only,
  * so the message tells it to read the skill's SKILL.md from this plugin copy instead.
  */
-async function triage($: EngineInterface, p: Project, n: number): Promise<void> {
+async function triage($: EngineInterface, p: Project, n: number, job: TriageJob): Promise<void> {
   await say($, `Starting triage of #${n}…`)
   try {
-    await offerTriage($, p, n)
+    await offerTriage($, p, n, job)
   } catch (err) {
     await failed($, `Triage of #${n}`, err)
   }
 }
 
-async function offerTriage($: EngineInterface, p: Project, n: number): Promise<void> {
+async function offerTriage($: EngineInterface, p: Project, n: number, job: TriageJob): Promise<void> {
   const issue = p.repo ? `${p.repo}#${n}` : `#${n}`
   const command = `/verkstad:triage ${issue}`
   const spawn = (await $.tool.list()).find(t => t.name === SPAWN_TASK)
   if (spawn) {
     await $.tool.call({
       tool: SPAWN_TASK,
-      title: `Triage #${n}`,
+      title: `${TRIAGE_JOBS[job].title} #${n}`,
       tldr: `Triage ${p.repo}#${n} with verkstad's triage skill, from the verkstad sidebar.`,
       prompt:
-        `Triage ${issue} with verkstad's triage skill. It is user-only, so the Skill tool cannot invoke it: ` +
+        `Triage ${issue} with verkstad's triage skill.${TRIAGE_JOBS[job].ask} It is user-only, so the Skill tool cannot invoke it: ` +
         `read ${$.plugin.root}/skills/triage/SKILL.md and follow it for this one issue.`,
     })
     return say($, `Triage of #${n} is a task chip now: click it to open its session.`)
   }
   const filled = await $.prompt.fill({ text: command, mode: 'replace' })
   return say($, filled.isFilled ? `${command} is in the prompt: send it to start triage here.` : `Run ${command} to triage #${n}.`)
+}
+
+/**
+ * Release › on a Ticket claimed with no Run working it, or a Spec labelled ready-for-agent: `verkstad release`
+ * puts it right, and GitHub is read again to show it.
+ */
+async function release($: EngineInterface, p: Project, n: number): Promise<void> {
+  await say($, `Releasing #${n}…`)
+  try {
+    const r = await verkstad($, p, ['release', String(n)])
+    if (r.exitCode !== 0) return say($, firstLine(r.stderr, 300) || `verkstad release exited ${r.exitCode}`, true)
+    await readGithub($, p)
+    await say($, firstLine(r.stdout, 300))
+  } catch (err) {
+    await failed($, `Release of #${n}`, err)
+  }
 }
 
 async function refresh($: EngineInterface, p: Project): Promise<void> {
@@ -700,7 +729,22 @@ export const register: Register = on => {
       spec: ['!', WARN],
       triage: ['•', INFO],
     }
+    // Each issue's button: a triage session for those that wait on the owner's word, a release for those held by mistake.
+    const action = (a: Attention) => {
+      if (a.n === null) return undefined
+      const n = a.n
+      const job: TriageJob | null = a.kind === 'triage' ? 'triage' : a.kind === 'info' ? 'answer' : a.kind === 'human' ? 'decide' : null
+      if (job) return <Button key={`${job}:${n}`} label={`${TRIAGE_JOBS[job].title} ›`} plain onPress={() => void triage($, p, n, job)} />
+      if (a.kind === 'claimed' || a.kind === 'spec') return <Button key={`release:${n}`} label="Release ›" plain onPress={() => void release($, p, n)} />
+      return undefined
+    }
     const needs = o?.items ?? []
+    // What the marks mean, for those shown: the CI and merge rows say it in their text.
+    const legend = [
+      needs.some(a => a.kind === 'info') ? '? asks you something' : '',
+      needs.some(a => a.kind === 'human' || a.kind === 'claimed' || a.kind === 'spec') ? '! yours to act on' : '',
+      needs.some(a => a.kind === 'triage') ? '• untriaged' : '',
+    ].filter(Boolean)
     const needsRows = needs.length
       ? [
           section(
@@ -723,11 +767,19 @@ export const register: Register = on => {
                   a.text,
                   '',
                   0,
-                  a.kind === 'triage' && a.n !== null ? (
-                    <Button key={`triage:${a.n}`} label="Triage ›" plain onPress={() => void triage($, p, a.n as number)} />
-                  ) : undefined,
+                  action(a),
                 )
               ),
+            ).concat(
+              legend.length
+                ? [
+                    <Box key="legend" width={width} marginTop={1}>
+                      <Text color={DIM} wrap="wrap">
+                        {legend.join(' · ')}
+                      </Text>
+                    </Box>,
+                  ]
+                : [],
             ),
           ),
         ]

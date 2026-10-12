@@ -9,6 +9,7 @@ import { hook } from "./hook.ts";
 import { labels } from "./labels.ts";
 import { land } from "./land.ts";
 import { prune } from "./prune.ts";
+import { release } from "./release.ts";
 import { review } from "./review.ts";
 import { run } from "./run.ts";
 import { runLog } from "./run-log.ts";
@@ -64,6 +65,11 @@ const subcommands: Record<string, Subcommand> = {
     usage: "verkstad prune",
     summary: "Deletes what the log directory holds once it is older than 30 days",
     run: prune,
+  },
+  release: {
+    usage: "verkstad release <n>",
+    summary: "Unassigns Ticket #n, claimed with no Run working it, so the Frontier offers it again; or takes ready-for-agent off Spec #n",
+    run: release,
   },
   review: {
     usage: "verkstad review record",

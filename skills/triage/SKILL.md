@@ -15,3 +15,6 @@ If it prints nothing, the mattpocock-skills plugin is not installed: stop and sa
 - The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`; where the skill says to run a setup skill for them, read those instead.
 - Write each Agent Brief in verkstad's [Agent Brief format](../../docs/formats/agent-brief.md).
 - Each issue you show the owner is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`.
+- The owner you are talking to is the reporter. On a `needs-info` issue, its open questions are in the latest triage notes or in a Park's comment (the one ending `Parked: branch …`): ask the owner each one, a round at a time.
+- On a `ready-for-human` issue, decide with the owner whether it stays theirs or can be written up for an agent.
+- Before you post anything or change a label, show the owner the comment and the label change, and make them only once the owner says yes. A Parked Ticket keeps its branch, so once it is `ready-for-agent` again the next Run Resumes it.

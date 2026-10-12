@@ -35,6 +35,7 @@ const ISSUES = JSON.stringify([
   { number: 39, title: 'Is tiering needed?', labels: [{ name: 'ready-for-human' }] },
   { number: 50, title: 'Next thing', labels: [{ name: 'ready-for-agent' }, { name: 'tier:light' }] },
   { number: 52, title: 'A new idea', labels: [] },
+  { number: 53, title: 'Pick a layout', labels: [{ name: 'needs-info' }] },
 ])
 const CI = JSON.stringify([
   { name: 'CI', status: 'completed', conclusion: 'failure', headSha: '07abb4a1234', url: 'https://github.com/owner/project/actions/runs/1' },
@@ -121,6 +122,8 @@ function world(
       if (args.join(' ') === 'run --stop' && options.brokenCli) return { deny: 'could not start: permission denied' }
       if (args.join(' ') === 'run --stop') return ok('The Run stops after #49.\n')
       if (args.join(' ') === 'run --abort') return ok('The Run aborts #49 and discards its work.\n')
+      if (args.join(' ') === 'release 60') return ok('Released #60: no longer assigned to @owner, so the Frontier offers it again.\n')
+      if (args.join(' ') === 'release 61') return ok('', 1, 'verkstad release: #61 is in flight in the Run going; Stop or Abort the Run first\n')
     }
     throw new Error(`unexpected command ${e.argv.join(' ')}`)
   })
@@ -194,8 +197,11 @@ for (const surface of ['terminal', 'desktop'] as const) {
     expect(order.indexOf('NEEDS YOU')).toBeLessThan(order.indexOf('WAITING ON A BLOCKER'))
     expect(order.indexOf('WAITING ON A BLOCKER')).toBeLessThan(order.indexOf('HISTORY'))
     expect((await ui.find({ key: 'triage:52' }))?.text).toBe('Triage ›')
+    expect((await ui.find({ key: 'answer:53' }))?.text).toBe('Answer ›')
+    expect((await ui.find({ key: 'decide:39' }))?.text).toBe('Decide ›')
     expect(await ui.find({ key: 'triage:50' })).toBeUndefined()
     expect(await ui.find({ key: 'triage:39' })).toBeUndefined()
+    expect(await text(ui, /untriaged/)).toBe('? asks you something · ! yours to act on · • untriaged')
     expect(await text(ui, /Next thing/)).toBe('Next thing')
     expect(await text(ui, /^WAITING ON A BLOCKER$/)).toBe('WAITING ON A BLOCKER')
     expect((await ui.find({ type: 'Markdown', text: /#50\]/ }))?.props.text).toBe('[#50](https://github.com/owner/project/issues/50)')
@@ -353,6 +359,56 @@ test('Triage on an issue that needs it offers its triage as a task chip whose se
 
   await w.clock.advance(6000)
   expect(await text(ui, /task chip/)).toBeUndefined()
+})
+
+test('Answer › on an issue that needs info, and Decide › on one for the owner, offer triage chips that name the job', async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { desktop: true })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  await ui.press({ key: 'answer:53' })
+  await ui.press({ key: 'decide:39' })
+  expect(w.spawned).toEqual([
+    expect.objectContaining({
+      title: 'Answer #53',
+      prompt: expect.stringMatching(
+        /^Triage owner\/project#53 with verkstad's triage skill\. It is labelled needs-info: ask me its open questions\. It is user-only, so the Skill tool cannot invoke it: read \/.+\/skills\/triage\/SKILL\.md and follow it for this one issue\.$/,
+      ),
+    }),
+    expect.objectContaining({
+      title: 'Decide #39',
+      prompt: expect.stringMatching(/^Triage owner\/project#39 with verkstad's triage skill\. It is labelled ready-for-human: decide with me whether it stays mine\. /),
+    }),
+  ])
+})
+
+const HELD = JSON.stringify({
+  ready: [],
+  in_progress: [
+    { number: 60, title: 'Left by a Run that died', labels: ['ready-for-agent'], assignees: ['owner'], open_blockers: [] },
+    { number: 61, title: 'Worked by a Run elsewhere', labels: ['ready-for-agent'], assignees: ['owner'], open_blockers: [] },
+  ],
+  waiting: [],
+  specs_labelled: [{ number: 62, title: 'A Spec', labels: ['ready-for-agent'], assignees: [], open_blockers: [] }],
+})
+
+test('Release › on a Ticket claimed with no Run working it runs verkstad release, says what it did and reads GitHub again', async ($, on) => {
+  const w = world(on, { 'run-2026-10-08T13-43-25-000Z.jsonl': PAST }, { frontier: HELD })
+  await $.session.start({ cwd: MAIN, surface: 'terminal', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'terminal')
+  expect((await ui.find({ key: 'release:60' }))?.text).toBe('Release ›')
+  expect((await ui.find({ key: 'release:62' }))?.text).toBe('Release ›')
+  const reads = w.github.length
+
+  await ui.press({ key: 'release:60' })
+  expect(w.ran).toContainEqual(['release', '60'])
+  expect(w.github.length).toBeGreaterThan(reads)
+  expect(await text(ui, /^Released/)).toBe('Released #60: no longer assigned to @owner, so the Frontier offers it again.')
+
+  await ui.press({ key: 'release:61' })
+  expect(await text(ui, /in flight/)).toBe('verkstad release: #61 is in flight in the Run going; Stop or Abort the Run first')
 })
 
 test("without the desktop's task tool, Triage puts the command in the prompt", async ($, on) => {
