@@ -8,7 +8,7 @@ Work in progress. Ray (`beijer/ray`) is the first Project to use it.
 - [docs/adr/](docs/adr/): the decisions that shape it, and why.
 - [docs/formats/](docs/formats/): the formats a Project's glossary, ADRs, agent docs, Specs, Tickets and Agent Briefs are written in.
 
-The skills an owner types: `/verkstad:grill`, `/verkstad:spec`, `/verkstad:tickets`, `/verkstad:triage`, `/verkstad:start-run`, `/verkstad:reflect`, `/verkstad:setup`.
+The skills an owner types: `/verkstad:grill`, `/verkstad:spec`, `/verkstad:tickets`, `/verkstad:triage`, `/verkstad:audit`, `/verkstad:start-run`, `/verkstad:reflect`, `/verkstad:setup`.
 
 ## Install
 
