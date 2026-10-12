@@ -1,14 +1,15 @@
 ---
 name: review
-description: Review the changes since a fixed point against the repo's standards and against the issue they implement, in two parallel reviews. Use when a Ticket's branch is done and needs reviewing before it is reported (fixed point: the commit `git merge-base HEAD origin/<base branch>` prints, run on its own), or when asked to review a branch or the changes since a commit.
+description: Review the changes since a fixed point against the issue they implement, with one reviewer. Use when a Ticket's branch is done and needs reviewing before it is reported (fixed point: the commit `git merge-base HEAD origin/<base branch>` prints, run on its own), or when asked to review a branch or the changes since a commit.
 ---
 
-This is a Borrowed skill: follow `mattpocock-skills:code-review`.
+1. Start one subagent with `run_in_background: false`, so its findings come back before you go on; a review started in the background returns after you have handed back, and its findings are lost. Give it the fixed point, the Ticket number and this brief:
 
-Invoke it with the Skill tool and follow it as written, passing the same fixed point. Start its two reviews with `run_in_background: false`, in one message, so they run side by side and you get both results before you go on. A review started in the background returns after you have handed back, and its findings are lost.
+   > Read the Ticket (`gh issue view <n> --comments`; where a comment disagrees with the body, the latest comment wins) and the diff since the fixed point (`git diff <fixed point>`). Report only:
+   > - each acceptance criterion the diff does not meet;
+   > - each correctness bug, with how to trigger it;
+   > - code the change could delete or not add (an unused option, a wrapper, a re-implemented helper or standard-library call).
+   >
+   > Report no style points, no naming opinions and no nice-to-haves. If you find nothing, say so; do not invent findings.
 
-When both reviews are back, and before you fix anything, run `verkstad review record` on its own in the worktree you reviewed. It records in the log directory that the branch was reviewed, and at which commit. `verkstad land` does not land a Ticket's branch with no recorded review (`reason: review-missing`); the fixes you commit after it keep the record.
-
-This skill only gives it a verkstad name, so that what calls `verkstad:review` keeps working when verkstad writes its own.
-
-If the Skill tool does not know it, the mattpocock-skills plugin is not installed: stop and say so.
+2. When it is back, and before you fix anything, run `verkstad review record` on its own in the worktree you reviewed. It records in the log directory that the branch was reviewed, and at which commit. `verkstad land` does not land a Ticket's branch with no recorded review (`reason: review-missing`); the fixes you commit after it keep the record.
