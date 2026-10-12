@@ -14,7 +14,7 @@ Split a Spec (`#<n>`, or the conversation when there is none yet) into Tickets i
    - A wide mechanical refactor (a rename, a retyped shared symbol) that no slice can land green becomes expand (the new form beside the old), migrate in batches, each blocked by the expand, then contract (the old form removed), blocked by every batch.
    - Prefactoring that makes the change easy comes first.
 3. **Leave no decision open.** Ask the owner each design decision a Ticket raises (or record it in an ADR) and write the answer under its Decisions.
-4. **Check coverage.** Every Behaviour item of the Spec is covered by some Ticket's acceptance criteria. List any that is not, and add it or ask the owner whether it is dropped.
+4. **Check coverage.** With a Spec, every Behaviour item of the Spec is covered by some Ticket's acceptance criteria. List any that is not, and ask the owner whether a Ticket covers it or it is dropped.
 5. **Show a numbered breakdown**: each Ticket's title, what it blocks on and what it delivers end to end. Ask whether the size, the blockers and the splits are right, and revise until the owner approves.
-6. **Publish** only then, blockers first, with `gh issue create`, each labelled `ready-for-agent`, a native sub-issue of the Spec, with its blockers as native `blocked_by` links, made with the calls in the Ticket format. No file paths or line numbers in any Ticket. Leave the Spec itself as it is.
+6. **Publish** only then, blockers first, with `gh issue create`, each labelled `ready-for-agent`, a native sub-issue of the Spec when there is one, with its blockers as native `blocked_by` links, made with the calls in the Ticket format. No file paths or line numbers in any Ticket. Leave the Spec itself as it is.
 7. List each Ticket as `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`, and its title.
