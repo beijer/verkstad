@@ -1,8 +1,9 @@
 #!/bin/sh
 # The Gate's `borrowed` step (ADR 0002): only a Borrowed skill names a mattpocock-skills skill.
 #
-# It reads what agents read as instructions: skills/, agents/, prompts/, docs/ (except docs/adr/ and docs/research/, whose
-# decisions and evidence tell the history), CLAUDE.md and .claude/, tracked or not, ignored files left out.
+# It reads what agents read as instructions: skills/, agents/, prompts/, docs/ (except docs/adr/ and
+# docs/research/, whose decisions and evidence tell the history), CLAUDE.md and .claude/, tracked or not,
+# ignored files left out.
 # There it fails on the plugin's name, and in skills/, agents/ and prompts/ also on a counterpart skill's
 # bare slash name (`/to-tickets`). A Borrowed skill is a skills/<name>/SKILL.md with the line
 #   This is a Borrowed skill: follow `mattpocock-skills:<skill>`.
