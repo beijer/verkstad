@@ -74,7 +74,7 @@ Run each check on what exists. A failed check is a finding for step 3.
 | `docs/agents/triage-labels.md` | Its middle column maps `ready-for-agent`, `needs-info` and `ready-for-human` to those same strings: verkstad's commands use them as they are. |
 | `docs/agents/domain.md` | It names `GLOSSARY.md` at the repo root, and not the old glossary. |
 | The glossary | There is no old glossary. With the old glossary and no `GLOSSARY.md`, the fix is the rename. With both, there is no fix: setup changes neither and the report tells the owner, who merges them. |
-| `CLAUDE.md` | It has an `## Agent skills` section. |
+| `CLAUDE.md` | It has an `## Agent skills` section, and it names the glossary as `GLOSSARY.md`, never by the old glossary's name. |
 | `.gitignore` | `git check-ignore -q .claude/verkstad/x` and `git check-ignore -q .claude/worktrees/x` succeed. |
 | The labels | `verkstad labels --dry-run` says `exists` (or `exists as <name>`, the same label in another case) for all five. |
 
@@ -105,7 +105,7 @@ Only what the plan lists.
 - **The agent docs:** each as the block in [agent-docs.md](../../docs/formats/agent-docs.md) gives it, with this repo's name and three changes: the issue tracker names `verkstad:triage` where the block names the triage skill by a slash name; it ends with the "Specs and blockers" section that format adds; `domain.md` stays generic about which skill creates the glossary and the ADRs.
 - **`CLAUDE.md`** (created when missing; verkstad is for Claude Code, which reads it): when it has no `## Agent skills` section, add [the format's](../../docs/formats/agent-docs.md#the-pointer-in-claudemd), with one `###` per agent doc, `project.md`'s last. When the section is there, add a `###` only for a doc this run wrote that it does not point at yet.
 - **`.gitignore`** (created when missing): append whichever of `.claude/verkstad/` and `.claude/worktrees/` it does not ignore yet.
-- **The glossary:** with the old glossary and no `GLOSSARY.md`, rename it with `git mv` to `GLOSSARY.md`, so that its history follows it.
+- **The glossary:** with the old glossary and no `GLOSSARY.md`, rename it with `git mv` to `GLOSSARY.md`, so that its history follows it. Where `CLAUDE.md` names the old glossary, name `GLOSSARY.md` instead; its `### Domain docs` pointer becomes the one [the format](../../docs/formats/agent-docs.md#the-pointer-in-claudemd) gives.
 
 ## 5. Create the labels
 
