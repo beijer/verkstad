@@ -22,8 +22,16 @@ glossary's terms.>
 
 ## Acceptance criteria
 
-- [ ] <One observable outcome, checkable on its own>
+- [ ] <One action, and what is then seen>
 - [ ] <…>
+
+## Decisions
+
+- <An answer of the owner's this Ticket depends on, one line>
+
+## Out of scope
+
+- <Nearby work an agent might widen into>
 
 ## Blocked by
 
@@ -31,11 +39,13 @@ glossary's terms.>
 ```
 
 - **Parent** names the Spec the Ticket belongs to; it is left out of a Ticket that has none. (Older Ray Tickets open with a `Part of #<Spec>` line instead.)
-- **What to build** says what changes for whoever observes the Project. It may name types, commands, settings and messages; it explains enough of today's behaviour for the change to make sense.
-- **Acceptance criteria** are a checklist. Each says what can be seen when it holds (an exit code, a line of output, what a screen shows, what a machine received), so that the implementer and the Verifier can each check it. Where the Ticket needs tests, a criterion says what they cover.
+- **What to build** says what changes for whoever observes the Project. It may name types, commands, settings and messages, and an existing module or pattern to copy; it explains enough of today's behaviour for the change to make sense.
+- **Acceptance criteria** are a checklist. Each is one action and what is then seen (an exit code, a line of output, what a screen shows, what a machine received), checkable on its own by the implementer and by the Verifier: "With no Controller connected, pressing Start shows *No Controller* and Start stays locked." A criterion mentions setup (a fixture, a device state) only when it needs something the Project's Verify skill and `docs/agents/project.md` don't already give. Where the Ticket needs tests, a criterion says what they cover.
+- **Decisions** (optional) lists the owner's answers the Ticket depends on, one line each, so that no design decision is left to the agent.
+- **Out of scope** (optional) is there only when there is nearby work an agent might widen into, and names it.
 - **Blocked by** lists each blocker, or reads `None - can start immediately`.
 
-A Ticket carries **no file paths or line numbers**: they go stale before the Ticket is picked up ([ADR 0006](../adr/0006-native-github-relations.md)). It names the behaviour, the types and the commands, which the agent finds in the code it reads then. (Some older Ray Tickets cite paths; new ones don't.)
+A Ticket carries **no file paths or line numbers**: they go stale before the Ticket is picked up ([ADR 0006](../adr/0006-native-github-relations.md)). It names the behaviour, the types, the commands and any module or pattern to copy, which the agent finds in the code it reads then. (Some older Ray Tickets cite paths; new ones don't.)
 
 ## On GitHub
 

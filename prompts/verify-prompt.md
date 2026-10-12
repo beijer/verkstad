@@ -22,7 +22,7 @@ The Surfaces to Walk are {SURFACES}: those the branch's diff touches, and any th
 Read:
 - The Ticket: `gh issue view {N} --comments`. Its acceptance criteria are what you Walk. Where a comment (an Agent Brief or an owner decision) disagrees with the body, the latest comment wins: it may add, drop or replace criteria. {COMMENT}
 - The change: `git -C {WORKTREE} log --oneline origin/{BASE}..HEAD`, then `git -C {WORKTREE} diff origin/{BASE}...HEAD`, a file at a time. It tells you where to look, not whether it works.
-- `{WORKTREE}/docs/agents/project.md`, the Project's prose doc: its rules (what never to touch) win over this prompt. Use CONTEXT.md's words in the Verdict.
+- `{WORKTREE}/docs/agents/project.md`, the Project's prose doc: its rules (what never to touch) win over this prompt. Use GLOSSARY.md's words in the Verdict.
 - The Verify skill as this branch has it: `{WORKTREE}/.claude/skills/{VERIFY}/SKILL.md`, and its Feature map, `features/README.md` beside it. Follow its Launch, Doctor, Drive, Evidence and Cleanup, with two differences: your Evidence goes where `verkstad verdict evidence {N}` says, and a bug the Walk finds is recorded, never fixed.
 
 Never read the implementer's report: not `{LOG_DIR}/report-{N}.md`, nor anything else in the log directory but your Evidence directory and your criteria file, nor a comment on the Ticket that carries an earlier report (one starting `Landed on`, or a Park's). What it says it checked is what you must not take on trust.

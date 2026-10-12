@@ -1,6 +1,6 @@
 # verkstad
 
-A Claude Code plugin: skills, agents and one `verkstad` CLI that run a solo developer's agent loop. Read CONTEXT.md first and use its words in code, tests, docs and messages; the decisions behind them are in docs/adr/.
+A Claude Code plugin: skills, agents and one `verkstad` CLI that run a solo developer's agent loop. Read GLOSSARY.md first and use its words in code, tests, docs and messages; the decisions behind them are in docs/adr/.
 
 verkstad is also its own Project: its Contract is `.claude/harness.json` plus `docs/agents/project.md`.
 
@@ -59,7 +59,7 @@ Default labels: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-huma
 
 ### Domain docs
 
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+One `GLOSSARY.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
 
 ### The Contract
 

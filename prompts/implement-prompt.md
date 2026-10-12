@@ -20,7 +20,7 @@ You are implementing Ticket #{N} of {REPO}. Your working directory is a git work
 Start:
 - `verkstad start {N}` puts you on a new branch, issue-{N}, from the latest origin/{BASE}.
 - Read the Ticket with `gh issue view {N} --comments`. Where a comment (an Agent Brief or an owner decision) disagrees with the body, the latest comment wins. {COMMENT}
-- Read `docs/agents/project.md`, the Project's prose doc: its stack, its commands, its rules and its references. Where it says something about this Project, it wins over this prompt. Then read CLAUDE.md, CONTEXT.md and the ADRs in docs/adr/ that the Ticket or CONTEXT.md cite. Use CONTEXT.md's terms in code, tests and messages.
+- Read `docs/agents/project.md`, the Project's prose doc: its stack, its commands, its rules and its references. Where it says something about this Project, it wins over this prompt. Then read CLAUDE.md, GLOSSARY.md and the ADRs in docs/adr/ that the Ticket or GLOSSARY.md cite. Use GLOSSARY.md's terms in code, tests and messages.
 - The Ticket's Spec is #{SPEC}; read it only for the sections the Ticket names.
 
 Resume: this Ticket was started before. Start with `verkstad start {N} --resume` instead, which rebases the existing issue-{N} onto origin/{BASE}; resolve any conflicts with Skill verkstad:merge-conflicts. Why it came back: {RESUME_REASON}
@@ -39,7 +39,7 @@ Work:
 - When the Gate passes, run `git merge-base HEAD origin/{BASE}` on its own and review the branch with Skill verkstad:review against the commit it prints. Fix the real findings, commit, then run the full `verkstad gate` once on the clean worktree. It covers `--quick`, so don't run `--quick` before it.
 - Commit on issue-{N}, in the style of `git log --oneline`, each message ending with `Refs #{N}`. Leave the worktree clean.
 - Leave pushing, merging, closing and commenting to Landing: it lands your branch and posts your report. {OTHER_AGENT}
-- If the Ticket needs something only a human can give (hardware, an account, a decision neither the Ticket, CONTEXT.md nor an ADR settles), stop and report blocked. Do not guess and do not work around it.
+- If the Ticket needs something only a human can give (hardware, an account, a decision neither the Ticket, GLOSSARY.md nor an ADR settles), stop and report blocked. Do not guess and do not work around it.
 - Never report something as working that you did not run.
 
 Final report, under 250 words. It is posted on the Ticket, so write it for the owner of the repo:

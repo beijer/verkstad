@@ -13,33 +13,31 @@ A comment on the issue, posted when it is labelled `ready-for-agent`. When triag
 
 ## Agent Brief
 
-**Category:** bug | enhancement
-**Summary:** <one line: what needs to happen>
-
-**Current behavior:**
+**Current behaviour:**
 <What happens now. For a bug, the broken behaviour and what triage found causes it; for an
 enhancement, the status quo it builds on.>
 
-**Desired behavior:**
-<What happens once the work is done, with the edge cases and the error conditions.>
-
-**Key interfaces:**
-- <A type, command, setting or message: what changes in it and why>
+**What to build:**
+<The behaviour the work adds or fixes, end to end, as a user or another system sees it, with
+the edge cases and the error conditions.>
 
 **Acceptance criteria:**
-- [ ] <Specific and checkable on its own>
+- [ ] <One action, and what is then seen>
 - [ ] <…>
+
+**Decisions:**
+- <An answer of the owner's this work depends on, one line>
 
 **Out of scope:**
 - <What not to change, and the nearby work that belongs elsewhere>
 ```
 
-An issue labelled `ready-for-human` gets the same brief, with a line saying why an agent can't do it (a judgement call, hardware, access, a design decision).
+These are the [Ticket's](ticket.md) sections, with Current behaviour first, and follow its rules for each; Decisions and Out of scope are optional, as there. An issue labelled `ready-for-human` gets the same brief, with a line saying why an agent can't do it (a judgement call, hardware, access, a design decision).
 
 ## Rules
 
 - **Lasting.** The issue may wait weeks while the code moves. The brief names behaviour, interfaces, types and commands, never file paths or line numbers.
 - **What, not how.** It says what the Project does afterwards, not which function to edit. The agent reads the code fresh and decides how.
-- **Checkable criteria.** Each criterion is concrete and can be checked on its own: "`verkstad frontier` lists #12 as waiting on #11", never "the Frontier works".
-- **Bounded.** Out of scope says what to leave alone, so the agent does not widen the change.
+- **Checkable criteria.** Each criterion is one action and what is then seen, checkable on its own by the implementer and by the Verifier: "Running `verkstad frontier` lists #12 as waiting on #11", never "the Frontier works". It mentions setup only when it needs something the Project's Verify skill and `docs/agents/project.md` don't already give.
+- **Bounded.** Where there is nearby work an agent might widen into, Out of scope says what to leave alone, so the agent does not widen the change.
 - **What triage verified.** A bug triage reproduced says so, with what it saw; a cause triage could not confirm is called a guess.

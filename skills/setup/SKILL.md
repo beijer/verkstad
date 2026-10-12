@@ -18,6 +18,7 @@ When it is done the Project has:
 | Pointers to them | `CLAUDE.md`, `## Agent skills` | [docs/formats/agent-docs.md](../../docs/formats/agent-docs.md#the-pointer-in-claudemd) |
 | The log directory and worktrees ignored | `.gitignore`: `.claude/verkstad/`, `.claude/worktrees/` | [docs/contract.md](../../docs/contract.md#the-log-directory) |
 | The five triage labels | on GitHub | `verkstad labels` |
+| The glossary under its name | `GLOSSARY.md`, renamed from the old glossary | [docs/formats/glossary.md](../../docs/formats/glossary.md) |
 
 The links are relative to this skill's directory in the plugin; read each format before writing the file it governs.
 
@@ -25,7 +26,7 @@ Rules for the whole run:
 
 - **A missing file is written; a file that exists is the Project's.** Read it and run step 2's checks on it. Change it only where a check fails, and only once the owner has agreed. Everything else about it stays as it is: its wording, sections of its own, sections the format has and it lacks. Those differences go in the report as notes.
 - **Setup changes nothing outside that table.** Not the Project's code or CI, nothing on GitHub but the labels. The one exception is a Project that does not exist yet: step 1 may create the git repo and the GitHub repo, and step 7 push the first commit, each only once the owner has agreed. It never installs the plugin; that is the owner's.
-- `CONTEXT.md` and `docs/adr/` are created when a term or a decision is first settled, not by setup.
+- `GLOSSARY.md` and `docs/adr/` are created when a term or a decision is first settled, not by setup. Setup only renames the **old glossary**: a glossary the Project still keeps under verkstad's former name for it, `CONTEXT`.md at the repo root. Nothing falls back to that name.
 
 Run every `verkstad` command below as `verkstad`; outside Claude Code, where the plugin's `bin/` is not on the PATH, as `${VERKSTAD_HOME:-$HOME/code/verkstad}/bin/verkstad`.
 
@@ -46,7 +47,7 @@ Call a Project **new** when `origin` had no commits before this run: everything 
 Then find out, changing nothing:
 
 - **The base branch:** the `<branch>` of that `ref: refs/heads/<branch>` line, or, for a new Project, the current branch (`git branch --show-current`).
-- **What is there already:** each file in the table above, each field of `.claude/harness.json`, whether `git check-ignore -q .claude/verkstad/x` and `.claude/worktrees/x` succeed, any Verify skill in `.claude/skills/verify-*/`, and the labels: `verkstad labels --dry-run` reads them and creates none.
+- **What is there already:** each file in the table above, whether the old glossary and `GLOSSARY.md` are at the repo root, each field of `.claude/harness.json`, whether `git check-ignore -q .claude/verkstad/x` and `.claude/worktrees/x` succeed, any Verify skill in `.claude/skills/verify-*/`, and the labels: `verkstad labels --dry-run` reads them and creates none.
 - **How it builds and tests:** the lockfile names the package manager (`pnpm-lock.yaml`, `package-lock.json`, `yarn.lock`, `bun.lock`); then `package.json`'s scripts, a `Makefile` or `justfile`, `Cargo.toml`, `go.mod`, `pyproject.toml`, and the README's development section.
 - **What CI runs:** the `run:` steps of each job in `.github/workflows/*.yml` that runs on push or pull request. The Gate is CI without the release build, so CI is its first source.
 - **Its Surfaces**, from what the code shows a user or another system:
@@ -60,7 +61,6 @@ Then find out, changing nothing:
   | code that talks to hardware (serial, USB, a device on the network) | named after the device | the code that drives it |
 
   A library with none of these has no Surfaces.
-- **Its domain layout:** single-context unless there are monorepo signs (`pnpm-workspace.yaml`, `workspaces` in `package.json`, `packages/*/` with their own sources).
 
 ## 2. Check what is there
 
@@ -72,7 +72,8 @@ Run each check on what exists. A failed check is a finding for step 3.
 | `docs/agents/project.md` | It is not empty. |
 | `docs/agents/issue-tracker.md` | It says issues are GitHub issues. |
 | `docs/agents/triage-labels.md` | Its middle column maps `ready-for-agent`, `needs-info` and `ready-for-human` to those same strings: verkstad's commands use them as they are. |
-| `docs/agents/domain.md` | Its layout (one `CONTEXT.md`, or a `CONTEXT-MAP.md`) is the repo's. |
+| `docs/agents/domain.md` | It names `GLOSSARY.md` at the repo root, and not the old glossary. |
+| The glossary | There is no old glossary. With the old glossary and no `GLOSSARY.md`, the fix is the rename. With both, there is no fix: setup changes neither and the report tells the owner, who merges them. |
 | `CLAUDE.md` | It has an `## Agent skills` section. |
 | `.gitignore` | `git check-ignore -q .claude/verkstad/x` and `git check-ignore -q .claude/worktrees/x` succeed. |
 | The labels | `verkstad labels --dry-run` says `exists` (or `exists as <name>`, the same label in another case) for all five. |
@@ -92,7 +93,6 @@ Ask the owner, with one AskUserQuestion call, the questions the repo did not set
 - **Gate steps**, unless the draft came from CI. Show the steps; offer the draft, and a smaller or larger set when the scripts suggest one.
 - **Landing mode:** `push` (Landing pushes the rebased branch to the base branch), or `pull-request`, for a base branch that is protected; `verkstad land` refuses `pull-request` until verkstad supports it.
 - **Surfaces**, even when the draft is none: a Surface left out lets a change a user can see land without a Verifier ([ADR 0004](../../docs/adr/0004-verifier-triggered-by-surface-globs.md)). Show each with its globs; offer the draft, and the draft with the doubtful ones left out. A Project with no Surfaces lands its Tickets at most `test-verified`.
-- **Domain layout**, only with monorepo signs: single-context or multi-context.
 
 Then show the plan: each file to write, with its content; each fix to an existing file, as a diff, with the check it fails; the labels to create. Ask once more, with AskUserQuestion, whether to go ahead or change something. When the plan is empty, say so and go to step 6.
 
@@ -105,6 +105,7 @@ Only what the plan lists.
 - **The agent docs:** each as the block in [agent-docs.md](../../docs/formats/agent-docs.md) gives it, with this repo's name and three changes: the issue tracker names `verkstad:triage` where the block names the triage skill by a slash name; it ends with the "Specs and blockers" section that format adds; `domain.md` stays generic about which skill creates the glossary and the ADRs.
 - **`CLAUDE.md`** (created when missing; verkstad is for Claude Code, which reads it): when it has no `## Agent skills` section, add [the format's](../../docs/formats/agent-docs.md#the-pointer-in-claudemd), with one `###` per agent doc, `project.md`'s last. When the section is there, add a `###` only for a doc this run wrote that it does not point at yet.
 - **`.gitignore`** (created when missing): append whichever of `.claude/verkstad/` and `.claude/worktrees/` it does not ignore yet.
+- **The glossary:** with the old glossary and no `GLOSSARY.md`, rename it with `git mv` to `GLOSSARY.md`, so that its history follows it.
 
 ## 5. Create the labels
 
@@ -121,7 +122,7 @@ Done when both pass, or the report says exactly what fails and why.
 
 ## 7. Commit
 
-When step 4 wrote anything, commit exactly those paths (`git add <path>…`, never `-A`), in one commit in the Project's commit style (`git log --oneline`). The Gate may have left files of its own, such as a lockfile from an install step; leave them out of the commit and name them in the report, for the owner to commit or ignore. A Ticket's worktree starts from `origin/<baseBranch>`. For a new Project, push the commit now (`git push -u origin <baseBranch>`) if the owner agreed in step 1; otherwise don't push, and the report tells the owner to push before the first Run.
+When step 4 wrote anything, commit exactly those paths (`git add <path>…`, never `-A`; a rename is already staged by `git mv`), in one commit in the Project's commit style (`git log --oneline`). The Gate may have left files of its own, such as a lockfile from an install step; leave them out of the commit and name them in the report, for the owner to commit or ignore. A Ticket's worktree starts from `origin/<baseBranch>`. For a new Project, push the commit now (`git push -u origin <baseBranch>`) if the owner agreed in step 1; otherwise don't push, and the report tells the owner to push before the first Run.
 
 ## 8. Offer a Verify skill
 
@@ -130,10 +131,10 @@ When the Contract has Surfaces and no `verify`, ask with AskUserQuestion whether
 ## 9. Report
 
 - **Found:** what was there and passed its checks.
-- **Written** and **fixed:** each file, and the commit.
+- **Written** and **fixed:** each file, and the commit. A renamed glossary is named here: "`CONTEXT`.md renamed to `GLOSSARY.md` with `git mv`".
 - **Labels:** `verkstad labels`'s lines.
 - **Proof:** the Gate's pass line (or the failing step and its log), and that the Frontier ran.
-- **Notes:** each difference left alone, and what to do about it if the owner wants to.
+- **Notes:** a Project that has both the old glossary and `GLOSSARY.md`, which the owner merges into `GLOSSARY.md` before deleting the old one; each difference left alone, and what to do about it if the owner wants to.
 - **Next:** push the commit, unless step 7 did; write Tickets with `/verkstad:spec` and `/verkstad:tickets`, label them `ready-for-agent`, and `verkstad frontier` lists them. For a new Project, say also that the Spec's first Ticket should scaffold the Project with its first test and add that test's Gate step, and that a Run will say when to run setup again and `/verkstad:create-verify`.
 
 ## When to run setup again

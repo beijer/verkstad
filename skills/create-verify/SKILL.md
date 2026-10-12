@@ -17,7 +17,7 @@ Nothing is done until step 5 has Walked one feature with the skill as written.
 
 ## 1. Interview the repo
 
-Answer each question from the code (package scripts, Makefile, README, CI, the e2e tests and their harness, `docs/agents/`, CONTEXT.md). Ask the owner only what the repo can't tell you.
+Answer each question from the code (package scripts, Makefile, README, CI, the e2e tests and their harness, `docs/agents/`, GLOSSARY.md). Ask the owner only what the repo can't tell you.
 
 - **Surfaces.** What does a user or another system observe? The Contract's `surfaces` in `.claude/harness.json` lists them when it exists. For each, how is it observed: text on screen, a DOM attribute, a screenshot, a generated file, a CLI's output, what a fake external system received?
 - **Launch.** The Project's own command to build and start it, how long a cold build takes, and what says it is ready (a log line, a port answering).
@@ -62,7 +62,7 @@ Keep it short. Facts the Project keeps elsewhere (the tool's `help`, the e2e har
 
 ## 4. Seed the Feature map
 
-Write `features/README.md`: one line per feature linking its file, the state a fresh launch starts from, and the conventions every recipe shares. Then one file per user-facing feature, the 3 to 5 a user meets first (from the UI's main panels, the CLI's commands, the API's routes, CONTEXT.md's glossary). Each file has an H1, one paragraph on what a user can do with the feature, and exactly these four H2s, in this order:
+Write `features/README.md`: one line per feature linking its file, the state a fresh launch starts from, and the conventions every recipe shares. Then one file per user-facing feature, the 3 to 5 a user meets first (from the UI's main panels, the CLI's commands, the API's routes, GLOSSARY.md's glossary). Each file has an H1, one paragraph on what a user can do with the feature, and exactly these four H2s, in this order:
 
 - `## Sub-features`: one line per behaviour, each with a short id.
 - `## How to get to it`: every way a user reaches it, as the user sees it.
