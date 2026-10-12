@@ -126,7 +126,7 @@ export function phase(say: string): string {
   const phases: Array<[RegExp, string]> = [
     [/: claimed, /, 'claimed'],
     [/^implementing in /, 'implementing'],
-    [/^Resuming on the /, 'implementing (Resume)'],
+    [/^Resuming[: ]/, 'implementing (Resume)'],
     [/^Fix round/, 'fixing (Fix round)'],
     [/resuming the implementer's session to review/, 'reviewing'],
     [/asking it to commit and report/, 'wrapping up'],

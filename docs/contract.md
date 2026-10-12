@@ -180,7 +180,7 @@ A Run stops on an unknown reason, for the owner.
 
 It claims the lowest-numbered ready Tickets, as many as it works at once, each in its own worktree, and their implementer, Verifier and conflict sessions run at the same time; each implementer's prompt names the other Tickets in flight by number and title. When one is closed or Parked, it reads the Frontier again and claims the next. Landings stay one at a time: a Ticket that lands after another has moved the base branch is rebased onto it by Landing, keeping its Verdict when the rebase is clean (ADR 0005), and a conflict goes to the conflict prompt as in step 5 below. Its event log interleaves the Tickets' lines, each naming its Ticket.
 
-Each session is bounded by a dollar budget (`--max-budget-usd`): light $5, standard $25, hard $35 and the Verifier $10, or `--budget`'s for every session. Claude Code shows the session what is left, and the prompt tells it to stop starting work at about 15% left, commit what passes and report. Its turns (light 200, standard 250, hard 400, the Verifier 120) and its time (1, 2, 3 and 1 hours) are fuses, well above what a session needs, for one that loops or hangs.
+Each session is bounded by a dollar budget (`--max-budget-usd`): the implementer $25, the conflict finisher $5 and the Verifier $10, or `--budget`'s for every session. Claude Code shows the session what is left, and the prompt tells it to stop starting work at about 15% left, commit what passes and report. Its turns (the implementer 250, the conflict finisher 200, the Verifier 120) and its time (2, 1 and 1 hours) are fuses, well above what a session needs, for one that loops or hangs.
 
 For each Ticket it:
 

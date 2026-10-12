@@ -5,8 +5,7 @@
 // a Ticket claimed, each session (role, id, ending, cost, turns, status), a Resume and why,
 // each CLI call (what a failed one said), each Landing, each Park, each abort and each failure that stopped the Run, and
 // the Run's start and end; each line about a Ticket names it, since the lines of Tickets worked side by side
-// interleave. A field an older log carries that the digest no longer reads, it ignores.
-// The digest reads the last one, or the one `--run` names, and for each session finds its
+// interleave. The digest reads the last one, or the one `--run` names, and for each session finds its
 // transcript by its id among Claude Code's transcripts for the Project's main checkout and worktrees
 // (src/transcripts.ts) and counts the tool calls that failed there, by kind.
 

@@ -511,6 +511,15 @@ for (const surface of ['terminal', 'desktop'] as const) {
   })
 }
 
+test('a Ticket the Run Resumed shows as implementing its Resume', async ($, on) => {
+  const w = world(on, { [TWO]: TWO_LIVE + line({ at: '2026-10-08T17:58:00.000Z', ticket: 49, say: 'Resuming: partial: the second screen is not done' }) })
+  await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
+  await w.clock.settle()
+  const ui = await open($, 'desktop')
+
+  expect(await text(ui, /^implementing \(Resume\) /)).toBe('implementing (Resume) 2m')
+})
+
 test('a Ticket whose failure stops the Run is no longer in flight while the other finishes', async ($, on) => {
   const w = world(on, { [TWO]: TWO_LIVE + line({ at: '2026-10-08T17:58:00.000Z', ticket: 49, failed: 'git push failed: remote hung up' }) })
   await $.session.start({ cwd: MAIN, surface: 'desktop', isInteractive: true })
