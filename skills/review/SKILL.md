@@ -1,9 +1,9 @@
 ---
 name: review
-description: Review the changes since a fixed point against the issue they implement, with one reviewer. Use when a Ticket's branch is done and needs reviewing before it is reported (fixed point: the commit `git merge-base HEAD origin/<base branch>` prints, run on its own), or when asked to review a branch or the changes since a commit.
+description: Review the changes since a fixed point against the issue they implement, with one subagent. Use when a Ticket's branch is done and needs reviewing before it is reported (fixed point: the commit `git merge-base HEAD origin/<base branch>` prints, run on its own), or when asked to review a branch or the changes since a commit.
 ---
 
-1. Start one subagent with `run_in_background: false`, so its findings come back before you go on; a review started in the background returns after you have handed back, and its findings are lost. Give it the fixed point, the Ticket number and this brief:
+1. Start one subagent with `run_in_background: false`: a review started in the background returns after you have handed back, and its findings are lost. Give it the fixed point, the Ticket number and this brief:
 
    > Read the Ticket (`gh issue view <n> --comments`; where a comment disagrees with the body, the latest comment wins) and the diff since the fixed point (`git diff <fixed point>`). Report only:
    > - each acceptance criterion the diff does not meet;

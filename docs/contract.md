@@ -13,7 +13,7 @@ Neither repeats the other. A fact a script acts on goes in `harness.json`; every
 
 The log directory keeps only what a later step reads: a Verdict and its Evidence until the Ticket lands and the owner may want them, a review record until its branch lands, the Gate's logs and recorded passes, and a `verkstad run`'s event log. What an agent finds is not kept there. What outlives its Ticket goes in the Project's docs, on its branch (GLOSSARY.md, an ADR, `docs/agents/project.md`); what is about the Ticket goes in the agent's report, which Landing or a Park posts on the Ticket. An agent's scratch files go under its worktree's own `.claude/verkstad/`, which the same `.gitignore` line covers: `verkstad run` makes each Ticket's worktree with that scratch directory, empty, before a session starts in it. The scratch directory goes with the worktree: whenever `verkstad land` (with or without `--park`, a failed Landing included) removes a worktree, it removes everything in it.
 
-`verkstad review record`, which `verkstad:review` runs once its reviews are back, records that the branch of the worktree it runs in was reviewed: `review-<branch>.json` (a `/` in the branch written `%2F`) holds `branch`, `commit` (the full SHA HEAD was on) and `recordedAt` (ISO 8601). A second review of the branch replaces it. It fails on a detached HEAD.
+`verkstad review record`, which `verkstad:review` runs once its review is back, records that the branch of the worktree it runs in was reviewed: `review-<branch>.json` (a `/` in the branch written `%2F`) holds `branch`, `commit` (the full SHA HEAD was on) and `recordedAt` (ISO 8601). A second review of the branch replaces it. It fails on a detached HEAD.
 
 ## What GitHub holds
 
