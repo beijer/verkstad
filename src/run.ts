@@ -123,7 +123,7 @@ const LIMITS: Record<string, Limits> = {
 const WRAP_UP: Limits = { usd: 10, turns: 15, hours: 0.5 };
 
 /**
- * Failed tool calls a session may have before the summary names it for reflect: a Ticket worked test-first
+ * Failed tool calls a session may have before the summary names it for reflect: a Ticket proved with tests
  * fails some commands on purpose, so only a session well past that is worth reading.
  */
 const FAILED_CALLS = 20;

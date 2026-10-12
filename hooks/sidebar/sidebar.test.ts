@@ -46,7 +46,7 @@ const tail = (name: string, input: object) => line({ type: 'assistant', message:
 const SESSIONS: Record<string, [number, string]> = {
   [transcriptDir(49)]: [12, tail('Bash', { command: 'npm test' })],
   [transcriptDir(50)]: [3, tail('Read', { file_path: '/home/owner/code/project/src/plan.ts' })],
-  [transcriptDir(51)]: [1, tail('Skill', { skill: 'verkstad:tdd' })],
+  [transcriptDir(51)]: [1, tail('Skill', { skill: 'verkstad:review' })],
 }
 
 /** A verkstad Project on disk and on GitHub, in memory; `verkstad` records what the controls ran. */
@@ -481,7 +481,7 @@ for (const surface of ['terminal', 'desktop'] as const) {
     )
     await w.clock.advance(6000)
     expect((await ui.findAll({ type: 'Text', text: /tool calls$/ })).map(t => t.text)).toEqual(['↳ 3 tool calls', '↳ 1 tool calls'])
-    expect(await text(ui, /^· Skill/)).toBe('· Skill: verkstad:tdd')
+    expect(await text(ui, /^· Skill/)).toBe('· Skill: verkstad:review')
     expect(await text(ui, /^· Bash/)).toBeUndefined()
     expect(await text(ui, /^THIS RUN$/)).toBe('THIS RUN')
     expect(await text(ui, /^implementing \d+m$/)).toBe('implementing 1m')

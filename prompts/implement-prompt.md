@@ -25,14 +25,14 @@ Start:
 
 Resume: this Ticket was started before. Start with `verkstad start {N} --resume` instead, which rebases the existing issue-{N} onto origin/{BASE}; resolve any conflicts with Skill verkstad:merge-conflicts. Why it came back: {RESUME_REASON}
 
-Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it on its Surfaces, found it does not do what the Ticket says. Start with `verkstad start {N} --resume` instead, which rebases the existing issue-{N} onto origin/{BASE}; resolve any conflicts with Skill verkstad:merge-conflicts. Fix what it found, test-first, and Walk the criteria it names yourself before you report; it Walks every criterion again on your new commits. Its findings: {FINDINGS}
+Fix round: this Ticket is implemented on issue-{N}, but the Verifier, Walking it on its Surfaces, found it does not do what the Ticket says. Start with `verkstad start {N} --resume` instead, which rebases the existing issue-{N} onto origin/{BASE}; resolve any conflicts with Skill verkstad:merge-conflicts. Fix what it found, and Walk the criteria it names yourself before you report; it Walks every criterion again on your new commits. Its findings: {FINDINGS}
 
 Current state of the Project: {CURRENT_STATE}
 
 What a later agent or the owner needs to know about the Project goes in its docs, on your branch (its glossary or an ADR, where `docs/agents/domain.md` puts them, or `docs/agents/project.md`); what concerns only this Ticket goes in your report, which is posted on the Ticket. Scratch files go under `.claude/verkstad/` in your worktree (gitignored) and are deleted with it.
 
 Work:
-- Implement exactly the Ticket and its acceptance criteria, nothing beyond. Test-first where there is logic (Skill verkstad:tdd), through the seams the prose doc names.
+- Implement exactly the Ticket and its acceptance criteria, nothing beyond. Prove new logic with a test, through the seams the prose doc names.
 - When the change alters something a user or another system observes (a UI, a generated file, a device the Project drives), Walk each acceptance criterion on it with the Project's Verify skill (the `verify` field of `.claude/harness.json`) before writing its end-to-end test, as the prose doc says. A Verifier, blind to your report, Walks them again after you.
 - When your change adds a check the Gate does not run yet (a test runner, a typecheck, a lint), add it as a step to `gate.steps` in `.claude/harness.json` (`{ "name": "unit tests", "command": "npm test" }`, run from the repo root), so that Landing runs it; run `verkstad gate` to see it pass. Add a Surface, or a glob to one, only when your Ticket asks for it; never remove or narrow one (remove a Surface or a glob, add a `!` glob) or remove or change `verify`: that is the owner's, through `verkstad:maintain-verify`, and Landing refuses a branch that does it (`contract-narrowed`).
 - Run single tests while you work, and `verkstad gate --quick` (every Gate step, a slow suite narrowed to the tests your branch touches) before review. Commit each time it passes, so that a stop loses little. After your last commit, run the full `verkstad gate` once on the clean worktree: Landing reuses that pass when the base has not moved.
