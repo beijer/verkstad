@@ -2,6 +2,11 @@
 
 A GitHub issue an agent can implement alone in one context window. `verkstad:tickets` writes Tickets from a Spec in this format; Ray's Tickets and verkstad's own are written in it.
 
+Two rules make an issue a Ticket, and an issue that breaks either is not labelled `ready-for-agent`:
+
+- **No design decision is left to the agent.** Each one the work raises (which of two models, whether to reopen or rebuild, how a feature not built yet will behave) goes to the owner, or into an ADR, before the label, and the answer is written into the issue. An implementer that meets one mid-Ticket can only stop blocked, and the Ticket is Parked.
+- **It fits one implementer session.** A Ticket that would lay down several layers at once (a new data model, a package, a UI and their tests) is split: a thin first Ticket, end to end, that fixes the shape, then Tickets that widen it, each blocked by the one before.
+
 ## Body
 
 ```md

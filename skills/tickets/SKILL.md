@@ -14,4 +14,6 @@ If it prints nothing, the mattpocock-skills plugin is not installed: stop and sa
 
 - The Project's issue tracker is described in its `docs/agents/issue-tracker.md` and its labels in `docs/agents/triage-labels.md`; where the skill says to run a setup skill for them, read those instead.
 - Write and publish each Ticket as verkstad's [Ticket format](../../docs/formats/ticket.md) says: a native sub-issue of its Spec, its blockers as native `blocked_by` links, no file paths or line numbers.
+- A Ticket leaves no design decision to the agent: ask the owner each one it raises (or record it in an ADR) and write the answer into the Ticket before publishing it.
+- A Ticket that would lay down several layers at once (a data model, a package, a UI and their tests) is split into a thin first Ticket, end to end, that fixes the shape, and Tickets that widen it, blocked by it.
 - Each issue you show the owner is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`.

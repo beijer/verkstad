@@ -16,5 +16,6 @@ If it prints nothing, the mattpocock-skills plugin is not installed: stop and sa
 - Write each Agent Brief in verkstad's [Agent Brief format](../../docs/formats/agent-brief.md).
 - Each issue you show the owner is written `<owner>/<repo>#<n>`, with `<owner>/<repo>` from `gh repo view --json nameWithOwner`.
 - The owner you are talking to is the reporter. On a `needs-info` issue, its open questions are in the latest triage notes or in a Park's comment (the one ending `Parked: branch …`): ask the owner each one, a round at a time.
+- An issue with an open design decision is not made `ready-for-agent`: ask the owner (or record it in an ADR) and write the answer into the Agent Brief first. One too big for one implementer session is split as the [Ticket format](../../docs/formats/ticket.md) says.
 - On a `ready-for-human` issue, decide with the owner whether it stays theirs or can be written up for an agent.
 - Before you post anything or change a label, show the owner the comment and the label change, and make them only once the owner says yes. A Parked Ticket keeps its branch, so once it is `ready-for-agent` again the next Run Resumes it.
