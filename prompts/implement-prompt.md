@@ -38,6 +38,7 @@ Work:
 - Run single tests while you work, and `verkstad gate --quick` (every Gate step, a slow suite narrowed to the tests your branch touches) before review. Commit each time it passes, so that a stop loses little. After your last commit, run the full `verkstad gate` once on the clean worktree: Landing reuses that pass when the base has not moved.
 - When the Gate passes, run `git merge-base HEAD origin/{BASE}` on its own and review the branch with Skill verkstad:review against the commit it prints. Fix the real findings, commit, then run the full `verkstad gate` once on the clean worktree. It covers `--quick`, so don't run `--quick` before it.
 - Commit on issue-{N}, in the style of `git log --oneline`, each message ending with `Refs #{N}`. Leave the worktree clean.
+- Run `verkstad gate` in the foreground with a long timeout on the Bash call, never in the background or with a scheduled wakeup; it may run as long as this session may. Give the final report only once nothing you started is still running: it is your last word.
 - Leave pushing, merging, closing and commenting to Landing: it lands your branch and posts your report. {OTHER_AGENT}
 - If the Ticket needs something only a human can give (hardware, an account, a decision neither the Ticket, GLOSSARY.md nor an ADR settles), stop and report blocked. Do not guess and do not work around it.
 - Never report something as working that you did not run.

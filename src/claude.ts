@@ -124,7 +124,8 @@ export async function session(options: SessionOptions): Promise<SessionResult> {
     "--permission-prompts",
     "none",
   ];
-  if (agent.disallowedTools.length) args.push("--disallowedTools", agent.disallowedTools.join(","));
+  // No tool that defers work past the session's turn: a session waiting on one would report before it is done.
+  args.push("--disallowedTools", [...agent.disallowedTools, "ScheduleWakeup", "CronCreate", "Monitor"].join(","));
   if (options.budgetUsd !== undefined) args.push("--max-budget-usd", String(options.budgetUsd));
   for (const dir of options.addDirs ?? []) args.push("--add-dir", dir);
   const id = options.resume ?? randomUUID();
@@ -134,7 +135,10 @@ export async function session(options: SessionOptions): Promise<SessionResult> {
     (done, failed) => {
       // In a process group of its own, so that killing it kills what it started; the owner's Ctrl-C, which no
       // longer reaches it, is passed on.
-      const child = spawn("claude", args, { cwd: options.cwd, stdio: ["pipe", "pipe", "pipe"], detached: true });
+      // No background tasks, so a long command such as the Gate runs in the foreground, for as long as the session may.
+      const env: NodeJS.ProcessEnv = { ...process.env, CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1" };
+      if (options.timeoutMs !== undefined) env.BASH_MAX_TIMEOUT_MS = env.BASH_DEFAULT_TIMEOUT_MS = String(options.timeoutMs);
+      const child = spawn("claude", args, { cwd: options.cwd, env, stdio: ["pipe", "pipe", "pipe"], detached: true });
       let stdout = "";
       let stderr = "";
       let ended: "timeout" | "aborted" | null = null;

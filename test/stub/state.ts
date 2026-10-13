@@ -106,9 +106,10 @@ export interface StubSession {
   failedToolCalls?: number;
 }
 
-/** A call the stub `claude` received: its argv, where it ran, and the prompt it read on stdin. */
+/** A call the stub `claude` received: its argv, where it ran, the prompt it read on stdin, and its `CLAUDE_CODE_*` and `BASH_*` environment. */
 export interface StubClaudeCall {
   args: string[];
   cwd: string;
   prompt: string;
+  env: Record<string, string>;
 }

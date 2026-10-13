@@ -3,7 +3,7 @@
 // scripted for the calling Ticket, the one whose worktree (issue-<n>) it runs
 // in, or for any Ticket; it takes it under a lock, since a Run that works
 // Tickets side by side starts several sessions at once. It
-// appends its argv, working directory and prompt to calls.jsonl, runs the
+// appends its argv, working directory, prompt and Claude Code environment to calls.jsonl, runs the
 // session's commands in its working directory as an agent would, and prints a
 // result as `claude -p --output-format json` does. It accepts exactly the flags
 // verkstad passes, checks the report against --json-schema, and fails loudly on
@@ -117,6 +117,11 @@ function take(dir: string, ticket: number | undefined, prompt: string): StubSess
   }
 }
 
+/** The variables of its environment that set how Claude Code runs a session. */
+function claudeEnv(): Record<string, string> {
+  return Object.fromEntries(Object.entries(process.env).filter((e): e is [string, string] => /^(CLAUDE_CODE_|BASH_)/.test(e[0])));
+}
+
 function main(): number {
   const dir = process.env.VERKSTAD_CLAUDE_STUB_DIR;
   if (!dir) {
@@ -125,7 +130,7 @@ function main(): number {
   }
   const args = process.argv.slice(2);
   const prompt = readFileSync(0, "utf8");
-  appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), prompt }) + "\n");
+  appendFileSync(join(dir, "calls.jsonl"), JSON.stringify({ args, cwd: process.cwd(), prompt, env: claudeEnv() }) + "\n");
   try {
     const flags = parse(args);
     for (const [flag, wanted] of [["-p", ""], ["--output-format", "json"], ["--permission-prompts", "none"]]) {

@@ -117,11 +117,14 @@ test("run implements the one ready Ticket in a worktree of its own, lands it and
   assert.equal(flag(call.args, "--max-turns"), "250");
   assert.equal(flag(call.args, "--max-budget-usd"), "25");
   assert.equal(flag(call.args, "--permission-mode"), "auto");
+  assert.equal(flag(call.args, "--disallowedTools"), "ScheduleWakeup,CronCreate,Monitor");
+  assert.deepEqual(call.env, { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", BASH_MAX_TIMEOUT_MS: "7200000", BASH_DEFAULT_TIMEOUT_MS: "7200000" });
   assert.equal(flag(call.args, "--add-dir"), realpathSync(join(p.dir, ".claude", "verkstad")));
   assert.match(flag(call.args, "--session-id") ?? "", /^[0-9a-f-]{36}$/);
   assert.match(flag(call.args, "--append-system-prompt") ?? "", /^You implement one Ticket of a Project in a git worktree of your own\. The prompt names the Ticket/);
   assert.match(call.prompt, /^You are implementing Ticket #7 of owner\/project\. /);
   assert.doesNotMatch(call.prompt, /\btier\b/i);
+  assert.match(call.prompt, /^- Run `verkstad gate` in the foreground with a long timeout on the Bash call, never in the background or with a scheduled wakeup; .* Give the final report only once nothing you started is still running/m);
   const schema = JSON.parse(flag(call.args, "--json-schema") ?? "{}") as { required: string[]; properties: Record<string, unknown> };
   assert.equal(schema.required.includes("tier"), false);
   assert.equal("tier" in schema.properties, false);
@@ -237,6 +240,7 @@ test("run nudges a session stopped at its turn limit to commit and report, and r
   assert.equal(flag(second.args, "--resume"), flag(p.claudeCalls()[0].args, "--session-id"));
   assert.equal(flag(second.args, "--max-turns"), "15");
   assert.equal(flag(second.args, "--max-budget-usd"), "10");
+  assert.deepEqual(second.env, { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", BASH_MAX_TIMEOUT_MS: "1800000", BASH_DEFAULT_TIMEOUT_MS: "1800000" });
   assert.match(second.prompt, /^Your session hit its limit\. Do no new work\. Commit what passes as it stands/);
   assert.match(r.stdout, /\nSomething for \/verkstad:reflect to learn from: #7 implementer asked to wrap up\.\n$/);
   assert.equal(p.state().issues[0].state, "closed");
@@ -394,7 +398,8 @@ test("run has the Verifier Walk a branch that touches a Surface, blind to the re
   assert.match(r.stdout, /\n#7 touches ui; the Verifier Walks it\.\n#7 Verdict: live-verified \(\$0\.25\)\.\n#7 landed on main in /);
   const verifier = p.claudeCalls()[1];
   assert.equal(verifier.cwd, p.claudeCalls()[0].cwd);
-  assert.equal(flag(verifier.args, "--disallowedTools"), "Edit,NotebookEdit");
+  assert.equal(flag(verifier.args, "--disallowedTools"), "Edit,NotebookEdit,ScheduleWakeup,CronCreate,Monitor");
+  assert.deepEqual(verifier.env, { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", BASH_MAX_TIMEOUT_MS: "3600000", BASH_DEFAULT_TIMEOUT_MS: "3600000" });
   assert.equal(flag(verifier.args, "--max-turns"), "120");
   assert.match(verifier.prompt, /When about 15% is left, Walk nothing more: record the Verdict/);
   assert.match(verifier.prompt, /^You are the Verifier for Ticket #7 of owner\/project\. /);
@@ -475,8 +480,11 @@ test("run has the conflict prompt finish a Ticket whose Landing conflicted with 
   assert.equal(flag(finisher.args, "--model"), "sonnet");
   assert.equal(flag(finisher.args, "--effort"), "medium");
   assert.equal(flag(finisher.args, "--max-budget-usd"), "5");
+  assert.equal(flag(finisher.args, "--disallowedTools"), "ScheduleWakeup,CronCreate,Monitor");
+  assert.deepEqual(finisher.env, { CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: "1", BASH_MAX_TIMEOUT_MS: "3600000", BASH_DEFAULT_TIMEOUT_MS: "3600000" });
   assert.match(flag(finisher.args, "--append-system-prompt") ?? "", /^You finish one Ticket of a Project whose Landing hit a rebase conflict/);
   assert.match(finisher.prompt, /^You are finishing Ticket #7 of owner\/project\. /);
+  assert.match(finisher.prompt, /^- Run `verkstad gate` in the foreground with a long timeout on the Bash call, never in the background or with a scheduled wakeup; .* Give the final report only once nothing you started is still running/m);
   assert.match(finisher.prompt, /rebasing onto origin\/main conflicted in a\.txt\. Since issue-7 branched, these landed on main:\n[0-9a-f]+ Another Ticket landed\n/);
   assert.equal(p.git("--git-dir", p.origin, "show", "main:a.txt"), "ours and theirs");
   assert.equal(p.state().issues[0].state, "closed");
