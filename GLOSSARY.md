@@ -5,7 +5,7 @@ A Claude Code plugin that runs a solo developer's agent loop from Spec to verifi
 ## Projects and their contract
 
 **Project**:
-A repository that uses verkstad. Ray (`beijer/ray`) is the first.
+A repository that uses verkstad.
 _Avoid_: repo, app, client
 
 **Contract**:
