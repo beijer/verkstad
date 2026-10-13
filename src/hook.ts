@@ -110,10 +110,13 @@ function segments(command: string): Segment[] {
         segment.refusals.push(zshReason(word, `${name}=${singleQuoted(word.slice(name.length + 1))}`));
       } else if (/^=./.test(shape)) segment.refusals.push(zshReason(word, singleQuoted(word)));
       else {
-        // ${…} is a parameter, whose [ is no glob.
-        const option = /^(--[A-Za-z0-9][\w-]*=)(.*)$/.exec(shape.replace(/\$\{[^}]*\}/g, ""));
+        // ${…} and $name[…] are parameters, whose [ is no glob.
+        const option = /^(--[A-Za-z0-9][\w-]*=)(.*)$/.exec(shape.replace(/\$\{[^}]*\}|\$\w+\[[^\]]*\]/g, ""));
         if (option && /[*?[]/.test(option[2])) {
-          segment.refusals.push(globReason(word, option[1] + singleQuoted(word.slice(option[1].length))));
+          const value = word.slice(option[1].length);
+          // Double quotes keep a parameter in the value expanded.
+          const quoted = value.includes("$") ? `"${value.replace(/["\\`]/g, "\\$&")}"` : singleQuoted(value);
+          segment.refusals.push(globReason(word, option[1] + quoted));
         }
       }
     }

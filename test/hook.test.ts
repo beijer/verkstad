@@ -236,6 +236,7 @@ test("under zsh, the hook refuses a --name=value word whose value holds an unquo
     ["grep -rn x src --include=*.ts", "--include=*.ts", "--include='*.ts'"],
     ["curl --url=http://x/?a=1", "--url=http://x/?a=1", "--url='http://x/?a=1'"],
     ["ls --hide=[ab]", "--hide=[ab]", "--hide='[ab]'"],
+    ["rsync --exclude=$DIR/*.log a b", "--exclude=$DIR/*.log", '--exclude="$DIR/*.log"'],
   ];
   for (const [command, word, quoted] of cases) {
     const r = hookUnder(p, "/usr/bin/zsh", p.dir, command);
@@ -252,6 +253,7 @@ test("the hook lets a quoted --name=glob, a bare glob and a parameter's [ throug
     "grep -rn x src --include=\\*.ts",
     "ls src/*.ts",
     "echo --x=${a[1]}",
+    "echo --x=$a[1]",
     "[[ $x == --a=* ]] && echo yes",
   ];
 
