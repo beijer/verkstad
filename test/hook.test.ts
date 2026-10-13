@@ -222,6 +222,48 @@ test("under bash, or with SHELL unset, the hook lets a word that starts with = t
   }
 });
 
+function globRefusal(word: string, quoted: string): string {
+  const reason =
+    "verkstad: zsh, the shell here, reads an unquoted *, ? or [ as a glob and abandons the command line " +
+    `when no file matches, so ${word} would fail; quote its value: ${quoted}`;
+  return denial(reason);
+}
+
+test("under zsh, the hook refuses a --name=value word whose value holds an unquoted glob", (t) => {
+  const p = project(t);
+
+  const cases: Array<[string, string, string]> = [
+    ["grep -rn x src --include=*.ts", "--include=*.ts", "--include='*.ts'"],
+    ["curl --url=http://x/?a=1", "--url=http://x/?a=1", "--url='http://x/?a=1'"],
+    ["ls --hide=[ab]", "--hide=[ab]", "--hide='[ab]'"],
+  ];
+  for (const [command, word, quoted] of cases) {
+    const r = hookUnder(p, "/usr/bin/zsh", p.dir, command);
+
+    assert.deepEqual(r, { code: 0, stdout: globRefusal(word, quoted), stderr: "" }, command);
+  }
+});
+
+test("the hook lets a quoted --name=glob, a bare glob and a parameter's [ through under zsh, and --include=*.ts under bash", (t) => {
+  const p = project(t);
+  const zsh = [
+    "grep -rn x src --include='*.ts'",
+    'grep -rn x src --include="*.ts"',
+    "grep -rn x src --include=\\*.ts",
+    "ls src/*.ts",
+    "echo --x=${a[1]}",
+    "[[ $x == --a=* ]] && echo yes",
+  ];
+
+  for (const command of zsh) {
+    const r = hookUnder(p, "/usr/bin/zsh", p.dir, command);
+
+    assert.deepEqual(r, { code: 0, stdout: "", stderr: "" }, command);
+  }
+  const bash = hookUnder(p, "/bin/bash", p.dir, "grep -rn x src --include=*.ts");
+  assert.deepEqual(bash, { code: 0, stdout: "", stderr: "" });
+});
+
 function denial(reason: string): string {
   const decision = { hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: reason };
   return JSON.stringify({ hookSpecificOutput: decision }) + "\n";

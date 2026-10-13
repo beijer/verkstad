@@ -5,8 +5,10 @@
 // When the shell is zsh (the basename of $SHELL), in every checkout and outside git, it
 // refuses a Bash command with an unquoted word that starts with =, or an assignment (before the
 // command, or an argument of export and its kin) whose value does, outside [[ … ]]: zsh expands such a word as the path of a command and, when there is
-// none, abandons the rest of the command line. The reason says how to quote the word. For any
-// other command, shell or tool, it prints nothing.
+// none, abandons the rest of the command line. It also refuses an unquoted --name=value word whose
+// value holds an unquoted *, ? or [: zsh reads it as a glob and, when no file matches, abandons the
+// command line. The reason says how to quote the word. For any other command, shell or tool, it
+// prints nothing.
 //
 // It never exits 2, which would block the call whatever went wrong: a stdin that is not an
 // event is a Failure (exit 1), which Claude Code shows the user and lets the call through.
@@ -24,10 +26,17 @@ function zshReason(word: string, quoted: string): string {
   );
 }
 
-/** One simple command of a Bash command line: its words, and the words zsh would expand as a command path, each with the way to quote it. */
+function globReason(word: string, quoted: string): string {
+  return (
+    "verkstad: zsh, the shell here, reads an unquoted *, ? or [ as a glob and abandons the command line " +
+    `when no file matches, so ${word} would fail; quote its value: ${quoted}`
+  );
+}
+
+/** One simple command of a Bash command line: its words, and the reasons zsh would fail on the words it would expand. */
 interface Segment {
   words: string[];
-  equals: Array<{ word: string; quoted: string }>;
+  refusals: string[];
 }
 
 const SEPARATORS = ";&|()`";
@@ -75,7 +84,7 @@ function lineEnd(command: string, i: number): number {
  */
 function segments(command: string): Segment[] {
   const out: Segment[] = [];
-  let segment: Segment = { words: [], equals: [] };
+  let segment: Segment = { words: [], refusals: [] };
   let word = "";
   // The word as written, with each quoted string or escaped character as one \0: what zsh
   // sees unquoted, so that =word is told apart from '=word'.
@@ -98,8 +107,15 @@ function segments(command: string): Segment[] {
       const assignment = assignable ? /^([A-Za-z_][A-Za-z0-9_]*)=(?==.)/.exec(shape) : null;
       if (assignment) {
         const name = assignment[1];
-        segment.equals.push({ word, quoted: `${name}=${singleQuoted(word.slice(name.length + 1))}` });
-      } else if (/^=./.test(shape)) segment.equals.push({ word, quoted: singleQuoted(word) });
+        segment.refusals.push(zshReason(word, `${name}=${singleQuoted(word.slice(name.length + 1))}`));
+      } else if (/^=./.test(shape)) segment.refusals.push(zshReason(word, singleQuoted(word)));
+      else {
+        // ${…} is a parameter, whose [ is no glob.
+        const option = /^(--[A-Za-z0-9][\w-]*=)(.*)$/.exec(shape.replace(/\$\{[^}]*\}/g, ""));
+        if (option && /[*?[]/.test(option[2])) {
+          segment.refusals.push(globReason(word, option[1] + singleQuoted(word.slice(option[1].length))));
+        }
+      }
     }
     if (inWord && !redirect) segment.words.push(word);
     if (inWord) redirect = false;
@@ -110,8 +126,8 @@ function segments(command: string): Segment[] {
   const endSegment = () => {
     endWord();
     redirect = false;
-    if (segment.words.length || segment.equals.length) out.push(segment);
-    segment = { words: [], equals: [] };
+    if (segment.words.length || segment.refusals.length) out.push(segment);
+    segment = { words: [], refusals: [] };
   };
   /** Skips the bodies of the heredocs the line just ended opened, returning the index after the last. */
   const skipBodies = (i: number): number => {
@@ -237,8 +253,8 @@ export function hook(args: string[]): void {
   const command = event.tool_input?.command;
   if (event.tool_name !== "Bash" || typeof command !== "string") return;
   if (basename(process.env.SHELL ?? "") !== "zsh") return;
-  const expanded = segments(command).flatMap((segment) => segment.equals)[0];
-  if (expanded) deny(zshReason(expanded.word, expanded.quoted));
+  const refusal = segments(command).flatMap((segment) => segment.refusals)[0];
+  if (refusal) deny(refusal);
 }
 
 function deny(reason: string): void {
