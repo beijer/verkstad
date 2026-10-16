@@ -49,7 +49,7 @@ import { type Checking, committedChecking, type LandingMode, narrowings, readChe
 import { Failure } from "./fail.ts";
 import { recordedPass, recordedPassDetails, runGate, StepFailure } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
-import { commonDir, git, logDirectory, mainCheckout, tryFetch, tryGit } from "./git.ts";
+import { commonDir, type GitResult, git, logDirectory, mainCheckout, tryFetch, tryGit } from "./git.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
 import { deleteReview, missingReview } from "./review.ts";
 import { checkVerdict, describeVerification, type VerdictCheck, type VerdictReason } from "./verdict.ts";
@@ -262,6 +262,13 @@ function quickGateOn(root: string, upstream: string, log: string): string | null
   return [...moved].some((f) => branch.has(f)) ? null : log;
 }
 
+/** Aborts the rebase that failed in `root` and says how: the conflicting files, or git's complaint. */
+function abortRebase(root: string, rebase: GitResult): string {
+  const unmerged = tryGit(root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
+  tryGit(root, ["rebase", "--abort"]);
+  return unmerged.length ? `conflicts in ${unmerged.join(", ")}.` : `failed: ${rebase.stderr.trim()}`;
+}
+
 /**
  * Fetches the base, rebases the branch onto it, checks the Verdict, and runs the full Gate, unless a full
  * pass on the rebased tree is recorded; a failure throws.
@@ -275,9 +282,7 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const quickOn = passedBefore === null ? null : quickGateOn(ticket.root, upstream, passedBefore);
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
   if (rebase.status !== 0) {
-    const unmerged = tryGit(ticket.root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
-    tryGit(ticket.root, ["rebase", "--abort"]);
-    const how = unmerged.length ? `conflicts in ${unmerged.join(", ")}.` : `failed: ${rebase.stderr.trim()}`;
+    const how = abortRebase(ticket.root, rebase);
     throw didNotLand(ticket, "conflict", `rebasing ${ticket.branch} onto ${upstream} ${how}`, true);
   }
   if (git(ticket.root, ["rev-list", "--count", `${upstream}..HEAD`]).trim() === "0") {
@@ -432,34 +437,42 @@ function removeWorktreeAndBranch(ticket: Ticket): string {
   return notes + (deleted ? "" : `Could not delete the branch ${ticket.branch}.\n`);
 }
 
-/** Landing mode push: lands the branch on the base branch and closes the Ticket. */
-function pushToBase(ticket: Ticket, base: string, report: string): void {
-  const { sha, checked } = rebaseCheckGatePush(ticket, base);
-  let closing: Failure | null = null;
+/**
+ * Closes the Ticket that landed in `sha` with its report and Verdict; when GitHub refuses, keeps the comment
+ * in the log directory and returns the github-failed failure to end with.
+ */
+function closeLanded(ticket: Ticket, base: string, sha: string, report: string, checked: Checked): LandingFailure | null {
   const comment = `Landed on ${base} in ${sha}.\n\n${report}\n\n${describeGate(checked)}${describeVerification(checked.check)}`;
   try {
     gh(["issue", "close", String(ticket.n), "--comment", comment]);
+    return null;
   } catch (error) {
     if (!(error instanceof Failure)) throw error;
-    closing = error;
+    // Kept for whoever closes it: a Run, once GitHub lets it, or the owner.
+    const kept = closingCommentPath(logDirectory(ticket.main), ticket.n);
+    let byHand = `with ${kept} as the comment`;
+    try {
+      writeFileSync(kept, comment);
+    } catch (e) {
+      byHand = `with the report and the Verdict as the comment (keeping it in ${kept} failed: ${(e as Error).message})`;
+    }
+    return new LandingFailure(
+      "github-failed",
+      `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${error.message}\nClose it by hand, ${byHand}.`,
+    );
   }
+}
+
+/** Landing mode push: lands the branch on the base branch and closes the Ticket. */
+function pushToBase(ticket: Ticket, base: string, report: string): void {
+  const { sha, checked } = rebaseCheckGatePush(ticket, base);
+  const closing = closeLanded(ticket, base, sha, report, checked);
   const notes = removeWorktreeAndBranch(ticket) + deleteParkedBranch(ticket) + fastForwardMain(ticket.main, base);
   const dir = logDirectory(ticket.main);
   const pruned = describePruned(dir, pruneLogDirectory(dir));
   if (closing) {
-    // Kept for whoever closes it: a Run, once GitHub lets it, or the owner.
-    const kept = closingCommentPath(dir, ticket.n);
-    let byHand = `with ${kept} as the comment`;
-    try {
-      writeFileSync(kept, comment);
-    } catch (error) {
-      byHand = `with the report and the Verdict as the comment (keeping it in ${kept} failed: ${(error as Error).message})`;
-    }
     process.stdout.write(notes + pruned);
-    throw new LandingFailure(
-      "github-failed",
-      `#${ticket.n} landed on ${base} in ${sha}, but closing it failed: ${closing.message}\nClose it by hand, ${byHand}.`,
-    );
+    throw closing;
   }
   process.stdout.write(`Landed #${ticket.n} on ${base} in ${sha} and closed it.\n${notes}${pruned}`);
 }
@@ -622,11 +635,9 @@ function stack(root: string, rider: Rider, upstream: string, ahead: number[]): v
   const back = () => git(root, ["checkout", "--quiet", "--detach", before]);
   const rebase = tryGit(root, ["rebase", "--quiet", "--onto", before, upstream, tip]);
   if (rebase.status !== 0) {
-    const unmerged = tryGit(root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
-    tryGit(root, ["rebase", "--abort"]);
+    const how = abortRebase(root, rebase);
     back();
     const onto = ahead.length ? `${ahead.map((n) => `#${n}`).join(", ")} on ${upstream}` : upstream;
-    const how = unmerged.length ? `conflicts in ${unmerged.join(", ")}.` : `failed: ${rebase.stderr.trim()}`;
     rider.left = didNotLand(ticket, "conflict", `stacking ${ticket.branch} onto ${onto} ${how}`, true);
     return;
   }
@@ -702,18 +713,7 @@ function closeRider(r: Rider, base: string, reused: string | null): string {
   const { ticket } = r;
   const { sha, check } = r.stacked as { sha: string; check: VerdictCheck };
   const short = git(ticket.main, ["rev-parse", "--short", sha]).trim();
-  const comment = `Landed on ${base} in ${short}.\n\n${r.report}\n\n${describeGate({ check, reused, firstFailure: null })}${describeVerification(check)}`;
-  try {
-    gh(["issue", "close", String(ticket.n), "--comment", comment]);
-  } catch (error) {
-    if (!(error instanceof Failure)) throw error;
-    const kept = closingCommentPath(logDirectory(ticket.main), ticket.n);
-    writeFileSync(kept, comment);
-    r.left = new LandingFailure(
-      "github-failed",
-      `#${ticket.n} landed on ${base} in ${short}, but closing it failed: ${error.message}\nClose it by hand, with ${kept} as the comment.`,
-    );
-  }
+  r.left = closeLanded(ticket, base, short, r.report, { check, reused, firstFailure: null });
   return removeWorktreeAndBranch(ticket) + deleteParkedBranch(ticket);
 }
 
@@ -770,7 +770,6 @@ function landTrain(args: string[]): boolean {
     } finally {
       notes += removeWorktree(first.main, root).notes;
     }
-    fetchBase(first.main, base);
     for (const r of riders) if (r.verdict) rebaseForVerifier(r, base);
     if (riders.some((r) => r.stacked)) notes += fastForwardMain(first.main, base);
   } finally {

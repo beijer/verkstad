@@ -1739,6 +1739,64 @@ test("land --train: when the base moves during the Gate, the Train is stacked ag
   assert.equal(issueOf(p, 8).state, "closed");
 });
 
+test("land --train: a base that keeps moving ends every Ticket push-failed after three attempts, branch and worktree as they were", (t) => {
+  const outside = 'D="$(git rev-parse --path-format=absolute --git-common-dir)/../.."';
+  const p = project(t, {
+    issues: [claimed(7), claimed(8)],
+    contract: contract([
+      {
+        name: "moves the base every time",
+        command:
+          `${outside}; [ -d "$D/elsewhere" ] || git clone -q "$D/origin.git" "$D/elsewhere"; cd "$D/elsewhere" && git pull -q --ff-only && ` +
+          "echo x >> meanwhile.txt && git add . && git commit -qm 'Landed during the Gate' && git push -q origin main",
+      },
+    ]),
+  });
+  const wts = [7, 8].map((n) => ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` }));
+  const heads = [7, 8].map((n) => p.git("rev-parse", `issue-${n}`));
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 1);
+  const failed = (n: number) =>
+    `#${n}: reason: push-failed\n#${n} did not land: origin/main moved during each of 3 Gate runs.\n` +
+    `Branch issue-${n} is kept as it was, in its worktree.\n`;
+  assert.ok(r.stdout.endsWith(failed(7) + failed(8)), r.stdout);
+  assert.deepEqual(originLog(p), ["Landed during the Gate", "Landed during the Gate", "Landed during the Gate", "A throwaway Project"]);
+  assert.deepEqual([7, 8].map((n) => p.git("rev-parse", `issue-${n}`)), heads);
+  for (const wt of wts) assert.equal(existsSync(wt), true);
+  assert.deepEqual(p.calls(), []);
+});
+
+test("land --train: when closing one Ticket fails, its comment is kept in close-<n>.md, it ends github-failed, and the next Ticket still closes", (t) => {
+  const p = project(t, {
+    issues: [claimed(7), claimed(8)],
+    contract: contract([TRAIN_RUN]),
+    failures: [{ command: "issue close 7", stderr: "HTTP 502: Bad Gateway" }],
+  });
+  for (const n of [7, 8]) ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` });
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 1);
+  const s7 = landedSha(p, "Adds feature-7.txt. Refs #7");
+  const s8 = landedSha(p, "Adds feature-8.txt. Refs #8");
+  const kept = join(realpathSync(p.dir), ".claude", "verkstad", "close-7.md");
+  assert.ok(
+    r.stdout.endsWith(
+      "#7: reason: github-failed\n" +
+        `#7 landed on main in ${s7}, but closing it failed: gh issue close failed: HTTP 502: Bad Gateway\n` +
+        `Close it by hand, with ${kept} as the comment.\n` +
+        `#8: landed on main in ${s8}\n`,
+    ),
+    r.stdout,
+  );
+  assert.equal(readFileSync(kept, "utf8"), closing(7, s7)[4]);
+  assert.equal(issueOf(p, 7).state, "open");
+  assert.equal(issueOf(p, 8).state, "closed");
+  assert.deepEqual(localBranches(p), []);
+});
+
 test("land --train: a Ticket conflicting with one stacked before it leaves with conflict, branch kept as it was, worktree removed; the others land", (t) => {
   const p = project(t, {
     issues: [claimed(7), claimed(8), claimed(9)],
