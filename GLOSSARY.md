@@ -78,6 +78,10 @@ _Avoid_: CI, checks, test suite
 Putting a finished Ticket's branch on the base branch: rebase, Verdict check, Gate (or a full pass already recorded for the rebased tree), then, depending on the Project's Landing mode, a push that closes the Ticket with its report and Verdict, or a pull request that carries them and closes the Ticket when the owner merges it.
 _Avoid_: merge, ship, deploy
 
+**Train**:
+Several finished Tickets landed together as one Landing: stacked on the base branch in order, each Verdict checked against its own patch, gated once and pushed once. A red Train is split until each red Ticket stands alone, and the rest land.
+_Avoid_: merge train, bundle, stack
+
 **Fix round**:
 A Ticket sent back to its implementer once because its Verdict was `failed`, with the Verifier's findings as the reason. It is not a Resume.
 _Avoid_: retry, rework
