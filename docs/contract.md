@@ -35,6 +35,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 | `gate` | `gate`, `land` | The Gate's named steps. |
 | `landing` | `land` | The Landing mode: `push` (the default) or `pull-request`. |
 | `parallel` | `run` | The most Tickets a Run works at once. No cap without it. |
+| `coresPerTicket` | `run`, `gate` | The cores one Ticket's work needs; caps a Run by the machine's cores and sets the Gate's `VERKSTAD_CORES`. |
 | `surfaces` | `surfaces`, `verdict`, `land` | The Surfaces, each a name and the path globs whose changes can alter it. `[]` for a Project with none. |
 | `verify` | `run`, `land`; the agents: the Verifier, through `run`, and the implementer | The name of the Project's Verify skill. |
 
@@ -69,6 +70,7 @@ An object, required: the Gate that `verkstad gate` runs.
     - `files` (required): a git pathspec (`*` also matches `/`) for the step's test files.
     - `env` (required): the variable the step reads them from, space-separated. The step's command does the narrowing: it reads the variable, or passes it on (`"node --test $FILES"`).
     - `fullWhen` (optional): pathspecs for files that every one of the step's tests depends on (a harness, a fake, a script). When a changed file matches one, deleted ones included, `--quick` runs the step in full.
+- Every step also gets `VERKSTAD_CORES`, which `verkstad gate` sets to the Contract's [`coresPerTicket`](#coresperticket), or to the machine's core count (what `nproc` prints) without it, so that the implementer's Gates and Landing's see the same value and a step can size its test workers to match.
 - `env` (optional): variables set for every step. A value is a string, in which `$NAME` and `${NAME}` are replaced by the variable's value in the environment the Gate started in (empty when unset; nothing else is expanded), or `null` to unset the variable.
 
 `verkstad gate` checks `baseBranch` and `gate` before it runs anything (other fields are checked by their readers), and a missing file, invalid JSON, a missing or mistyped field or an unknown field in `gate` fails naming the field (`.claude/harness.json: gate.steps[1].command must be a non-empty string`). It also refuses to run when git would track the log directory: when neither the worktree's nor the main checkout's `.gitignore` covers `.claude/verkstad/`. (So the branch that adds it can be gated; until it lands, the logs show as untracked in the main checkout.)
@@ -89,6 +91,14 @@ An integer of at least 1, optional: the most Tickets a Run in this Project works
 
 ```json
 "parallel": 1
+```
+
+### `coresPerTicket`
+
+An integer of at least 1, optional: the cores one Ticket's work (its sessions and its Gates) needs. `verkstad run` reads the machine's core count when it starts, by running `nproc` from the PATH, and caps the Tickets in flight at floor(cores ÷ `coresPerTicket`), never below 1, as well as at [`parallel`](#parallel): without `--parallel` it works the lowest of 2, `parallel` and that cap, and it refuses `--parallel <n>` above that cap as a usage error naming the core count and the cores per Ticket. `--dry-run` prints the core count, the cores per Ticket and the cap they give. Without it, only `parallel` caps a Run. `verkstad gate` hands it to every step as `VERKSTAD_CORES`. Any other value fails naming the field.
+
+```json
+"coresPerTicket": 2
 ```
 
 ### `surfaces`
@@ -176,7 +186,7 @@ A Run stops on an unknown reason, for the owner.
 
 ## A Run: `verkstad run`
 
-`verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`, from the Project's main checkout, works the Frontier, the lowest number first, up to two Tickets side by side or, with `--parallel <n>`, up to `n`, never more than the Contract's [`parallel`](#parallel) cap (ADR 0008): every routing rule and budget below is code (`src/run.ts`), and each agent is a headless `claude -p` session (`src/claude.ts`) in a worktree the Run makes. It refuses, starting nothing, outside the main checkout, off `baseBranch`, with uncommitted changes to tracked files, with `.claude/verkstad/` or `.claude/worktrees/` not gitignored, with Surfaces and no `verify`, or with commits on the base branch that `origin` lacks; it fast-forwards the main checkout to `origin/<baseBranch>` otherwise. `--dry-run` prints the Frontier and which Tickets it would start, each with the implementer's model, effort and budget, as many as it works at once, and claims nothing. `--max <n>` stops after `n` Tickets; `--budget <usd>` caps each session's spend. `verkstad run --ticket <n> [--budget <usd>] [--dry-run]` works Ticket #n alone, out of the Frontier's order, through the same steps, and claims no other; before it claims anything, it refuses (exit 1) a Ticket waiting on a blocker, naming them, one not labelled `ready-for-agent`, one already claimed, a Spec, and any while a Run is going. It takes neither `--max` nor `--parallel`, and with `--dry-run` prints that Ticket and the implementer it would run on.
+`verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`, from the Project's main checkout, works the Frontier, the lowest number first, up to two Tickets side by side or, with `--parallel <n>`, up to `n`, never more than the Contract's [`parallel`](#parallel) cap or the one its [`coresPerTicket`](#coresperticket) gives the machine (ADR 0008): every routing rule and budget below is code (`src/run.ts`), and each agent is a headless `claude -p` session (`src/claude.ts`) in a worktree the Run makes. It refuses, starting nothing, outside the main checkout, off `baseBranch`, with uncommitted changes to tracked files, with `.claude/verkstad/` or `.claude/worktrees/` not gitignored, with Surfaces and no `verify`, or with commits on the base branch that `origin` lacks; it fast-forwards the main checkout to `origin/<baseBranch>` otherwise. `--dry-run` prints the Frontier and which Tickets it would start, each with the implementer's model, effort and budget, as many as it works at once, and claims nothing. `--max <n>` stops after `n` Tickets; `--budget <usd>` caps each session's spend. `verkstad run --ticket <n> [--budget <usd>] [--dry-run]` works Ticket #n alone, out of the Frontier's order, through the same steps, and claims no other; before it claims anything, it refuses (exit 1) a Ticket waiting on a blocker, naming them, one not labelled `ready-for-agent`, one already claimed, a Spec, and any while a Run is going. It takes neither `--max` nor `--parallel`, and with `--dry-run` prints that Ticket and the implementer it would run on.
 
 It claims the lowest-numbered ready Tickets, as many as it works at once, each in its own worktree, and their implementer, Verifier and conflict sessions run at the same time; each implementer's prompt names the other Tickets in flight by number and title. When one is closed or Parked, it reads the Frontier again and claims the next. Landings stay one at a time: a Ticket that lands after another has moved the base branch is rebased onto it by Landing, keeping its Verdict when the rebase is clean (ADR 0005), and a conflict goes to the conflict prompt as in step 5 below. Its event log interleaves the Tickets' lines, each naming its Ticket.
 

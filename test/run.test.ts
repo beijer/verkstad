@@ -1114,6 +1114,80 @@ test("run refuses a Contract whose parallel is not a whole number of at least 1"
   }
 });
 
+/** A Run's Project on a machine whose `nproc` prints `cores`. */
+function coresProject(t: Parameters<typeof project>[0], cores: number, issues: Array<Partial<StubIssue> & { number: number }>, sessions: StubSession[], fields: Record<string, unknown>): Project {
+  return project(t, { issues, sessions, contract: contract(fields), files: { ".gitignore": GITIGNORE }, nproc: cores });
+}
+
+test("run on 4 cores with 2 per Ticket and parallel 4 works at most 2 of three ready Tickets at once", (t) => {
+  const eleven: StubSession = { ticket: 11, run: [`touch "$TMPDIR/started-11"`, ...(implemented(11, "c.txt").run ?? [])], report: report("done") };
+  const p = coresProject(t, 4, [ready(7), ready(9), ready(11)], [besides(7, 9, "a.txt", "seven"), besides(9, 7, "b.txt", "nine", [afterLanding(7), meets(9, 11)]), eleven], { parallel: 4, coresPerTicket: 2 });
+
+  const r = p.run("run");
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.deepEqual(claimsAndLandings(r.stdout).slice(0, 4), ["#7 Ticket 7", "#9 Ticket 9", "#7 landed on main.", "#11 Ticket 11"]);
+  assert.deepEqual(p.state().issues.map((i) => [i.number, i.state]), [[7, "closed"], [9, "closed"], [11, "closed"]]);
+});
+
+test("run --dry-run on 4 cores with 2 per Ticket prints the cores and the cap they give, and starts 2", (t) => {
+  const p = coresProject(t, 4, [ready(7), ready(9), ready(11)], [], { parallel: 4, coresPerTicket: 2 });
+
+  const r = p.run("run", "--dry-run");
+
+  assert.equal(
+    r.stdout,
+    "Cores: 4, 2 per Ticket: at most 2 Tickets at once.\n" +
+      "Ready: #7 Ticket 7, #9 Ticket 9, #11 Ticket 11.\n" +
+      "Next: #7, by the implementer (opus, medium effort, $25 budget); #9, by the implementer (opus, medium effort, $25 budget).\n",
+  );
+  assert.equal(r.code, 0);
+  assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
+});
+
+test("run --parallel above what the cores carry is a usage error naming the cores, and claims nothing", (t) => {
+  const p = coresProject(t, 4, [ready(7), ready(9), ready(11)], [], { parallel: 4, coresPerTicket: 2 });
+
+  const r = p.run("run", "--parallel", "3");
+
+  assert.equal(r.stderr, "verkstad run: --parallel 3 is above the 2 Tickets this machine can carry: 4 cores, 2 per Ticket (`coresPerTicket` in .claude/harness.json)\n");
+  assert.equal(r.code, 2);
+  assert.deepEqual(p.state().issues.map((i) => i.assignees), [[], [], []]);
+  assert.equal(p.claudeCalls().length, 0);
+});
+
+test("run on 1 core with 2 per Ticket still works 1 Ticket at a time", (t) => {
+  const p = coresProject(t, 1, [ready(7), ready(9)], [implemented(7, "a.txt"), implemented(9, "b.txt")], { coresPerTicket: 2 });
+
+  const r = p.run("run");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.deepEqual(claimsAndLandings(r.stdout), ["#7 Ticket 7", "#7 landed on main.", "#9 Ticket 9", "#9 landed on main."]);
+});
+
+test("run without coresPerTicket caps by parallel alone, whatever nproc prints", (t) => {
+  const p = coresProject(t, 1, [ready(7), ready(9), ready(11)], [], { parallel: 3 });
+
+  const r = p.run("run", "--parallel", "3", "--dry-run");
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal((r.stdout.match(/by the implementer/g) ?? []).length, 3);
+});
+
+test("run refuses a Contract whose coresPerTicket is not a whole number of at least 1", (t) => {
+  for (const coresPerTicket of [0, "two", 1.5]) {
+    const p = coresProject(t, 4, [ready(7)], [], { coresPerTicket });
+
+    const r = p.run("run");
+
+    assert.equal(r.stderr, "verkstad run: .claude/harness.json: coresPerTicket must be a whole number of at least 1\n");
+    assert.equal(r.code, 1);
+    assert.deepEqual(p.state().issues.map((i) => i.assignees), [[]]);
+  }
+});
+
 test("run --dry-run without --parallel names the two Tickets it would start", (t) => {
   const p = runProject(t, [ready(7), ready(9), ready(11)], []);
 

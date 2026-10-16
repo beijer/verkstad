@@ -1,7 +1,7 @@
 // `verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run]`: a
 // Run. From the Project's main checkout it works the Frontier, up to --parallel
 // Tickets side by side (two without it, never more than the Contract's
-// `parallel` cap), lowest number first, with no guess at
+// `parallel` cap or the one `coresPerTicket` gives the machine), lowest number first, with no guess at
 // which files a Ticket will touch (ADR 0008): it claims each Ticket, gives it a
 // worktree under .claude/worktrees/, and has a headless Claude Code session
 // (src/claude.ts) implement it with the implementing prompt (prompts/) on the
@@ -61,7 +61,7 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFi
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { session, type SessionOptions, type SessionResult, stoppedAtLimit } from "./claude.ts";
-import { CONTRACT_PATH, readContract, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
+import { CONTRACT_PATH, machineCores, readContract, readCoresPerTicket, readParallel, readSurfaces, readVerify, type Surface } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { type Entry, type Listing, readFrontier } from "./frontier.ts";
 import { currentRepo, gh, ghJson, ghJsonUnlessMissing, graphql, waitOutRateLimits } from "./gh.ts";
@@ -199,8 +199,10 @@ interface Run {
   logDir: string;
   surfaces: Surface[];
   verify: string | null;
-  /** The most Tickets it works at once: --parallel's, or the default capped by the Contract's `parallel`. */
+  /** The most Tickets it works at once: --parallel's, or the default capped by the Contract's `parallel` and the cores. */
   parallel: number;
+  /** The cap the machine's cores put on it, from the Contract's `coresPerTicket`; null without one. */
+  cores: Cores | null;
   /** The budget every session gets instead of its agent's, from --budget. */
   budget: number | undefined;
   /** The Run's event log, run-<time>.jsonl in the log directory. */
@@ -215,6 +217,13 @@ interface Run {
   inFlight: Map<number, string>;
 }
 
+interface Cores {
+  machine: number;
+  perTicket: number;
+  /** The Tickets the machine can carry at once, never below 1. */
+  cap: number;
+}
+
 /** Checks the main checkout is one a Run may start from, and brings it level with origin. */
 function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "forReflect" | "inFlight"> {
   const main = worktreeRoot(process.cwd());
@@ -224,7 +233,16 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
   if (options.requested !== null && cap !== null && options.requested > cap) {
     throw new Failure(`--parallel ${options.requested} is above this Project's cap of ${cap} (\`parallel\` in ${CONTRACT_PATH})`, 2);
   }
-  const parallel = options.requested ?? Math.min(DEFAULT_PARALLEL, cap ?? Infinity);
+  const perTicket = readCoresPerTicket(main);
+  const machine = perTicket === null ? 0 : machineCores();
+  const cores = perTicket === null ? null : { machine, perTicket, cap: Math.max(1, Math.floor(machine / perTicket)) };
+  if (options.requested !== null && cores !== null && options.requested > cores.cap) {
+    throw new Failure(
+      `--parallel ${options.requested} is above the ${cores.cap} Tickets this machine can carry: ${cores.machine} cores, ${cores.perTicket} per Ticket (\`coresPerTicket\` in ${CONTRACT_PATH})`,
+      2,
+    );
+  }
+  const parallel = options.requested ?? Math.min(DEFAULT_PARALLEL, cap ?? Infinity, cores?.cap ?? Infinity);
   const surfaces = readSurfaces(main);
   const verify = readVerify(main);
   if (surfaces.length && verify === null) {
@@ -244,7 +262,7 @@ function prepare(options: Options): Omit<Run, "repo" | "events" | "handoff" | "f
     throw new Failure(`${base} has commits ${upstream} lacks; push them or drop them first`);
   }
   git(main, ["merge", "--quiet", "--ff-only", upstream]);
-  return { main, base, upstream, logDir: ensureLogDirectory(main), surfaces, verify, parallel, budget: options.budget, sessions: 0, cost: 0 };
+  return { main, base, upstream, logDir: ensureLogDirectory(main), surfaces, verify, parallel, cores, budget: options.budget, sessions: 0, cost: 0 };
 }
 
 function log(run: Run, event: Record<string, unknown>): void {
@@ -1152,6 +1170,8 @@ export async function run(args: string[]): Promise<void> {
   // A Run on the Ticket --ticket chose works that one and claims no other.
   const max = options.ticket === null ? options.max : 1;
   if (options.dryRun) {
+    const { cores } = prepared;
+    if (cores) process.stdout.write(`Cores: ${cores.machine}, ${cores.perTicket} per Ticket: at most ${cores.cap} Tickets at once.\n`);
     process.stdout.write(plan(ready, options.budget, Math.min(prepared.parallel, max ?? Infinity), options.ticket !== null));
     return;
   }

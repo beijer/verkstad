@@ -1,9 +1,10 @@
 // The Project's Contract for the scripts: `.claude/harness.json`, read and
 // checked here. Only the fields the CLI reads so far are checked (baseBranch,
-// gate, landing, parallel, surfaces and verify), each by its reader; a malformed one fails naming
+// gate, landing, parallel, coresPerTicket, surfaces and verify), each by its reader; a malformed one fails naming
 // the field (docs/contract.md describes them all). Landing also compares a
 // branch's Surfaces and verify with its base's, refusing a branch that narrows them.
 
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Failure } from "./fail.ts";
@@ -191,10 +192,29 @@ function parseVerify({ verify }: JsonObject): string | null {
 
 /** The Contract's `parallel`, the most Tickets a Run works at once, or null when it caps nothing. Only `run` reads it. */
 export function readParallel(root: string): number | null {
-  const { parallel } = readJson(root);
-  if (parallel === undefined) return null;
-  if (typeof parallel !== "number" || !Number.isInteger(parallel) || parallel < 1) throw malformed("parallel must be a whole number of at least 1");
-  return parallel;
+  return wholeNumberField(root, "parallel");
+}
+
+/** The Contract's `coresPerTicket`, the cores one Ticket's work needs, or null when it has none. `run` and `gate` read it. */
+export function readCoresPerTicket(root: string): number | null {
+  return wholeNumberField(root, "coresPerTicket");
+}
+
+function wholeNumberField(root: string, field: string): number | null {
+  const value = readJson(root)[field];
+  if (value === undefined) return null;
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 1) throw malformed(`${field} must be a whole number of at least 1`);
+  return value;
+}
+
+/** The machine's core count, from `nproc` on the PATH (tests stub it). */
+export function machineCores(): number {
+  const r = spawnSync("nproc", [], { encoding: "utf8" });
+  const cores = Number(r.stdout?.trim());
+  if (r.status !== 0 || !Number.isInteger(cores) || cores < 1) {
+    throw new Failure(`could not read the machine's core count from nproc: ${r.error?.message ?? (r.stderr.trim() || `it printed '${r.stdout.trim()}'`)}`);
+  }
+  return cores;
 }
 
 /** What decides which Tickets the Verifier Walks: the Surfaces and the Verify skill. */

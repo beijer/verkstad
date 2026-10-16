@@ -127,6 +127,19 @@ test("steps run in bash from the worktree root, with the Gate's env: $VARs expan
   assert.equal(log, `== where\n${wt}\n== env\ntools=${p.env.HOME}/.cargo/bin: lang=unset\n`);
 });
 
+test("every step gets VERKSTAD_CORES: the Contract's coresPerTicket, or the machine's core count without it", (t) => {
+  const step = { name: "cores", command: 'echo "cores=$VERKSTAD_CORES"' };
+  for (const [fields, cores] of [[{ coresPerTicket: 3 }, "3"], [{}, "8"]] as const) {
+    const p = project(t, { contract: { ...contract([step]), ...fields }, nproc: 8 });
+
+    const r = p.run("gate");
+
+    assert.equal(r.stderr, "");
+    assert.equal(r.code, 0);
+    assert.equal(onlyLog(p, r.stdout), `== cores\ncores=${cores}\n`);
+  }
+});
+
 test("run from a worktree, the log lands in the main checkout's gitignored log directory, named for the worktree", (t) => {
   const p = project(t, { contract: contract([{ name: "build", command: "echo built" }]) });
   const wt = worktree(p, "issue-12");

@@ -8,7 +8,7 @@
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
 import { basename, join } from "node:path";
-import { type Contract, type GateStep, readContract, VARIABLE } from "./contract.ts";
+import { type Contract, type GateStep, machineCores, readContract, readCoresPerTicket, VARIABLE } from "./contract.ts";
 import { Failure } from "./fail.ts";
 import { ensureLogDirectory, git, logDirectory, tryGit, worktreeRoot } from "./git.ts";
 
@@ -40,8 +40,9 @@ function expand(value: string): string {
   return value.replace(reference, (_, braced, bare) => process.env[braced ?? bare] ?? "");
 }
 
-function stepEnvironment(contract: Contract): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env };
+function stepEnvironment(root: string, contract: Contract): NodeJS.ProcessEnv {
+  // The cores the Run allots each Ticket, so that a Project can size its test workers to match.
+  const env: NodeJS.ProcessEnv = { ...process.env, VERKSTAD_CORES: String(readCoresPerTicket(root) ?? machineCores()) };
   for (const [name, value] of Object.entries(contract.gate.env)) {
     if (value === null) delete env[name];
     else env[name] = expand(value);
@@ -179,7 +180,7 @@ export function runGate(root: string, quick: boolean): string {
   const contract = readContract(root);
   const planned = plan(root, contract, quick);
   const dir = ensureLogDirectory(root);
-  const env = stepEnvironment(contract);
+  const env = stepEnvironment(root, contract);
   const log = createLog(dir, root);
   // Only a full pass on a clean worktree is recorded: --quick narrows and skips steps by what the branch
   // changed. A step skipped by unlessExists does not stop it, since its path is an install cache, not a check.

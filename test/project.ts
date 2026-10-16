@@ -36,6 +36,8 @@ export interface Seed {
   files?: Record<string, string>;
   /** The headless sessions the stub `claude` plays, in order (test/stub/claude.ts). */
   sessions?: StubSession[];
+  /** The core count a stub `nproc` first on the PATH prints; the machine's own without it. */
+  nproc?: number;
 }
 
 export interface Result {
@@ -102,6 +104,11 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   mkdirSync(stubDir);
   mkdirSync(claudeDir);
   mkdirSync(home);
+  const nprocDir = join(tmp, "nproc");
+  if (seed.nproc !== undefined) {
+    mkdirSync(nprocDir);
+    writeFileSync(join(nprocDir, "nproc"), `#!/bin/sh\necho ${seed.nproc}\n`, { mode: 0o755 });
+  }
 
   const state: StubState = {
     repo: seed.repo ?? "owner/project",
@@ -120,7 +127,7 @@ export function project(t: TestContext, seed: Seed = {}): Project {
   writeFileSync(join(home, ".gitconfig"), "[user]\n\tname = Test\n\temail = test@example.com\n[init]\n\tdefaultBranch = main\n[commit]\n\tgpgsign = false\n");
 
   const env: NodeJS.ProcessEnv = {
-    PATH: `${stubBin}:${process.env.PATH}`,
+    PATH: `${seed.nproc === undefined ? "" : `${nprocDir}:`}${stubBin}:${process.env.PATH}`,
     HOME: home,
     GIT_CONFIG_GLOBAL: join(home, ".gitconfig"),
     GIT_CONFIG_NOSYSTEM: "1",

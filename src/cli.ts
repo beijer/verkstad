@@ -79,7 +79,7 @@ const subcommands: Record<string, Subcommand> = {
   run: {
     usage: "verkstad run [--max <n>] [--parallel <n>] [--budget <usd>] [--dry-run] | --stop | --abort",
     summary:
-      "Works the Frontier, two Tickets side by side or --parallel <n>, up to the Contract's `parallel` cap: a headless session implements each in its own worktree, " +
+      "Works the Frontier, two Tickets side by side or --parallel <n>, up to the Contract's `parallel` cap and the machine's cores: a headless session implements each in its own worktree, " +
       "the Verifier Walks it when it touches a Surface, and it lands or is Parked; --stop ends the Run going after its Tickets in flight, " +
       "--abort ends it now and discards their work",
     run,
