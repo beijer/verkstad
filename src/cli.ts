@@ -52,8 +52,8 @@ const subcommands: Record<string, Subcommand> = {
     run: hook,
   },
   land: {
-    usage: "verkstad land [--park] <n> <worktree> <file>",
-    summary: "Lands Ticket #n's branch with the report in <file>; --park Parks it with the reason in <file>",
+    usage: "verkstad land [--park] <n> <worktree> <file> | --train <n>… <dir>",
+    summary: "Lands Ticket #n's branch with the report in <file>; --park Parks it with the reason in <file>; --train lands several Tickets as one Train",
     run: land,
   },
   labels: {

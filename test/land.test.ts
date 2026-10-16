@@ -1659,3 +1659,249 @@ test("a Gate that fails on a branch with no full pass recorded ends with gate-fa
   );
   assert.equal(existsSync(wt), false, "the worktree is removed");
 });
+
+/** A Gate step that notes each run beside the main checkout, wherever its worktree is: a Train's sits inside it. */
+const TRAIN_RUN: Step = { name: "build", command: 'echo run >> "$(git rev-parse --path-format=absolute --git-common-dir)/../../gate-runs.txt"' };
+
+/** A directory of reports, `report-<n>.md`, one per Ticket, as `land --train` reads them. */
+function reports(p: Project, ...ns: number[]): string {
+  const dir = join(p.dir, "..", "reports");
+  mkdirSync(dir, { recursive: true });
+  for (const n of ns) writeFileSync(join(dir, `report-${n}.md`), `status: done\nWhat was built: #${n}'s feature.\n`);
+  return dir;
+}
+
+/** The call that closes a landed Ticket of a Train with its report, trimmed as Landing reads it. */
+function closing(n: number, sha: string): string[] {
+  const report = `status: done\nWhat was built: #${n}'s feature.`;
+  return ["issue", "close", String(n), "--comment", `Landed on main in ${sha}.\n\n${report}\n\nVerification state: test-verified. Surfaces: none.\n`];
+}
+
+/** The short sha of origin's commit whose subject this is. */
+function landedSha(p: Project, subject: string): string {
+  const line = p.git("--git-dir", p.origin, "log", "--format=%h %s", "main").split("\n").find((l) => l.endsWith(` ${subject}`));
+  assert.ok(line, `origin's main has a commit "${subject}"`);
+  return line.split(" ")[0];
+}
+
+test("land --train lands three Tickets in the order given after one Gate run, closing each with its own report", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8), claimed(9)], contract: contract([TRAIN_RUN]) });
+  const wts = [7, 8, 9].map((n) => ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` }));
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "--train", "9", "7", "8", reports(p, 7, 8, 9));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.deepEqual(originLog(p), [
+    "Adds feature-8.txt. Refs #8",
+    "Adds feature-7.txt. Refs #7",
+    "Adds feature-9.txt. Refs #9",
+    "Landed meanwhile",
+    "A throwaway Project",
+  ]);
+  assert.equal(gateRuns(p), 1, "one Gate ran for the Train");
+  const logs = readdirSync(join(p.dir, ".claude", "verkstad")).filter((f) => f.startsWith("gate-train-9-"));
+  assert.equal(logs.length, 1, "the Gate ran in the Train's worktree, train-9");
+  const [s9, s7, s8] = ["Adds feature-9.txt. Refs #9", "Adds feature-7.txt. Refs #7", "Adds feature-8.txt. Refs #8"].map((s) => landedSha(p, s));
+  assert.ok(r.stdout.endsWith(`#9: landed on main in ${s9}\n#7: landed on main in ${s7}\n#8: landed on main in ${s8}\n`), r.stdout);
+  assert.deepEqual(p.calls(), [closing(9, s9), closing(7, s7), closing(8, s8)]);
+  for (const n of [7, 8, 9]) assert.equal(issueOf(p, n).state, "closed");
+  for (const wt of wts) assert.equal(existsSync(wt), false, `${wt} is removed`);
+  assert.deepEqual(localBranches(p), []);
+  assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "train-9")), false, "the Train's worktree is removed");
+  assert.equal(p.git("rev-parse", "HEAD"), originHead(p), "the main checkout is fast-forwarded");
+});
+
+test("land --train: when the base moves during the Gate, the Train is stacked again, gated again and pushed", (t) => {
+  const outside = 'D="$(git rev-parse --path-format=absolute --git-common-dir)/../.."';
+  const p = project(t, {
+    issues: [claimed(7), claimed(8)],
+    contract: contract([
+      {
+        name: "moves the base once",
+        command:
+          `${outside}; [ -e "$D/moved" ] && exit 0; touch "$D/moved"; git clone -q "$D/origin.git" "$D/elsewhere" && cd "$D/elsewhere" && ` +
+          "echo meanwhile > meanwhile.txt && git add . && git commit -qm 'Landed during the Gate' && git push -q origin main",
+      },
+      TRAIN_RUN,
+    ]),
+  });
+  for (const n of [7, 8]) ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` });
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.match(r.stdout, /^origin\/main moved during the Gate; stacking the Train again \(attempt 2 of 3\)\.$/m);
+  assert.deepEqual(originLog(p), ["Adds feature-8.txt. Refs #8", "Adds feature-7.txt. Refs #7", "Landed during the Gate", "A throwaway Project"]);
+  assert.equal(gateRuns(p), 2, "the Gate ran on each stack");
+  assert.equal(issueOf(p, 7).state, "closed");
+  assert.equal(issueOf(p, 8).state, "closed");
+});
+
+test("land --train: a Ticket conflicting with one stacked before it leaves with conflict, branch kept as it was, worktree removed; the others land", (t) => {
+  const p = project(t, {
+    issues: [claimed(7), claimed(8), claimed(9)],
+    contract: contract([TRAIN_RUN]),
+    files: { "shared.txt": "shared\n" },
+  });
+  ticket(p, 7, { "shared.txt": "shared, from #7\n" });
+  const wt8 = ticket(p, 8, { "shared.txt": "shared, from #8\n" });
+  ticket(p, 9, { "feature-9.txt": "#9\n" });
+  const head8 = p.git("rev-parse", "issue-8");
+
+  const r = p.run("land", "--train", "7", "8", "9", reports(p, 7, 8, 9));
+
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr, "verkstad land: not every Ticket of the Train landed\n");
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds feature-9.txt. Refs #9", "Adds shared.txt. Refs #7"]);
+  const s7 = landedSha(p, "Adds shared.txt. Refs #7");
+  const s9 = landedSha(p, "Adds feature-9.txt. Refs #9");
+  assert.ok(
+    r.stdout.endsWith(
+      `#7: landed on main in ${s7}\n` +
+        "#8: reason: conflict\n" +
+        "#8 did not land: stacking issue-8 onto #7 on origin/main conflicts in shared.txt.\n" +
+        "Branch issue-8 is kept as it was; its worktree is removed.\n" +
+        `#9: landed on main in ${s9}\n`,
+    ),
+    r.stdout,
+  );
+  assert.equal(gateRuns(p), 1);
+  assert.deepEqual(p.calls(), [closing(7, s7), closing(9, s9)]);
+  assert.equal(issueOf(p, 8).state, "open");
+  assert.equal(existsSync(wt8), false, "#8's worktree is removed");
+  assert.deepEqual(localBranches(p), ["issue-8"]);
+  assert.equal(p.git("rev-parse", "issue-8"), head8, "#8's branch is as it was");
+});
+
+test("land --train: a Ticket whose Verdict the stack voids leaves with verdict-void, its worktree kept and rebased onto the new base; the others land", (t) => {
+  const p = project(t, {
+    issues: [claimed(7), claimed(8), claimed(9)],
+    contract: contract([TRAIN_RUN], { surfaces: UI }),
+    files: { "src/ui/panel.ts": "a\nb\nc\nd\ne\nf\n" },
+  });
+  // #7's change is within #8's patch's context lines: the stack merges cleanly but changes #8's patch.
+  const wt7 = ticket(p, 7, { "src/ui/panel.ts": "a from #7\nb\nc\nd\ne\nf\n" });
+  const wt8 = ticket(p, 8, { "src/ui/panel.ts": "a\nb\nc\nd from #8\ne\nf\n" });
+  ticket(p, 9, { "feature-9.txt": "#9\n" });
+  recordVerdict(p, 7, wt7, "live-verified");
+  recordVerdict(p, 8, wt8, "live-verified");
+  const given = branchPatchId(p, wt8);
+
+  const r = p.run("land", "--train", "7", "8", "9", reports(p, 7, 8, 9));
+
+  assert.equal(r.code, 1, r.stderr);
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds feature-9.txt. Refs #9", "Adds src/ui/panel.ts. Refs #7"]);
+  assert.equal(existsSync(wt8), true, "#8's worktree is kept for the Verifier");
+  assert.equal(p.git("-C", wt8, "branch", "--show-current"), "issue-8");
+  assert.equal(p.git("-C", wt8, "status", "--porcelain"), "");
+  assert.equal(p.git("-C", wt8, "rev-parse", "HEAD~1"), originHead(p), "#8 is rebased onto the new base");
+  const now = branchPatchId(p, wt8);
+  assert.notEqual(now, given);
+  const s7 = landedSha(p, "Adds src/ui/panel.ts. Refs #7");
+  const s9 = landedSha(p, "Adds feature-9.txt. Refs #9");
+  assert.ok(
+    r.stdout.endsWith(
+      `#7: landed on main in ${s7}\n` +
+        "#8: reason: verdict-void\n" +
+        `#8 did not land: #8 touches the Surface ui, and its Verdict is void: it was given for patch ${given.slice(0, 12)}, ` +
+        `but the branch is now patch ${now.slice(0, 12)}. The changed patch needs a new Verdict.\n` +
+        "Branch issue-8 is kept, rebased onto origin/main, in its worktree.\n" +
+        `#9: landed on main in ${s9}\n`,
+    ),
+    r.stdout,
+  );
+  assert.deepEqual(
+    p.calls().map((c) => c[2]),
+    ["7", "9"],
+  );
+  assert.match(p.calls()[0][4], /Verification state: live-verified\. Surfaces: ui\./, "#7 closes with its own Verdict");
+  assert.equal(issueOf(p, 8).state, "open");
+});
+
+test("land --train: a Ticket with no recorded review leaves with review-missing, unchanged; the others land", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8), claimed(9)], contract: contract([TRAIN_RUN]) });
+  ticket(p, 7, { "feature-7.txt": "#7\n" });
+  const wt8 = unreviewed(p, 8, { "feature-8.txt": "#8\n" });
+  ticket(p, 9, { "feature-9.txt": "#9\n" });
+  const head8 = p.git("rev-parse", "issue-8");
+
+  const r = p.run("land", "--train", "7", "8", "9", reports(p, 7, 8, 9));
+
+  assert.equal(r.code, 1);
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds feature-9.txt. Refs #9", "Adds feature-7.txt. Refs #7"]);
+  const s7 = landedSha(p, "Adds feature-7.txt. Refs #7");
+  const s9 = landedSha(p, "Adds feature-9.txt. Refs #9");
+  assert.ok(
+    r.stdout.endsWith(
+      `#7: landed on main in ${s7}\n` +
+        "#8: reason: review-missing\n" +
+        `#8 did not land: no review of issue-8 is recorded: there is no ${reviewPath(p, 8)}. ` +
+        "Running verkstad:review on the branch records one.\n" +
+        "Branch issue-8 is kept as it was, in its worktree.\n" +
+        `#9: landed on main in ${s9}\n`,
+    ),
+    r.stdout,
+  );
+  assert.deepEqual(p.calls(), [closing(7, s7), closing(9, s9)]);
+  assert.equal(existsSync(wt8), true);
+  assert.equal(p.git("rev-parse", "issue-8"), head8);
+});
+
+test("land --train refuses with exit 2, changing nothing, a Ticket with no worktree, a missing report, fewer than two Tickets and pull-request mode", (t) => {
+  for (const [why, mode, args, stderr] of [
+    ["no worktree", {}, ["7", "10"], "refused: #10 has no worktree on issue-10"],
+    ["missing report", {}, ["7", "8"], "refused: no report at "],
+    ["one Ticket", {}, ["7"], "refused: usage: "],
+    ["pull-request", PR_MODE, ["7", "8"], "refused: a Train lands only in the push Landing mode, not pull-request"],
+  ] as const) {
+    const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([TRAIN_RUN], mode) });
+    const wt7 = ticket(p, 7, { "feature-7.txt": "#7\n" });
+    const wt8 = ticket(p, 8, { "feature-8.txt": "#8\n" });
+    const base = originHead(p);
+
+    const r = p.run("land", "--train", ...args, reports(p, ...(why === "missing report" ? [7] : [7, 8])));
+
+    assert.equal(r.code, 2, why);
+    assert.equal(r.stdout, "", why);
+    assert.ok(r.stderr.startsWith(`verkstad land: ${stderr}`), `${why}: ${r.stderr}`);
+    assert.equal(reason(r.stderr), "reason: refused", why);
+    assert.equal(originHead(p), base, why);
+    assert.deepEqual(p.calls(), [], why);
+    assert.equal(gateRuns(p), 0, why);
+    assert.ok(existsSync(wt7) && existsSync(wt8), `${why}: the worktrees are kept`);
+    assert.deepEqual(localBranches(p), ["issue-7", "issue-8"], why);
+  }
+});
+
+test("land --train: a red Gate pushes nothing, and every Ticket ends gate-failed with its branch kept as it was", (t) => {
+  const p = project(t, {
+    issues: [claimed(7), claimed(8)],
+    contract: contract([TRAIN_RUN, { name: "unit tests", command: "echo 'expected 2, got 3'; exit 3" }]),
+  });
+  const wts = [7, 8].map((n) => ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` }));
+  const heads = [7, 8].map((n) => p.git("rev-parse", `issue-${n}`));
+  const base = originHead(p);
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 1);
+  assert.equal(originHead(p), base, "nothing is pushed");
+  assert.equal(gateRuns(p), 1);
+  assert.deepEqual(p.calls(), []);
+  const log = /^Full log: (.*)$/m.exec(r.stdout)?.[1];
+  assert.ok(log && existsSync(log), r.stdout);
+  assert.match(log, /\/project\/\.claude\/verkstad\/gate-train-7-\d{8}-\d{6}\.log$/);
+  const failed = (n: number) =>
+    `#${n}: reason: gate-failed\n` +
+    `#${n} did not land: the Train's Gate failed: unit tests failed (exit 3). The end of its output:\n` +
+    "expected 2, got 3\n" +
+    `Full log: ${log}\n` +
+    `Branch issue-${n} is kept as it was; its worktree is removed.\n`;
+  assert.ok(r.stdout.endsWith(failed(7) + failed(8)), r.stdout);
+  assert.deepEqual(localBranches(p), ["issue-7", "issue-8"]);
+  assert.deepEqual([7, 8].map((n) => p.git("rev-parse", `issue-${n}`)), heads);
+  for (const wt of wts) assert.equal(existsSync(wt), false);
+  assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "train-7")), false);
+});
