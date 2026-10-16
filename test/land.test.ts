@@ -1611,9 +1611,11 @@ test("a Repeat step that fails on a rebased branch whose tree passed the full Ga
         repeat: { files: "*.test.ts", env: "TEST_FILES", times: 2 },
       },
     ]),
+    files: SHARED,
   });
-  const wt = ticket(p, 7, { "feature.test.ts": "a test\n" });
-  passedThenBaseMoved(p, wt);
+  // The base changes a file the branch changed too, so the full Gate runs.
+  const wt = ticket(p, 7, { "feature.test.ts": "a test\n", "shared.txt": "ONE\ntwo\nthree\nfour\nfive\n" });
+  passedThenBaseMoved(p, wt, ["shared.txt", "one\ntwo\nthree\nfour\nFIVE\n"]);
 
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
