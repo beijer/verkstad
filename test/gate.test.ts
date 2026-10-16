@@ -412,6 +412,17 @@ test("--quick fails before any step runs when the base branch has no origin ref 
   assert.match(r.stderr, /^verkstad gate: --quick needs origin\/trunk to find what the branch changed: /);
 });
 
+test("a full Gate with a Repeat step fails before any step runs when the base branch has no origin ref to diff against", (t) => {
+  const p = project(t, { contract: { ...contract([{ name: "lint", command: "touch linted" }, repeatStep]), baseBranch: "trunk" } });
+
+  const r = p.run("gate");
+
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, "");
+  assert.match(r.stderr, /^verkstad gate: a Repeat step needs origin\/trunk to find what the branch changed: /);
+  assert.equal(existsSync(join(p.dir, "linted")), false);
+});
+
 test("an unknown option is a usage error", (t) => {
   const p = project(t, { contract: contract([{ name: "build", command: "touch built" }]) });
 
