@@ -2077,6 +2077,35 @@ test("land --train: a Ticket failing alone whose own tree had a recorded full pa
   assert.equal(existsSync(wt8), false);
 });
 
+test("land --train: a Ticket alone whose Gate fails, then passes when run once more, lands, and its comment names the first run", (t) => {
+  const d = 'D="$(git rev-parse --path-format=absolute --git-common-dir)/../.."';
+  // Red while $D/red exists; the second failure removes it, as a flaky test passes again.
+  const flaky: Step = {
+    name: "unit tests",
+    command:
+      `${d}; [ -e broken-8 ] && [ -e "$D/red" ] && { [ -e "$D/failed" ] && rm "$D/red"; touch "$D/failed"; echo 'timed out'; exit 3; }; true`,
+  };
+  const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([flaky]) });
+  ticket(p, 7, { "feature-7.txt": "#7\n" });
+  const wt8 = ticket(p, 8, { "broken-8": "#8\n" });
+  assert.equal(p.runIn(wt8, "gate").code, 0);
+  writeFileSync(join(p.dir, "..", "red"), "");
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 0, r.stdout);
+  const firstLog = /^The Gate failed at unit tests \(log: (.*?)\) on a branch/m.exec(r.stdout)?.[1];
+  assert.ok(firstLog && existsSync(firstLog), r.stdout);
+  const s8 = landedSha(p, "Adds broken-8. Refs #8");
+  assert.ok(r.stdout.endsWith(`The Train ran 4 Gates: landed #7, #8; did not land none.\n#7: landed on main in ${landedSha(p, "Adds feature-7.txt. Refs #7")}\n#8: landed on main in ${s8}\n`), r.stdout);
+  assert.equal(
+    issueOf(p, 8).comments.at(-1)?.body,
+    `Landed on main in ${s8}.\n\nstatus: done\nWhat was built: #8's feature.\n\n` +
+      `The first Gate run failed at unit tests (log: ${firstLog}); the second passed.\n` +
+      "Verification state: test-verified. Surfaces: none.\n",
+  );
+});
+
 test("land --train: a full Gate pass recorded for the stacked tree is reused, so no step runs, and each closing comment says so", (t) => {
   const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([TRAIN_RUN, { name: "red", command: "exit 1" }]) });
   [7, 8].map((n) => ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` }));
