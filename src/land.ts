@@ -713,7 +713,7 @@ function closeRider(r: Rider, base: string, reused: string | null): string {
   const { ticket } = r;
   const { sha, check } = r.stacked as { sha: string; check: VerdictCheck };
   const short = git(ticket.main, ["rev-parse", "--short", sha]).trim();
-  r.left = closeLanded(ticket, base, short, r.report, { check, reused, firstFailure: null });
+  r.left = closeLanded(ticket, base, short, r.report, { check, reused, quickOn: null, firstFailure: null });
   return removeWorktreeAndBranch(ticket) + deleteParkedBranch(ticket);
 }
 
