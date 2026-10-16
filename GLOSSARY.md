@@ -74,6 +74,10 @@ _Avoid_: batch, session, sprint
 The Project's checks a change must pass before it lands: CI without the release build. It prints only failures and keeps its full log.
 _Avoid_: CI, checks, test suite
 
+**Repeat step**:
+A Gate step that runs the test files a branch added or changed several times, stopping at the first failure, so that a flaky test fails before it lands. Landing never runs a failed Repeat step once more.
+_Avoid_: retry
+
 **Landing**:
 Putting a finished Ticket's branch on the base branch: rebase, Verdict check, Gate (or a full pass already recorded for the rebased tree), then, depending on the Project's Landing mode, a push that closes the Ticket with its report and Verdict, or a pull request that carries them and closes the Ticket when the owner merges it.
 _Avoid_: merge, ship, deploy

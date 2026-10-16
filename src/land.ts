@@ -267,7 +267,8 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
         const first = `the first run failed at ${firstFailure.step}, log: ${firstFailure.log}`;
         throw didNotLand(ticket, "gate-failed", `the Gate failed again when run once more (${first}): ${error.message}`);
       }
-      if (passedBefore === null || !(error instanceof StepFailure)) {
+      // A Repeat step's failure is not run once more: repetition is its proof.
+      if (passedBefore === null || !(error instanceof StepFailure) || error.repeated) {
         throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
       }
       firstFailure = error;

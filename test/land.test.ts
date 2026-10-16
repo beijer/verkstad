@@ -14,6 +14,7 @@ interface Step {
   command: string;
   unlessExists?: string;
   quick?: { files: string; env: string };
+  repeat?: { files: string; env: string; times: number };
 }
 
 /** A Contract whose Gate has these steps. Steps run from the worktree root, which sits beside the
@@ -1521,6 +1522,37 @@ test("a Gate that fails twice on a rebased branch whose tree passed the full Gat
   assert.equal(existsSync(wt), false, "the worktree is removed");
   assert.equal(originHead(p), base);
   assert.equal(issueOf(p, 7).state, "open");
+});
+
+test("a Repeat step that fails on a rebased branch whose tree passed the full Gate before ends with gate-failed after one Gate run", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([
+      {
+        name: "unit tests",
+        command: "echo run >> ../gate-runs.txt; [ -e ../red ] && { echo 'expected 2, got 3'; exit 3; }; true",
+        repeat: { files: "*.test.ts", env: "TEST_FILES", times: 2 },
+      },
+    ]),
+  });
+  const wt = ticket(p, 7, { "feature.test.ts": "a test\n" });
+  passedThenBaseMoved(p, wt);
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 1);
+  assert.equal(gateRuns(p), 3, "two repetitions passed before the Landing, and its one Gate run stopped at the first");
+  assert.equal(r.stdout, "");
+  const log = /^Full log: (.*)$/m.exec(r.stderr)?.[1];
+  assert.ok(log && existsSync(log), r.stderr);
+  assert.equal(
+    r.stderr,
+    "verkstad land: #7 did not land: the Gate failed: unit tests (×2, 1 changed file): repetition 1 of 2 failed (exit 3). The end of its output:\n" +
+      "expected 2, got 3\n" +
+      `Full log: ${log}\n` +
+      "Branch issue-7 is kept; its worktree is removed.\n" +
+      "reason: gate-failed\n",
+  );
 });
 
 test("a Gate that fails on a branch with no full pass recorded ends with gate-failed after one run", (t) => {

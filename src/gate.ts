@@ -4,6 +4,7 @@
 // log directory in the main checkout. A full pass on a clean worktree is
 // recorded there against the tree of HEAD, a step skipped by unlessExists
 // included, and Landing reuses it for a rebased branch whose tree is the same.
+// A Repeat step runs its command several times, on the test files the branch changed.
 
 import { spawnSync } from "node:child_process";
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, writeFileSync, writeSync } from "node:fs";
@@ -16,11 +17,13 @@ const USAGE = "usage: verkstad gate [--quick]";
 /** How many of a failing step's last lines the Gate prints. */
 const TAIL_LINES = 60;
 
-/** A step as this run runs it: under --quick, a narrowed step knows its changed files. */
+/** A step as this run runs it: under --quick, a narrowed step knows its changed files, and so does a Repeat step. */
 interface PlannedStep {
   step: GateStep;
   label: string;
   env: Record<string, string>;
+  /** How many times it runs: more than once only for a Repeat step. */
+  times: number;
   /** Why the step does not run this time, if it doesn't. */
   skip?: string;
 }
@@ -59,7 +62,7 @@ function changedFiles(root: string, since: string, pathspecs: string[], deleted:
   const diff = tryGit(root, ["diff", "-z", "--name-only", ...filter, since, "--", ...pathspecs]);
   const untracked = tryGit(root, ["ls-files", "-z", "--others", "--exclude-standard", "--", ...pathspecs]);
   for (const r of [diff, untracked]) {
-    if (r.status !== 0) throw new Failure(`--quick could not list the changed files: ${r.stderr.trim()}`);
+    if (r.status !== 0) throw new Failure(`could not list the changed files: ${r.stderr.trim()}`);
   }
   const files = [...diff.stdout.split("\0"), ...untracked.stdout.split("\0")].filter(Boolean);
   return [...new Set(files)];
@@ -68,32 +71,34 @@ function changedFiles(root: string, since: string, pathspecs: string[], deleted:
 function plan(root: string, contract: Contract, quick: boolean): PlannedStep[] {
   const narrowed = quick && contract.gate.steps.some((s) => s.quick);
   let since = "";
-  if (narrowed) {
+  if (narrowed || contract.gate.steps.some((s) => s.repeat)) {
     const base = `origin/${contract.baseBranch}`;
     const r = tryGit(root, ["merge-base", "HEAD", base]);
     if (r.status !== 0) {
-      throw new Failure(`--quick needs ${base} to find what the branch changed: ${r.stderr.trim() || "no common ancestor with HEAD"}`);
+      const who = narrowed ? "--quick" : "a Repeat step";
+      throw new Failure(`${who} needs ${base} to find what the branch changed: ${r.stderr.trim() || "no common ancestor with HEAD"}`);
     }
     since = r.stdout.trim();
   }
+  const count = (files: string[]) => `${files.length} changed file${files.length === 1 ? "" : "s"}`;
+  const skip = (files: string) => `no file matching ${files} changed since ${contract.baseBranch}`;
   return contract.gate.steps.map((step): PlannedStep => {
-    if (!quick || !step.quick) return { step, label: step.name, env: {} };
+    // A Repeat step runs the same way with or without --quick: repetition is its proof.
+    if (step.repeat) {
+      const { files: pathspec, env, times } = step.repeat;
+      const files = changedFiles(root, since, [pathspec], false);
+      if (files.length === 0) return { step, label: step.name, env: {}, times, skip: skip(pathspec) };
+      return { step, label: `${step.name} (×${times}, ${count(files)})`, env: { [env]: files.join(" ") }, times };
+    }
+    if (!quick || !step.quick) return { step, label: step.name, env: {}, times: 1 };
     const fullRunCauses = step.quick.fullWhen.length ? changedFiles(root, since, step.quick.fullWhen, true) : [];
     if (fullRunCauses.length) {
       const more = fullRunCauses.length > 1 ? ` and ${fullRunCauses.length - 1} more` : "";
-      return { step, label: `${step.name} (in full: ${fullRunCauses[0]}${more} changed)`, env: {} };
+      return { step, label: `${step.name} (in full: ${fullRunCauses[0]}${more} changed)`, env: {}, times: 1 };
     }
     const files = changedFiles(root, since, [step.quick.files], false);
-    if (files.length === 0) {
-      return {
-        step,
-        label: step.name,
-        env: {},
-        skip: `no file matching ${step.quick.files} changed since ${contract.baseBranch}`,
-      };
-    }
-    const count = `${files.length} changed file${files.length === 1 ? "" : "s"}`;
-    return { step, label: `${step.name} (${count})`, env: { [step.quick.env]: files.join(" ") } };
+    if (files.length === 0) return { step, label: step.name, env: {}, times: 1, skip: skip(step.quick.files) };
+    return { step, label: `${step.name} (${count(files)})`, env: { [step.quick.env]: files.join(" ") }, times: 1 };
   });
 }
 
@@ -164,11 +169,14 @@ export function gate(args: string[]): void {
 export class StepFailure extends Failure {
   step: string;
   log: string;
+  /** A Repeat step's failure, which running the Gate once more would not disprove. */
+  repeated: boolean;
 
-  constructor(step: string, log: string, message: string) {
+  constructor(step: string, log: string, message: string, repeated: boolean) {
     super(message);
     this.step = step;
     this.log = log;
+    this.repeated = repeated;
   }
 }
 
@@ -197,24 +205,26 @@ export function runGate(root: string, quick: boolean): string {
       // Checked as the step comes up, since an earlier step may create the path.
       if (p.step.unlessExists && existsSync(join(root, p.step.unlessExists))) continue;
       writeSync(log.fd, `== ${p.label}\n`);
-      const start = fstatSync(log.fd).size;
       const stepEnv = { ...env, ...p.env };
       // A step that runs in full never sees a narrowing left in the environment.
       if (p.step.quick && !(p.step.quick.env in p.env)) delete stepEnv[p.step.quick.env];
-      const r = spawnSync("bash", ["-c", p.step.command], {
-        cwd: root,
-        env: stepEnv,
-        stdio: ["ignore", log.fd, log.fd],
-      });
-      if (r.error) throw new Failure(`could not run bash for ${p.label}: ${r.error.message}`);
-      if (r.status === 0) {
-        process.stdout.write(`ok  ${p.label}\n`);
-        continue;
+      for (let k = 1; k <= p.times; k++) {
+        if (p.step.repeat) writeSync(log.fd, `-- repetition ${k} of ${p.times}\n`);
+        const start = fstatSync(log.fd).size;
+        const r = spawnSync("bash", ["-c", p.step.command], {
+          cwd: root,
+          env: stepEnv,
+          stdio: ["ignore", log.fd, log.fd],
+        });
+        if (r.error) throw new Failure(`could not run bash for ${p.label}: ${r.error.message}`);
+        if (r.status === 0) continue;
+        const how = r.signal ? `killed by ${r.signal}` : `exit ${r.status}`;
+        const tail = lastLines(readFileSync(log.path).subarray(start).toString("utf8"), TAIL_LINES);
+        const output = tail.length ? ` The end of its output:\n${tail.join("\n")}` : " It printed nothing.";
+        const what = p.step.repeat ? `: repetition ${k} of ${p.times} failed (${how})` : ` failed (${how})`;
+        throw new StepFailure(p.label, log.path, `${p.label}${what}.${output}\nFull log: ${log.path}`, p.step.repeat !== undefined);
       }
-      const how = r.signal ? `killed by ${r.signal}` : `exit ${r.status}`;
-      const tail = lastLines(readFileSync(log.path).subarray(start).toString("utf8"), TAIL_LINES);
-      const output = tail.length ? ` The end of its output:\n${tail.join("\n")}` : " It printed nothing.";
-      throw new StepFailure(p.label, log.path, `${p.label} failed (${how}).${output}\nFull log: ${log.path}`);
+      process.stdout.write(`ok  ${p.label}\n`);
     }
   } finally {
     closeSync(log.fd);

@@ -329,6 +329,77 @@ test("--quick narrows as usual when no changed file matches fullWhen", (t) => {
   assert.match(readFileSync(logs(p)[0], "utf8"), /files: e2e\/a\.e2e\.ts\n$/);
 });
 
+/** A Repeat step over the unit test files; each run appends its files to ../runs.txt, and run 3 fails while ../red exists. */
+const repeatStep: Step = {
+  name: "unit tests",
+  command: 'echo "$TEST_FILES" >> ../runs.txt; n=$(wc -l < ../runs.txt); echo "run $n"; [ -e ../red ] && [ "$n" = 3 ] && { echo "expected 2, got 3"; exit 1; }; true',
+  repeat: { files: "test/*.test.ts", env: "TEST_FILES", times: 5 },
+};
+
+function repeatProject(t: Parameters<typeof project>[0]): Project {
+  return project(t, {
+    contract: contract([repeatStep, { name: "lint", command: "echo lint ok" }]),
+    files: { "test/a.test.ts": "a\n", "test/b.test.ts": "b\n", "src/a.ts": "a\n" },
+  });
+}
+
+function runs(p: Project): string[] {
+  const path = join(p.dir, "..", "runs.txt");
+  return existsSync(path) ? readFileSync(path, "utf8").split("\n").filter(Boolean) : [];
+}
+
+for (const args of [[], ["--quick"]]) {
+  test(`a Repeat step runs its times with the changed test files in its variable${args.length ? ", under --quick too" : ""}`, (t) => {
+    const p = repeatProject(t);
+    const wt = worktree(p, "issue-15");
+    writeFileSync(join(wt, "test", "a.test.ts"), "a changed\n");
+    writeFileSync(join(wt, "src", "a.ts"), "a changed\n");
+
+    const r = p.runIn(wt, "gate", ...args);
+
+    assert.equal(r.stderr, "");
+    assert.equal(r.code, 0);
+    const pass = args.length ? "Quick gate passed" : "Gate passed";
+    assert.equal(r.stdout, `ok  unit tests (×5, 1 changed file)\nok  lint\n${pass}. Log: ${logs(p)[0]}\n`);
+    assert.deepEqual(runs(p), Array(5).fill("test/a.test.ts"));
+    assert.match(readFileSync(logs(p)[0], "utf8"), /^== unit tests \(×5, 1 changed file\)\n-- repetition 1 of 5\nrun 1\n-- repetition 2 of 5\nrun 2\n/);
+  });
+}
+
+test("a Repeat step whose third run fails fails the Gate, naming that repetition, and runs no more", (t) => {
+  const p = repeatProject(t);
+  const wt = worktree(p, "issue-16");
+  writeFileSync(join(wt, "test", "a.test.ts"), "a changed\n");
+  writeFileSync(join(p.dir, "..", "red"), "");
+
+  const r = p.runIn(wt, "gate");
+
+  assert.equal(r.code, 1);
+  assert.equal(r.stdout, "");
+  assert.equal(
+    r.stderr,
+    "verkstad gate: unit tests (×5, 1 changed file): repetition 3 of 5 failed (exit 1). The end of its output:\n" +
+      "run 3\nexpected 2, got 3\n" +
+      `Full log: ${logs(p)[0]}\n`,
+  );
+  assert.equal(runs(p).length, 3);
+});
+
+test("a branch that changed no file matching a Repeat step's files skips it with a line saying so, and the Gate passes", (t) => {
+  const p = repeatProject(t);
+  const wt = worktree(p, "issue-17");
+  writeFileSync(join(wt, "src", "a.ts"), "a changed\n");
+
+  const r = p.runIn(wt, "gate");
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(
+    r.stdout,
+    `--  unit tests skipped: no file matching test/*.test.ts changed since main\nok  lint\nGate passed. Log: ${logs(p)[0]}\n`,
+  );
+  assert.deepEqual(runs(p), []);
+});
+
 test("--quick fails before any step runs when the base branch has no origin ref to diff against", (t) => {
   const p = project(t, {
     contract: { ...contract([{ name: "unit tests", command: "echo unit ok" }, e2eStep]), baseBranch: "trunk" },
@@ -383,7 +454,7 @@ const malformed: Array<[string, unknown, string]> = [
   [
     "a misspelt step field",
     { baseBranch: "main", gate: { steps: [{ name: "a", comand: "true" }] } },
-    "gate.steps[0] has an unknown field 'comand' (known: name, command, unlessExists, quick)",
+    "gate.steps[0] has an unknown field 'comand' (known: name, command, unlessExists, quick, repeat)",
   ],
   [
     "a fullWhen that is one string",
@@ -402,6 +473,31 @@ const malformed: Array<[string, unknown, string]> = [
     "a quick without its env",
     { baseBranch: "main", gate: { steps: [{ name: "e2e", command: "true", quick: { files: "e2e/*.ts" } }] } },
     "gate.steps[0].quick.env must be an environment variable name",
+  ],
+  [
+    "a repeat without its files",
+    { baseBranch: "main", gate: { steps: [{ name: "t", command: "true", repeat: { env: "F", times: 5 } }] } },
+    "gate.steps[0].repeat.files must be a non-empty string",
+  ],
+  [
+    "a repeat without its times",
+    { baseBranch: "main", gate: { steps: [{ name: "t", command: "true", repeat: { files: "test/*.ts", env: "F" } }] } },
+    "gate.steps[0].repeat.times must be a whole number of at least 1",
+  ],
+  [
+    "a repeat whose times is 0",
+    { baseBranch: "main", gate: { steps: [{ name: "t", command: "true", repeat: { files: "test/*.ts", env: "F", times: 0 } }] } },
+    "gate.steps[0].repeat.times must be a whole number of at least 1",
+  ],
+  [
+    "a repeat whose times is not whole",
+    { baseBranch: "main", gate: { steps: [{ name: "t", command: "true", repeat: { files: "test/*.ts", env: "F", times: 2.5 } }] } },
+    "gate.steps[0].repeat.times must be a whole number of at least 1",
+  ],
+  [
+    "a repeat with an unknown field",
+    { baseBranch: "main", gate: { steps: [{ name: "t", command: "true", repeat: { files: "test/*.ts", env: "F", times: 5, retries: 1 } }] } },
+    "gate.steps[0].repeat has an unknown field 'retries' (known: files, env, times)",
   ],
   [
     "an env value that is a number",

@@ -31,7 +31,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 
 | Field | Reader | Meaning |
 | --- | --- | --- |
-| `baseBranch` | `gate --quick`, `land` | The branch Tickets land on. |
+| `baseBranch` | `gate --quick`, a Repeat step, `land` | The branch Tickets land on. |
 | `gate` | `gate`, `land` | The Gate's named steps. |
 | `landing` | `land` | The Landing mode: `push` (the default) or `pull-request`. |
 | `parallel` | `run` | The most Tickets a Run works at once. No cap without it. |
@@ -41,7 +41,7 @@ A JSON object. Each field is documented here by the Ticket that first gives it a
 
 ### `baseBranch`
 
-A string, required: the branch Tickets branch from and land on, e.g. `"main"`. `gate --quick` diffs against `git merge-base HEAD origin/<baseBranch>`, so a branch's changes are what it added since it left the base branch, whatever landed there since.
+A string, required: the branch Tickets branch from and land on, e.g. `"main"`. `gate --quick` and a Repeat step diff against `git merge-base HEAD origin/<baseBranch>`, so a branch's changes are what it added since it left the base branch, whatever landed there since.
 
 ### `gate`
 
@@ -70,6 +70,10 @@ An object, required: the Gate that `verkstad gate` runs.
     - `files` (required): a git pathspec (`*` also matches `/`) for the step's test files.
     - `env` (required): the variable the step reads them from, space-separated. The step's command does the narrowing: it reads the variable, or passes it on (`"node --test $FILES"`).
     - `fullWhen` (optional): pathspecs for files that every one of the step's tests depends on (a harness, a fake, a script). When a changed file matches one, deleted ones included, `--quick` runs the step in full.
+  - `repeat` (optional): makes the step a Repeat step, which proves a changed test file by repetition (`"repeat": { "files": "test/*.test.ts", "env": "TEST_FILES", "times": 5 }`). The Project words the command for its own test runner, with no retries.
+    - `files` (required): a git pathspec for the step's test files.
+    - `env` (required): the variable the step reads them from, space-separated.
+    - `times` (required): a whole number of at least 1, how many times the step runs.
 - Every step also gets `VERKSTAD_CORES`, which `verkstad gate` sets to the Contract's [`coresPerTicket`](#coresperticket), or to the machine's core count (what `nproc` prints) without it, so that the implementer's Gates and Landing's see the same value and a step can size its test workers to match.
 - `env` (optional): variables set for every step. A value is a string, in which `$NAME` and `${NAME}` are replaced by the variable's value in the environment the Gate started in (empty when unset; nothing else is expanded), or `null` to unset the variable.
 
@@ -80,6 +84,8 @@ An object, required: the Gate that `verkstad gate` runs.
 **A recorded pass.** A full Gate (not `--quick`) that passes on a worktree with no uncommitted or untracked changes, and whose steps changed no tracked file and committed nothing, also writes `<log directory>/gate-pass-<tree>.json`, naming the tree of `HEAD` (`git rev-parse HEAD^{tree}`), the commit, the log and when it passed. A step skipped by `unlessExists` does not stop the record, since its path is an install cache, not a check; `--quick`, which skips and narrows steps, is never recorded. Landing reuses it for a rebased branch with the same tree. The Contract is in the tree, so a change to the Gate's steps voids every earlier record. Records are pruned with the rest of the log directory.
 
 **`--quick`.** A step with `quick` gets the files matching `quick.files` that the branch added or changed since it left the base branch (`git merge-base HEAD origin/<baseBranch>`), untracked ones included, deleted ones not, and is labelled `<name> (<n> changed files)`. With none, it is skipped with a line `--  <name> skipped: …`. With a `fullWhen` match, it runs in full, labelled `<name> (in full: <file> changed)` (or `<file> and <n> more`). Every other step runs as usual, and the pass line says `Quick gate passed`. Without `--quick`, or when it runs in full, a step never sees its `quick.env` variable, even one set by the caller.
+
+**A Repeat step.** With or without `--quick`, a step with `repeat` gets the files matching `repeat.files` that the branch added or changed since it left the base branch, found as `--quick` finds them, in `repeat.env`, and runs `times` times, stopping at the first failed repetition. It is labelled `<name> (×<N>, <n> changed files)`, and the log has a `-- repetition <k> of <N>` line before each run. A failed repetition fails the step with `<label>: repetition <k> of <N> failed (<exit code or signal>)`, its last lines and the log's path. With no matching file changed, it is skipped with a line `--  <name> skipped: no file matching <files> changed since <baseBranch>`. A step with both `quick` and `repeat` runs as a Repeat step.
 
 ### `landing`
 
@@ -137,7 +143,7 @@ verkstad's own `.claude/harness.json` is an example Contract for a Project with 
 
 1. It takes the main checkout's Landing lock (`<git common dir>/verkstad-land.lock`, held with flock(1)), so one Landing runs at a time per main checkout; a second says it is waiting and runs when the first is done. The kernel releases the lock when a Landing exits, however it exits, so a lock is never stale.
 2. It fetches `origin/<baseBranch>`, rebases the branch onto it and checks the Verdict, as `verkstad verdict check` does ([docs/verdict.md](verdict.md)): a branch that touches a Surface needs a `live-verified` Verdict for its rebased patch. It checks before the Gate, so that a branch its Verdict refuses costs no Gate run.
-3. It runs the full Gate in the worktree (never `--quick`), printing the Gate's lines. When a full pass on the rebased tree is recorded (**A recorded pass**, above), it runs no step and prints `Reused the full Gate pass recorded for tree <tree>; no step ran.` instead; a pass on the same tree is trusted whatever the environment it ran in. When a step fails and the branch as it stood before the rebase had a full pass recorded, the failure may be a flaky test: it prints `The Gate failed at <step> (log: <log of that run>) on a branch whose tree passed the full Gate before the rebase (log of that pass: <log>); running it once more.` and runs the full Gate once more on the same tree. A pass on that second run lands as any pass does; a second failure ends `gate-failed`. Without a pass recorded before the rebase, a failure ends `gate-failed` after one run.
+3. It runs the full Gate in the worktree (never `--quick`), printing the Gate's lines. When a full pass on the rebased tree is recorded (**A recorded pass**, above), it runs no step and prints `Reused the full Gate pass recorded for tree <tree>; no step ran.` instead; a pass on the same tree is trusted whatever the environment it ran in. When a step fails and the branch as it stood before the rebase had a full pass recorded, the failure may be a flaky test: it prints `The Gate failed at <step> (log: <log of that run>) on a branch whose tree passed the full Gate before the rebase (log of that pass: <log>); running it once more.` and runs the full Gate once more on the same tree. A pass on that second run lands as any pass does; a second failure ends `gate-failed`. Without a pass recorded before the rebase, or when the failing step is a Repeat step, whose repetition is the proof, a failure ends `gate-failed` after one run.
 4. It pushes `HEAD` to `<baseBranch>` on `origin`. When the push is rejected because the base moved meanwhile, it says so and goes back to 2; after 3 attempts it gives up.
 5. It closes the Ticket with the comment `Landed on <baseBranch> in <sha>.`, a blank line, the report, a blank line and how far the Ticket was proven (below); removes the worktree, the branch, its review record (so that a later `issue-<n>` needs a review of its own), and the branch on `origin` if an earlier Park pushed it; fast-forwards the main checkout when it is on a clean `<baseBranch>` (and says so when it is not); and prunes the log directory.
 
@@ -170,7 +176,7 @@ Every failure, in either mode, prints what failed on stderr, `verkstad land: …
 | `review-missing` | No review of the branch is recorded, or its record is malformed: the implementer did not run `verkstad:review`. A Resume reviews it. | Untouched, worktree too. |
 | `no-commits` | After the rebase the branch has nothing that is not on `origin/<baseBranch>`. | Kept. |
 | `conflict` | The rebase conflicted; the message names the conflicting files. | Kept as it was before the rebase. |
-| `gate-failed` | The full Gate; the message has the failing step's last lines and the Gate log's path. When the branch had a full pass recorded before the rebase, Landing has already run the Gate once more and it failed again: the message names the step the first run failed at and that run's log too. | Kept, rebased. |
+| `gate-failed` | The full Gate; the message has the failing step's last lines and the Gate log's path. When the branch had a full pass recorded before the rebase and the failing step is not a Repeat step, Landing has already run the Gate once more and it failed again: the message names the step the first run failed at and that run's log too. | Kept, rebased. |
 | `verdict-missing` | The branch touches a Surface, and the Ticket has no Verdict, or its Verdict file is malformed. The Verifier Walks it. | Kept, rebased, in its worktree. |
 | `verdict-void` | The branch touches a Surface, and its Verdict was given for another patch: a conflict resolution or a new commit changed it. Whatever the Verdict's state, the Verifier Walks it again. | Kept, rebased, in its worktree. |
 | `verdict-not-live` | The branch touches a Surface, and its Verdict for this patch is `test-verified`, `blocked` or `failed`; the message names it. A Run routes on the state (a Fix round, or Park). | Kept, rebased, in its worktree. |

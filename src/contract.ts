@@ -22,12 +22,23 @@ export interface Quick {
   fullWhen: string[];
 }
 
+/**
+ * A Repeat step's proof: it runs `times` times, stopping at the first failure, with the changed files
+ * matching the `files` pathspec passed in the `env` variable.
+ */
+export interface Repeat {
+  files: string;
+  env: string;
+  times: number;
+}
+
 export interface GateStep {
   name: string;
   command: string;
   /** A path, relative to the worktree root, whose existence skips the step. */
   unlessExists?: string;
   quick?: Quick;
+  repeat?: Repeat;
 }
 
 export interface Gate {
@@ -71,18 +82,30 @@ function parseQuick(value: unknown, where: string): Quick {
   if (!isObject(value)) throw malformed(`${where} must be an object`);
   onlyKnownFields(value, where, ["files", "env", "fullWhen"]);
   const files = nonEmptyString(value.files, `${where}.files`);
-  if (typeof value.env !== "string" || !VARIABLE_NAME.test(value.env)) {
-    throw malformed(`${where}.env must be an environment variable name`);
-  }
+  const env = variableName(value.env, `${where}.env`);
   const fullWhen = value.fullWhen ?? [];
   if (!Array.isArray(fullWhen)) throw malformed(`${where}.fullWhen must be an array of pathspecs`);
   fullWhen.forEach((glob, i) => nonEmptyString(glob, `${where}.fullWhen[${i}]`));
-  return { files, env: value.env, fullWhen: fullWhen as string[] };
+  return { files, env, fullWhen: fullWhen as string[] };
+}
+
+function variableName(value: unknown, where: string): string {
+  if (typeof value !== "string" || !VARIABLE_NAME.test(value)) throw malformed(`${where} must be an environment variable name`);
+  return value;
+}
+
+function parseRepeat(value: unknown, where: string): Repeat {
+  if (!isObject(value)) throw malformed(`${where} must be an object`);
+  onlyKnownFields(value, where, ["files", "env", "times"]);
+  const files = nonEmptyString(value.files, `${where}.files`);
+  const env = variableName(value.env, `${where}.env`);
+  if (!Number.isInteger(value.times) || (value.times as number) < 1) throw malformed(`${where}.times must be a whole number of at least 1`);
+  return { files, env, times: value.times as number };
 }
 
 function parseStep(value: unknown, where: string): GateStep {
   if (!isObject(value)) throw malformed(`${where} must be an object`);
-  onlyKnownFields(value, where, ["name", "command", "unlessExists", "quick"]);
+  onlyKnownFields(value, where, ["name", "command", "unlessExists", "quick", "repeat"]);
   const result: GateStep = {
     name: nonEmptyString(value.name, `${where}.name`),
     command: nonEmptyString(value.command, `${where}.command`),
@@ -91,6 +114,7 @@ function parseStep(value: unknown, where: string): GateStep {
     result.unlessExists = nonEmptyString(value.unlessExists, `${where}.unlessExists`);
   }
   if (value.quick !== undefined) result.quick = parseQuick(value.quick, `${where}.quick`);
+  if (value.repeat !== undefined) result.repeat = parseRepeat(value.repeat, `${where}.repeat`);
   return result;
 }
 
