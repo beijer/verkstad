@@ -1963,3 +1963,25 @@ test("land --train: a red Gate pushes nothing, and every Ticket ends gate-failed
   for (const wt of wts) assert.equal(existsSync(wt), false);
   assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "train-7")), false);
 });
+
+test("land --train: a full Gate pass recorded for the stacked tree is reused, so no step runs, and each closing comment says so", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([TRAIN_RUN, { name: "red", command: "exit 1" }]) });
+  [7, 8].map((n) => ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` }));
+  // The two Tickets change different files, so their stack's tree is the tree of their merge.
+  const tree = p.git("merge-tree", "--write-tree", "issue-7", "issue-8");
+  writeFileSync(join(p.dir, ".claude", "verkstad", `gate-pass-${tree}.json`), "{}");
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.stderr, "");
+  assert.equal(r.code, 0);
+  assert.equal(gateRuns(p), 0, "no Gate step ran");
+  const [s7, s8] = ["Adds feature-7.txt. Refs #7", "Adds feature-8.txt. Refs #8"].map((s) => landedSha(p, s));
+  assert.ok(r.stdout.startsWith(`Reused the full Gate pass recorded for tree ${tree}; no step ran.\n`), r.stdout);
+  assert.ok(r.stdout.endsWith(`#7: landed on main in ${s7}\n#8: landed on main in ${s8}\n`), r.stdout);
+  const reused = (n: number, sha: string) =>
+    `Landed on main in ${sha}.\n\nstatus: done\nWhat was built: #${n}'s feature.\n\n` +
+    `The Gate was not run again: a full pass on this tree (${tree}) was recorded before.\n` +
+    "Verification state: test-verified. Surfaces: none.\n";
+  assert.deepEqual(p.calls(), [["issue", "close", "7", "--comment", reused(7, s7)], ["issue", "close", "8", "--comment", reused(8, s8)]]);
+});
