@@ -1933,12 +1933,75 @@ test("land --train refuses with exit 2, changing nothing, a Ticket with no workt
   }
 });
 
-test("land --train: a red Gate pushes nothing, and every Ticket ends gate-failed with its branch kept as it was", (t) => {
-  const p = project(t, {
-    issues: [claimed(7), claimed(8)],
-    contract: contract([TRAIN_RUN, { name: "unit tests", command: "echo 'expected 2, got 3'; exit 3" }]),
-  });
-  const wts = [7, 8].map((n) => ticket(p, n, { [`feature-${n}.txt`]: `#${n}\n` }));
+/**
+ * A Gate step that fails on a tree holding a file broken-<n>, naming it, while `$D/red` exists when `red` is
+ * given (D being the test's temp dir), and notes each run among the gh calls, so that a test sees Gate runs
+ * and closes in order.
+ */
+function breaksOn(red = false): Step {
+  const when = red ? '[ -e "$(git rev-parse --path-format=absolute --git-common-dir)/../../red" ] && ' : "";
+  return {
+    name: "unit tests",
+    command: `echo '["gate"]' >> "$VERKSTAD_GH_STUB_DIR/calls.jsonl"; for f in broken-*; do [ -e "$f" ] && ${when}{ echo "$f is broken"; exit 3; }; done; true`,
+  };
+}
+
+const GATE = ["gate"];
+
+/** The logs of the Gate runs in Train train-<first>'s worktree. */
+function trainGateLogs(p: Project, first: number): string[] {
+  return readdirSync(join(p.dir, ".claude", "verkstad")).filter((f) => new RegExp(`^gate-train-${first}-.*\\.log$`).test(f));
+}
+
+/** The `Full log:` path of Ticket #n's entry at the end of a Train's output. */
+function failedLog(stdout: string, n: number): string {
+  const log = new RegExp(`^#${n} did not land:[\\s\\S]*?^Full log: (.*)$`, "m").exec(stdout)?.[1];
+  assert.ok(log && existsSync(log), stdout);
+  return log;
+}
+
+test("land --train: a Train of four whose third Ticket breaks the Gate splits until it stands alone; the other three land and it ends gate-failed", (t) => {
+  const p = project(t, { issues: [7, 8, 9, 10].map(claimed), contract: contract([breaksOn()]) });
+  const wts = [7, 8, 9, 10].map((n) => ticket(p, n, { [n === 9 ? "broken-9" : `feature-${n}.txt`]: `#${n}\n` }));
+  const head9 = p.git("rev-parse", "issue-9");
+
+  const r = p.run("land", "--train", "7", "8", "9", "10", reports(p, 7, 8, 9, 10));
+
+  assert.equal(r.code, 1);
+  assert.equal(r.stderr, "verkstad land: not every Ticket of the Train landed\n");
+  assert.deepEqual(originLog(p), ["Adds feature-10.txt. Refs #10", "Adds feature-8.txt. Refs #8", "Adds feature-7.txt. Refs #7", "A throwaway Project"]);
+  const [s7, s8, s10] = [7, 8, 10].map((n) => landedSha(p, `Adds feature-${n}.txt. Refs #${n}`));
+  // #7, #8, #9, #10 red; #7, #8 green, pushed and closed; #9, #10 red; #9 red; #10 green.
+  assert.deepEqual(p.calls(), [GATE, GATE, closing(7, s7), closing(8, s8), GATE, GATE, GATE, closing(10, s10)]);
+  assert.equal(trainGateLogs(p, 7).length, 5);
+  assert.match(r.stdout, /^The Gate failed on #7, #8, #9, #10; splitting them into #7, #8 and #9, #10\.$/m);
+  assert.match(r.stdout, /^The Gate failed on #9, #10; splitting them into #9 and #10\.$/m);
+  const log = failedLog(r.stdout, 9);
+  assert.match(log, /\/project\/\.claude\/verkstad\/gate-train-7-[\d-]+\.log$/);
+  assert.ok(
+    r.stdout.endsWith(
+      "The Train ran 5 Gates: landed #7, #8, #10; did not land #9.\n" +
+        `#7: landed on main in ${s7}\n` +
+        `#8: landed on main in ${s8}\n` +
+        "#9: reason: gate-failed\n" +
+        "#9 did not land: the Gate failed: unit tests failed (exit 3). The end of its output:\n" +
+        "broken-9 is broken\n" +
+        `Full log: ${log}\n` +
+        "Branch issue-9 is kept as it was; its worktree is removed.\n" +
+        `#10: landed on main in ${s10}\n`,
+    ),
+    r.stdout,
+  );
+  assert.equal(issueOf(p, 9).state, "open");
+  assert.deepEqual(localBranches(p), ["issue-9"]);
+  assert.equal(p.git("rev-parse", "issue-9"), head9);
+  for (const wt of wts) assert.equal(existsSync(wt), false);
+  assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "train-7")), false);
+});
+
+test("land --train: a Train of two whose Tickets each break the Gate pushes nothing, and each ends gate-failed with its own failure", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([breaksOn()]) });
+  const wts = [7, 8].map((n) => ticket(p, n, { [`broken-${n}`]: `#${n}\n` }));
   const heads = [7, 8].map((n) => p.git("rev-parse", `issue-${n}`));
   const base = originHead(p);
 
@@ -1946,22 +2009,72 @@ test("land --train: a red Gate pushes nothing, and every Ticket ends gate-failed
 
   assert.equal(r.code, 1);
   assert.equal(originHead(p), base, "nothing is pushed");
-  assert.equal(gateRuns(p), 1);
-  assert.deepEqual(p.calls(), []);
-  const log = /^Full log: (.*)$/m.exec(r.stdout)?.[1];
-  assert.ok(log && existsSync(log), r.stdout);
-  assert.match(log, /\/project\/\.claude\/verkstad\/gate-train-7-\d{8}-\d{6}\.log$/);
+  assert.deepEqual(p.calls(), [GATE, GATE, GATE]);
+  assert.equal(trainGateLogs(p, 7).length, 3);
   const failed = (n: number) =>
     `#${n}: reason: gate-failed\n` +
-    `#${n} did not land: the Train's Gate failed: unit tests failed (exit 3). The end of its output:\n` +
-    "expected 2, got 3\n" +
-    `Full log: ${log}\n` +
+    `#${n} did not land: the Gate failed: unit tests failed (exit 3). The end of its output:\n` +
+    `broken-${n} is broken\n` +
+    `Full log: ${failedLog(r.stdout, n)}\n` +
     `Branch issue-${n} is kept as it was; its worktree is removed.\n`;
-  assert.ok(r.stdout.endsWith(failed(7) + failed(8)), r.stdout);
+  assert.ok(r.stdout.endsWith(`The Train ran 3 Gates: landed none; did not land #7, #8.\n${failed(7)}${failed(8)}`), r.stdout);
   assert.deepEqual(localBranches(p), ["issue-7", "issue-8"]);
   assert.deepEqual([7, 8].map((n) => p.git("rev-parse", `issue-${n}`)), heads);
   for (const wt of wts) assert.equal(existsSync(wt), false);
-  assert.equal(existsSync(join(p.dir, ".claude", "worktrees", "train-7")), false);
+});
+
+test("land --train: when the first half passes and the second fails, the first half is pushed and closed before the second half's Gate", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([breaksOn()]) });
+  ticket(p, 7, { "feature-7.txt": "#7\n" });
+  ticket(p, 8, { "broken-8": "#8\n" });
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 1);
+  const s7 = landedSha(p, "Adds feature-7.txt. Refs #7");
+  assert.deepEqual(originLog(p), ["Adds feature-7.txt. Refs #7", "A throwaway Project"]);
+  assert.deepEqual(p.calls(), [GATE, GATE, closing(7, s7), GATE]);
+  assert.equal(issueOf(p, 7).state, "closed");
+  assert.equal(issueOf(p, 8).state, "open");
+  assert.match(r.stdout, /^The Train ran 3 Gates: landed #7; did not land #8\.\n#7: landed on main in \w+\n#8: reason: gate-failed\n/m);
+});
+
+test("land --train: a Ticket failing alone whose own tree had a recorded full pass runs the Gate once more before it ends gate-failed", (t) => {
+  const p = project(t, { issues: [claimed(7), claimed(8)], contract: contract([breaksOn(true)]) });
+  ticket(p, 7, { "feature-7.txt": "#7\n" });
+  const wt8 = ticket(p, 8, { "broken-8": "#8\n" });
+  const own = p.runIn(wt8, "gate");
+  assert.equal(own.code, 0, own.stderr);
+  const passLog = /Log: (.*)$/m.exec(own.stdout)?.[1];
+  writeFileSync(join(p.dir, "..", "red"), "");
+
+  const r = p.run("land", "--train", "7", "8", reports(p, 7, 8));
+
+  assert.equal(r.code, 1);
+  const s7 = landedSha(p, "Adds feature-7.txt. Refs #7");
+  // #8's own pass, then: #7, #8 red; #7 green, closed; #8 red, and red once more.
+  assert.deepEqual(p.calls(), [GATE, GATE, GATE, closing(7, s7), GATE, GATE]);
+  assert.equal(trainGateLogs(p, 7).length, 4);
+  const firstLog = /^The Gate failed at unit tests \(log: (.*?)\)/m.exec(r.stdout)?.[1];
+  assert.ok(firstLog && existsSync(firstLog), r.stdout);
+  assert.match(
+    r.stdout,
+    new RegExp(`^The Gate failed at unit tests \\(log: .*?\\) on a branch whose tree passed the full Gate before the rebase \\(log of that pass: ${passLog}\\); running it once more\\.$`, "m"),
+  );
+  assert.ok(
+    r.stdout.endsWith(
+      "The Train ran 4 Gates: landed #7; did not land #8.\n" +
+        `#7: landed on main in ${s7}\n` +
+        "#8: reason: gate-failed\n" +
+        `#8 did not land: the Gate failed again when run once more (the first run failed at unit tests, log: ${firstLog}): ` +
+        "unit tests failed (exit 3). The end of its output:\n" +
+        "broken-8 is broken\n" +
+        `Full log: ${failedLog(r.stdout, 8)}\n` +
+        "Branch issue-8 is kept as it was; its worktree is removed.\n",
+    ),
+    r.stdout,
+  );
+  assert.equal(existsSync(wt8), false);
 });
 
 test("land --train: a full Gate pass recorded for the stacked tree is reused, so no step runs, and each closing comment says so", (t) => {

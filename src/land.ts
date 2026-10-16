@@ -21,8 +21,9 @@
 // on origin's base branch, in order, in a worktree of its own (train-<first n>),
 // checks each Verdict against its own patch in the stack, runs one full Gate
 // on the stack and pushes it once, closing each Ticket as a single Landing
-// does. A Ticket whose check fails leaves the Train with its reason; the rest go
-// on. Push mode only.
+// does. A red stack is split in halves, each green half pushed and closed at
+// once, until each red Ticket stands alone and ends gate-failed. A Ticket whose
+// check fails leaves the Train with its reason; the rest go on. Push mode only.
 //
 // `verkstad land --park <n> <worktree> <reason-file>`: Parks the Ticket. Its
 // branch goes to origin, its worktree (if a failed Landing left one) is
@@ -262,6 +263,11 @@ function quickGateOn(root: string, upstream: string, log: string): string | null
   return [...moved].some((f) => branch.has(f)) ? null : log;
 }
 
+/** The log of the full Gate pass recorded for the tree of the clean worktree at `root`, or null when none is. */
+function ownPass(root: string): string | null {
+  return recordedPass(root) === null ? null : (recordedPassDetails(root).log ?? "its log is unknown");
+}
+
 /** Aborts the rebase that failed in `root` and says how: the conflicting files, or git's complaint. */
 function abortRebase(root: string, rebase: GitResult): string {
   const unmerged = tryGit(root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
@@ -278,7 +284,7 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   fetchBase(ticket.root, base);
   // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the Ticket's own
   // tree passed, so the failure may be a flaky test, and the Gate runs once more before it ends gate-failed.
-  const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassDetails(ticket.root).log ?? "its log is unknown");
+  const passedBefore = ownPass(ticket.root);
   const quickOn = passedBefore === null ? null : quickGateOn(ticket.root, upstream, passedBefore);
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
   if (rebase.status !== 0) {
@@ -305,22 +311,35 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
       `The base changed none of the files ${ticket.branch} changed since its full Gate pass (log: ${quickOn}); running the quick Gate.\n`,
     );
   }
+  try {
+    const firstFailure = gateOnceMore(() => runGate(ticket.root, quickOn !== null), passedBefore);
+    return { check, reused: null, quickOn, firstFailure };
+  } catch (error) {
+    if (!(error instanceof Failure)) throw error;
+    throw didNotLand(ticket, "gate-failed", error.message);
+  }
+}
+
+/**
+ * Runs the Gate with `run`, and once more when a step fails on a branch whose own tree passed the full Gate
+ * before it was rebased (`passedBefore`, that pass's log), since the failure may be a flaky test. Returns the
+ * failed first run when the second passed; a failure throws, saying how the Gate failed.
+ */
+function gateOnceMore(run: () => void, passedBefore: string | null): StepFailure | null {
   let firstFailure: StepFailure | null = null;
-  // At most two runs: only a failing step on a tree that passed before the rebase runs once more, since it
-  // may be a flaky test.
   for (;;) {
     try {
-      runGate(ticket.root, quickOn !== null);
-      return { check, reused: null, quickOn, firstFailure };
+      run();
+      return firstFailure;
     } catch (error) {
       if (!(error instanceof Failure)) throw error;
       if (firstFailure !== null) {
         const first = `the first run failed at ${firstFailure.step}, log: ${firstFailure.log}`;
-        throw didNotLand(ticket, "gate-failed", `the Gate failed again when run once more (${first}): ${error.message}`);
+        throw new Failure(`the Gate failed again when run once more (${first}): ${error.message}`);
       }
       // A Repeat step's failure is not run once more: repetition is its proof.
       if (passedBefore === null || !(error instanceof StepFailure) || error.repeated) {
-        throw didNotLand(ticket, "gate-failed", `the Gate failed: ${error.message}`);
+        throw new Failure(`the Gate failed: ${error.message}`);
       }
       firstFailure = error;
       process.stdout.write(
@@ -663,12 +682,16 @@ function unstack(riders: Rider[], leave: (ticket: Ticket) => LandingFailure): vo
   }
 }
 
+/** What a Train's stack passed: the tree whose recorded pass stood in for the Gate, and a lone Ticket's failed first run. */
+type Pushed = Pick<Checked, "reused" | "firstFailure">;
+
 /**
- * Stacks the riders still in the Train on origin's base in `root`, gates the stack once and pushes it,
- * restacking when the base moved during the Gate. Returns the tree whose recorded pass stood in for the
- * Gate; on a push every rider still stacked landed.
+ * Stacks the riders still in the Train on origin's base in `root`, gates the stack once, with `run`, and
+ * pushes it, restacking when the base moved during the Gate. A lone Ticket's Gate runs once more as a single
+ * Landing's does. Returns what the pushed stack passed, every rider still stacked having landed; the Gate's
+ * failure, the riders it failed on still stacked; or null when nothing was pushed.
  */
-function stackGatePush(root: string, riders: Rider[], first: Ticket, base: string): string | null {
+function stackGatePush(root: string, riders: Rider[], first: Ticket, base: string, run: () => void): Pushed | Failure | null {
   const upstream = `origin/${base}`;
   for (let attempt = 1; ; attempt++) {
     fetchBase(first.main, base);
@@ -680,18 +703,19 @@ function stackGatePush(root: string, riders: Rider[], first: Ticket, base: strin
     }
     if (ahead.length === 0) return null;
     const reused = recordedPass(root);
+    let firstFailure: StepFailure | null = null;
     if (reused !== null) process.stdout.write(`Reused the full Gate pass recorded for tree ${reused}; no step ran.\n`);
     else {
+      const alone = ahead.length === 1 ? ownPass((riders.find((r) => r.stacked) as Rider).ticket.root) : null;
       try {
-        runGate(root, false);
+        firstFailure = gateOnceMore(run, alone);
       } catch (error) {
         if (!(error instanceof Failure)) throw error;
-        unstack(riders, (t) => didNotLand(t, "gate-failed", `the Train's Gate failed: ${error.message}`, true));
-        return null;
+        return error;
       }
     }
     const push = tryGit(root, ["push", "--quiet", "origin", `HEAD:refs/heads/${base}`]);
-    if (push.status === 0) return reused;
+    if (push.status === 0) return { reused, firstFailure };
     fetchBase(first.main, base);
     const moved = tryGit(root, ["merge-base", "--is-ancestor", upstream, "HEAD"]).status !== 0;
     const pushFailed = (detail: string) => (t: Ticket) =>
@@ -709,12 +733,36 @@ function stackGatePush(root: string, riders: Rider[], first: Ticket, base: strin
 }
 
 /** Closes a landed rider's Ticket with its report and Verdict, and removes its worktree and branch; returns notes. */
-function closeRider(r: Rider, base: string, reused: string | null): string {
+function closeRider(r: Rider, base: string, pushed: Pushed): string {
   const { ticket } = r;
   const { sha, check } = r.stacked as { sha: string; check: VerdictCheck };
   const short = git(ticket.main, ["rev-parse", "--short", sha]).trim();
-  r.left = closeLanded(ticket, base, short, r.report, { check, reused, quickOn: null, firstFailure: null });
+  r.left = closeLanded(ticket, base, short, r.report, { check, quickOn: null, ...pushed });
   return removeWorktreeAndBranch(ticket) + deleteParkedBranch(ticket);
+}
+
+function tickets(riders: Rider[]): string {
+  return riders.length ? riders.map((r) => `#${r.ticket.n}`).join(", ") : "none";
+}
+
+/**
+ * Lands the riders of `part` still in the Train, closing them as soon as their stack is pushed. A red stack is
+ * split in halves, the first Gated on the base and the second on top of what landed, until each red Ticket
+ * stands alone and ends gate-failed (ADR 0010). Returns notes.
+ */
+function landPart(root: string, part: Rider[], first: Ticket, base: string, run: () => void): string {
+  const outcome = stackGatePush(root, part, first, base, run);
+  const stacked = part.filter((r) => r.stacked);
+  if (outcome === null) return "";
+  if (!(outcome instanceof Failure)) return stacked.map((r) => closeRider(r, base, outcome)).join("");
+  if (stacked.length === 1) {
+    unstack(stacked, (t) => didNotLand(t, "gate-failed", outcome.message, true));
+    return "";
+  }
+  const half = Math.ceil(stacked.length / 2);
+  const [front, back] = [stacked.slice(0, half), stacked.slice(half)];
+  process.stdout.write(`The Gate failed on ${tickets(stacked)}; splitting them into ${tickets(front)} and ${tickets(back)}.\n`);
+  return landPart(root, front, first, base, run) + landPart(root, back, first, base, run);
 }
 
 /** Rebases the worktree of a rider whose Verdict check failed onto origin's base as the Train left it, for the Verifier. */
@@ -758,6 +806,7 @@ function landTrain(args: string[]): boolean {
 
   const lock = takeLock(first);
   let notes = "";
+  let gates = 0;
   try {
     const root = join(first.main, ".claude", "worktrees", `train-${first.n}`);
     // Under the lock no other Train runs, so a worktree already there is a stopped Train's.
@@ -765,8 +814,10 @@ function landTrain(args: string[]): boolean {
     fetchBase(first.main, base);
     git(first.main, ["worktree", "add", "--quiet", "--detach", root, `origin/${base}`]);
     try {
-      const reused = stackGatePush(root, riders, first, base);
-      for (const r of riders) if (r.stacked) notes += closeRider(r, base, reused);
+      notes += landPart(root, riders, first, base, () => {
+        gates++;
+        runGate(root, false);
+      });
     } finally {
       notes += removeWorktree(first.main, root).notes;
     }
@@ -779,7 +830,10 @@ function landTrain(args: string[]): boolean {
   const lines = riders.map((r) =>
     r.left ? `#${r.ticket.n}: reason: ${r.left.reason}\n${r.left.detail}\n` : `#${r.ticket.n}: landed on ${base} in ${git(first.main, ["rev-parse", "--short", r.stacked?.sha as string]).trim()}\n`,
   );
-  process.stdout.write(notes + describePruned(dir, pruneLogDirectory(dir)) + lines.join(""));
+  const summary =
+    `The Train ran ${gates} Gate${gates === 1 ? "" : "s"}: landed ${tickets(riders.filter((r) => r.stacked))}; ` +
+    `did not land ${tickets(riders.filter((r) => !r.stacked))}.\n`;
+  process.stdout.write(notes + describePruned(dir, pruneLogDirectory(dir)) + summary + lines.join(""));
   return riders.every((r) => r.left === null);
 }
 
