@@ -2,7 +2,8 @@
 // branch, issue-<n>, on the base branch. Under a lock, so that one Landing runs
 // at a time per main checkout, it rebases the branch onto origin's base branch,
 // checks the Ticket's Verdict, and runs the full Gate in the worktree, unless a
-// full pass on the rebased tree is recorded (src/gate.ts). Then, by
+// full pass on the rebased tree is recorded (src/gate.ts), or the quick Gate when
+// the base changed none of the branch's files since its recorded pass. Then, by
 // the Contract's Landing mode:
 //   - push (the default): it pushes to the base branch, rebasing again when the
 //     base moved meanwhile, closes the Ticket with the report and the Verdict,
@@ -37,7 +38,7 @@ import { closeSync, existsSync, openSync, readFileSync, realpathSync, statSync, 
 import { join, resolve } from "node:path";
 import { type Checking, committedChecking, type LandingMode, narrowings, readChecking, readContract, readLandingMode } from "./contract.ts";
 import { Failure } from "./fail.ts";
-import { recordedPass, recordedPassLog, runGate, StepFailure } from "./gate.ts";
+import { recordedPass, recordedPassDetails, runGate, StepFailure } from "./gate.ts";
 import { gh, ghJson } from "./gh.ts";
 import { commonDir, git, logDirectory, mainCheckout, tryFetch, tryGit } from "./git.ts";
 import { describePruned, pruneLogDirectory } from "./prune.ts";
@@ -204,11 +205,13 @@ interface Landed {
 
 /**
  * What a rebased branch passed: the Verdict check, the tree whose recorded Gate pass stood in for the Gate,
- * and the failed first run when the Gate passed only when run once more.
+ * the log of the full pass a quick Gate stood on, and the failed first run when the Gate passed only when
+ * run once more.
  */
 interface Checked {
   check: VerdictCheck;
   reused: string | null;
+  quickOn: string | null;
   firstFailure: StepFailure | null;
 }
 
@@ -216,10 +219,30 @@ interface Checked {
  * The line a Landing's comment carries when it reused a recorded Gate pass, or when the Gate passed only
  * on its second run; none when the Gate passed at once.
  */
-function describeGate({ reused, firstFailure }: Checked): string {
+function describeGate({ reused, quickOn, firstFailure }: Checked): string {
   if (reused !== null) return `The Gate was not run again: a full pass on this tree (${reused}) was recorded before.\n`;
-  if (firstFailure !== null) return `The first Gate run failed at ${firstFailure.step} (log: ${firstFailure.log}); the second passed.\n`;
-  return "";
+  const quick = quickOn === null ? "" : `Landed on a quick Gate: the base changed none of this Ticket's files since its full Gate pass (log: ${quickOn}).\n`;
+  if (firstFailure !== null) return `${quick}The first Gate run failed at ${firstFailure.step} (log: ${firstFailure.log}); the second passed.\n`;
+  return quick;
+}
+
+/** The files changed between two commits, renames as a deletion and an addition; null when git cannot tell. */
+function filesChanged(root: string, from: string, to: string): Set<string> | null {
+  const r = tryGit(root, ["diff", "-z", "--name-only", "--no-renames", from, to, "--"]);
+  return r.status === 0 ? new Set(r.stdout.split("\0").filter(Boolean)) : null;
+}
+
+/**
+ * The log of the full pass recorded before the rebase when the base changed, since the base that pass was
+ * taken on, none of the files the branch changed: a quick Gate is then enough. Otherwise null.
+ */
+function quickGateOn(root: string, upstream: string, log: string): string | null {
+  const { base } = recordedPassDetails(root);
+  if (base === null) return null;
+  const branch = filesChanged(root, base, "HEAD");
+  const moved = filesChanged(root, base, upstream);
+  if (branch === null || moved === null) return null;
+  return [...moved].some((f) => branch.has(f)) ? null : log;
 }
 
 /**
@@ -231,7 +254,8 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   fetchBase(ticket, base);
   // A full pass on the branch as it stands, before the rebase: when the Gate fails below, the Ticket's own
   // tree passed, so the failure may be a flaky test, and the Gate runs once more before it ends gate-failed.
-  const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassLog(ticket.root) ?? "its log is unknown");
+  const passedBefore = recordedPass(ticket.root) === null ? null : (recordedPassDetails(ticket.root).log ?? "its log is unknown");
+  const quickOn = passedBefore === null ? null : quickGateOn(ticket.root, upstream, passedBefore);
   const rebase = tryGit(ticket.root, ["rebase", "--quiet", upstream]);
   if (rebase.status !== 0) {
     const unmerged = tryGit(ticket.root, ["diff", "-z", "--name-only", "--diff-filter=U"]).stdout.split("\0").filter(Boolean);
@@ -252,15 +276,20 @@ function rebaseCheckGate(ticket: Ticket, base: string): Checked {
   const reused = recordedPass(ticket.root);
   if (reused !== null) {
     process.stdout.write(`Reused the full Gate pass recorded for tree ${reused}; no step ran.\n`);
-    return { check, reused, firstFailure: null };
+    return { check, reused, quickOn: null, firstFailure: null };
+  }
+  if (quickOn !== null) {
+    process.stdout.write(
+      `The base changed none of the files ${ticket.branch} changed since its full Gate pass (log: ${quickOn}); running the quick Gate.\n`,
+    );
   }
   let firstFailure: StepFailure | null = null;
   // At most two runs: only a failing step on a tree that passed before the rebase runs once more, since it
   // may be a flaky test.
   for (;;) {
     try {
-      runGate(ticket.root, false);
-      return { check, reused: null, firstFailure };
+      runGate(ticket.root, quickOn !== null);
+      return { check, reused: null, quickOn, firstFailure };
     } catch (error) {
       if (!(error instanceof Failure)) throw error;
       if (firstFailure !== null) {

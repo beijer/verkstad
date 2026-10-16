@@ -3,7 +3,8 @@
 // and a pass line, or the failing step's last lines; the full log goes to the
 // log directory in the main checkout. A full pass on a clean worktree is
 // recorded there against the tree of HEAD, a step skipped by unlessExists
-// included, and Landing reuses it for a rebased branch whose tree is the same.
+// included, with the base it was taken on. Landing reuses it for a rebased branch whose tree is the same,
+// and runs --quick instead of the full Gate when the base changed none of the branch's files.
 // A Repeat step runs its command several times, on the test files the branch changed.
 
 import { spawnSync } from "node:child_process";
@@ -148,15 +149,19 @@ export function recordedPass(root: string): string | null {
   return tree !== null && existsSync(passRecord(logDirectory(root), tree)) ? tree : null;
 }
 
-/** The path of the Gate log of the full pass recorded for the tree at `root`'s HEAD, or null: none, or its record is unreadable. */
-export function recordedPassLog(root: string): string | null {
-  const path = passRecord(logDirectory(root), headTree(root));
-  if (!existsSync(path)) return null;
+/**
+ * The log of the full pass recorded for the tree at `root`'s HEAD and the base it was taken on, each null
+ * when unknown: no record, an unreadable one, or one written before passes recorded their base.
+ */
+export function recordedPassDetails(root: string): { log: string | null; base: string | null } {
   try {
-    const { log } = JSON.parse(readFileSync(path, "utf8")) as { log?: unknown };
-    return typeof log === "string" ? log : null;
+    const { log, base } = JSON.parse(readFileSync(passRecord(logDirectory(root), headTree(root)), "utf8")) as { log?: unknown; base?: unknown };
+    return {
+      log: typeof log === "string" ? log : null,
+      base: typeof base === "string" && /^[0-9a-f]{40,64}$/.test(base) ? base : null,
+    };
   } catch {
-    return null;
+    return { log: null, base: null };
   }
 }
 
@@ -233,7 +238,10 @@ export function runGate(root: string, quick: boolean): string {
   const unchanged = () => headTree(root) === tree && git(root, ["status", "--porcelain", "--untracked-files=no"]).trim() === "";
   if (tree !== null && unchanged()) {
     const commit = git(root, ["rev-parse", "HEAD"]).trim();
-    const record = { tree, commit, log: log.path, passedAt: new Date().toISOString() };
+    // The base the pass was taken on, so that Landing can tell which files the base changed since.
+    const mergeBase = tryGit(root, ["merge-base", "HEAD", `origin/${contract.baseBranch}`]);
+    const base = mergeBase.status === 0 ? mergeBase.stdout.trim() : undefined;
+    const record = { tree, commit, base, log: log.path, passedAt: new Date().toISOString() };
     writeFileSync(passRecord(dir, tree), `${JSON.stringify(record, null, 2)}\n`);
   }
   process.stdout.write(`${quick ? "Quick gate passed" : "Gate passed"}. Log: ${log.path}\n`);

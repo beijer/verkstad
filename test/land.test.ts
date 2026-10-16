@@ -1265,11 +1265,85 @@ test("after a full Gate passed on the clean branch, a Landing on an unmoved base
   assert.equal(originLog(p)[0], "Adds feature.txt. Refs #7");
 });
 
-test("when the base moved after the Gate passed, the rebased tree differs and Landing runs the full Gate", (t) => {
+/** A file the Project starts with, whose first and last lines a branch and its base can change without a conflict. */
+const SHARED = { "shared.txt": "one\ntwo\nthree\nfour\nfive\n" };
+
+test("a full Gate pass on a clean worktree records the tree, the commit, the base it was taken on and the log", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([NOTES_RUN]) });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+  const base = p.git("rev-parse", "main");
+  p.git("-C", wt, "fetch", "--quiet", "origin");
+
+  const gate = p.runIn(wt, "gate");
+
+  assert.equal(gate.code, 0, gate.stderr);
+  const record = JSON.parse(readFileSync(join(p.dir, ".claude", "verkstad", `gate-pass-${treeOf(p, wt)}.json`), "utf8"));
+  assert.deepEqual(Object.keys(record), ["tree", "commit", "base", "log", "passedAt"]);
+  assert.equal(record.tree, treeOf(p, wt));
+  assert.equal(record.commit, p.git("-C", wt, "rev-parse", "HEAD"));
+  assert.equal(record.base, base, "the merge-base with origin/main, not origin/main itself");
+  assert.notEqual(record.base, originHead(p));
+  assert.equal(record.log, /Log: (.*)$/m.exec(gate.stdout)?.[1]);
+});
+
+test("when the base moved in only files the branch did not change after its full Gate passed, Landing runs the quick Gate, says why, and the closing comment says so", (t) => {
+  const p = project(t, {
+    issues: [claimed(7)],
+    contract: contract([NOTES_RUN, { name: "e2e", command: "echo e2e >> ../gate-runs.txt", quick: { files: "e2e/*", env: "E2E_FILES" } }]),
+  });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
+  const gate = p.runIn(wt, "gate");
+  assert.equal(gate.code, 0, gate.stderr);
+  const passLog = /Log: (.*)$/m.exec(gate.stdout)?.[1];
+  assert.equal(gateRuns(p), 2);
+  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(r.stderr, "");
+  assert.equal(gateRuns(p), 3, "the Landing ran the test step and skipped e2e");
+  const quickLog = /^Quick gate passed\. Log: (.*)$/m.exec(r.stdout)?.[1];
+  assert.ok(quickLog && quickLog !== passLog && existsSync(quickLog), r.stdout);
+  const sha = p.git("--git-dir", p.origin, "rev-parse", "--short", "main");
+  assert.equal(
+    r.stdout,
+    `The base changed none of the files issue-7 changed since its full Gate pass (log: ${passLog}); running the quick Gate.\n` +
+      "ok  test\n" +
+      "--  e2e skipped: no file matching e2e/* changed since main\n" +
+      `Quick gate passed. Log: ${quickLog}\n` +
+      `Landed #7 on main in ${sha} and closed it.\n`,
+  );
+  const body =
+    `Landed on main in ${sha}.\n\n${REPORT}\n` +
+    `Landed on a quick Gate: the base changed none of this Ticket's files since its full Gate pass (log: ${passLog}).\n` +
+    "Verification state: test-verified. Surfaces: none.\n";
+  assert.deepEqual(issueOf(p, 7).comments, [{ author: "owner", body }]);
+  assert.deepEqual(originLog(p).slice(0, 2), ["Adds feature.txt. Refs #7", "Landed meanwhile"]);
+});
+
+test("a pass record with no base, written before passes recorded one, means the full Gate when the base moved", (t) => {
   const p = project(t, { issues: [claimed(7)], contract: contract([NOTES_RUN]) });
   const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
   assert.equal(p.runIn(wt, "gate").code, 0);
+  const path = join(p.dir, ".claude", "verkstad", `gate-pass-${treeOf(p, wt)}.json`);
+  const { base: _, ...old } = JSON.parse(readFileSync(path, "utf8"));
+  writeFileSync(path, JSON.stringify(old));
   landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+
+  const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
+
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(gateRuns(p), 2, "the Landing ran the Gate");
+  assert.match(r.stdout, /^ok {2}test\nGate passed\. Log: .*\nLanded #7 on main in \w+ and closed it\.\n$/);
+});
+
+test("when the base moved in a file the branch also changed after the Gate passed, the rebased tree differs and Landing runs the full Gate", (t) => {
+  const p = project(t, { issues: [claimed(7)], contract: contract([NOTES_RUN]), files: SHARED });
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n", "shared.txt": "ONE\ntwo\nthree\nfour\nfive\n" });
+  assert.equal(p.runIn(wt, "gate").code, 0);
+  landElsewhere(p, "shared.txt", "one\ntwo\nthree\nfour\nFIVE\n", "Landed meanwhile");
 
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
@@ -1443,12 +1517,12 @@ test("in pull-request mode a Landing on an unmoved base reuses a recorded full p
  * A branch whose full Gate passed, then a Landing onto a base that moved meanwhile, with the Gate's one step
  * failing while ../red exists. Returns the log of the pass recorded before the rebase.
  */
-function passedThenBaseMoved(p: Project, wt: string): string {
+function passedThenBaseMoved(p: Project, wt: string, moved: [string, string] = ["meanwhile.txt", "landed meanwhile\n"]): string {
   const gate = p.runIn(wt, "gate");
   assert.equal(gate.code, 0, gate.stderr);
   const passLog = /Log: (.*)$/m.exec(gate.stdout)?.[1];
   assert.ok(passLog && existsSync(passLog));
-  landElsewhere(p, "meanwhile.txt", "landed meanwhile\n", "Landed meanwhile");
+  landElsewhere(p, ...moved, "Landed meanwhile");
   writeFileSync(join(p.dir, "..", "red"), "");
   return passLog;
 }
@@ -1458,9 +1532,11 @@ test("a Gate that fails once on a rebased branch whose tree passed the full Gate
     issues: [claimed(7)],
     // Fails once, as a flaky test does: the first failing run removes ../red.
     contract: contract([{ name: "unit tests", command: "if [ -e ../red ]; then rm ../red; echo 'timed out'; exit 3; fi" }]),
+    files: SHARED,
   });
-  const wt = ticket(p, 7, { "feature.txt": "a feature\n" });
-  const passLog = passedThenBaseMoved(p, wt);
+  // The base changes a file the branch changed too, so the full Gate runs.
+  const wt = ticket(p, 7, { "feature.txt": "a feature\n", "shared.txt": "ONE\ntwo\nthree\nfour\nfive\n" });
+  const passLog = passedThenBaseMoved(p, wt, ["shared.txt", "one\ntwo\nthree\nfour\nFIVE\n"]);
 
   const r = p.run("land", "7", wt, tmpFile(p, "report-7.md", REPORT));
 
@@ -1488,7 +1564,7 @@ test("a Gate that fails once on a rebased branch whose tree passed the full Gate
   assert.equal(existsSync(wt), false, "the worktree is removed");
 });
 
-test("a Gate that fails twice on a rebased branch whose tree passed the full Gate before ends with gate-failed, names both runs' logs and removes the worktree", (t) => {
+test("a quick Gate that fails twice on a rebased branch whose tree passed the full Gate before ends with gate-failed, names both runs' logs and removes the worktree", (t) => {
   const p = project(t, {
     issues: [claimed(7)],
     contract: contract([{ name: "unit tests", command: "echo run >> ../gate-runs.txt; [ -e ../red ] && { echo 'expected 2, got 3'; exit 3; }; true" }]),
@@ -1501,11 +1577,12 @@ test("a Gate that fails twice on a rebased branch whose tree passed the full Gat
 
   assert.equal(r.code, 1);
   assert.equal(gateRuns(p), 3, "the Gate passed once before the Landing and ran twice in it");
-  const failLog = /^The Gate failed at unit tests \(log: (.*?)\)/.exec(r.stdout)?.[1];
+  const failLog = /^The Gate failed at unit tests \(log: (.*?)\)/m.exec(r.stdout)?.[1];
   assert.ok(failLog && failLog !== passLog && existsSync(failLog), r.stdout);
   assert.equal(
     r.stdout,
-    `The Gate failed at unit tests (log: ${failLog}) on a branch whose tree passed the full Gate before the rebase ` +
+    `The base changed none of the files issue-7 changed since its full Gate pass (log: ${passLog}); running the quick Gate.\n` +
+      `The Gate failed at unit tests (log: ${failLog}) on a branch whose tree passed the full Gate before the rebase ` +
       `(log of that pass: ${passLog}); running it once more.\n`,
   );
   const secondLog = /^Full log: (.*)$/m.exec(r.stderr)?.[1];
